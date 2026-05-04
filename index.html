@@ -39,12 +39,15 @@
                 {this.state.error.message}
               </pre>
               {this.state.error.stack && (
-                <pre style={{ color: "#4a6080", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "'DM Mono', monospace", marginTop: 12, maxHeight: 300, overflow: "auto" }}>
+                <pre style={{ color: "#4a6080", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "'DM Mono', monospace", marginTop: 12, maxHeight: 200, overflow: "auto" }}>
                   {this.state.error.stack}
                 </pre>
               )}
+              <div style={{ marginTop: 16, padding: "10px 14px", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 8, color: "#3d526a", fontSize: 12, lineHeight: 1.6 }}>
+                Please contact an admin if the error persists.
+              </div>
               <button onClick={() => window.location.reload()}
-                style={{ marginTop: 20, background: "#1a2535", border: "1px solid #2d3f55", borderRadius: 8, padding: "8px 18px", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>
+                style={{ marginTop: 12, background: "#1a2535", border: "1px solid #2d3f55", borderRadius: 8, padding: "8px 18px", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>
                 Reload
               </button>
             </div>
@@ -5691,10 +5694,10 @@
         _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null);
       };
 
-      const activeProfile = profiles.find(p => p.id === profileId) || null;
+      const activeProfile = profiles.find(p => p.id === activeProfileId) || null;
 
       if (!activeId) return (
-        <HomeScreen username={username} profiles={profiles} activeProfileId={profileId}
+        <HomeScreen username={username} profiles={profiles} activeProfileId={activeProfileId}
           onSelect={id => setActiveId(id)} onSignOut={handleSignOut}
           onProfileCreate={handleProfileCreate} onProfileDelete={handleProfileDelete}
           onProfileSelect={handleProfileSelect} />
@@ -5730,6 +5733,7 @@
   </script>
 </body>
 </html>
+
 
 
 
