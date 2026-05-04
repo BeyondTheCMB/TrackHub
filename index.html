@@ -39,98 +39,128 @@
       { id: "plottwist", label: "PlotTwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa" },
     ];
 
+    // ─── Auth helpers ─────────────────────────────────────────────────────────
+    // Username-only auth: we store username in a profiles table and derive
+    // a fake email (username@trackhub.app) for Supabase Auth internally.
+    const toFakeEmail = (username) => `${username.toLowerCase().trim()}@trackhub.app`;
+
+    const checkUsernameAvailable = async (username) => {
+      const { data } = await _sb.from("user_profiles").select("username").eq("username", username.toLowerCase().trim()).single();
+      return !data; // true = available
+    };
+
+    const createUserProfile = async (userId, username) => {
+      await _sb.from("user_profiles").insert({ user_id: userId, username: username.toLowerCase().trim() });
+    };
+
+    const getUsernameForUser = async (userId) => {
+      const { data } = await _sb.from("user_profiles").select("username").eq("user_id", userId).single();
+      return data ? data.username : null;
+    };
+
     // ─── Auth screen ──────────────────────────────────────────────────────────
     function AuthScreen({ onAuth }) {
-      const [mode,     setMode]     = useState("login");
-      const [email,    setEmail]    = useState("");
+      const [mode,     setMode]     = useState("login"); // login | signup
+      const [username, setUsername] = useState("");
       const [password, setPassword] = useState("");
       const [loading,  setLoading]  = useState(false);
       const [error,    setError]    = useState(null);
-      const [info,     setInfo]     = useState(null);
+
+      const validate = () => {
+        if (!username.trim()) { setError("Choose a username."); return false; }
+        if (!/^[a-zA-Z0-9_-]{2,20}$/.test(username.trim())) {
+          setError("Username must be 2–20 characters: letters, numbers, _ or -");
+          return false;
+        }
+        if (!password) { setError("Enter a password."); return false; }
+        if (mode === "signup" && password.length < 6) { setError("Password must be at least 6 characters."); return false; }
+        return true;
+      };
 
       const handle = async () => {
-        setError(null); setInfo(null); setLoading(true);
+        setError(null);
+        if (!validate()) return;
+        setLoading(true);
+        const email = toFakeEmail(username);
         try {
-          if (mode === "reset") {
-            const { error: e } = await _sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
-            if (e) throw e;
-            setInfo("Check your email for a reset link.");
-          } else if (mode === "signup") {
+          if (mode === "signup") {
+            // Check username isn't taken first
+            const available = await checkUsernameAvailable(username);
+            if (!available) { setError("That username is already taken."); setLoading(false); return; }
+
             const { data, error: e } = await _sb.auth.signUp({ email, password });
             if (e) throw e;
-            if (data.user && !data.session) setInfo("Check your email to confirm your account, then sign in.");
-            else if (data.session) { _sbUser = data.user; onAuth(data.user); }
+            // Create the username profile row
+            await createUserProfile(data.user.id, username);
+            _sbUser = data.user;
+            onAuth(data.user);
           } else {
             const { data, error: e } = await _sb.auth.signInWithPassword({ email, password });
-            if (e) throw e;
-            _sbUser = data.user; onAuth(data.user);
+            if (e) {
+              // Give a friendlier message than Supabase's default
+              if (e.message.includes("Invalid login")) throw new Error("Incorrect username or password.");
+              throw e;
+            }
+            _sbUser = data.user;
+            onAuth(data.user);
           }
         } catch(e) { setError(e.message); }
         finally { setLoading(false); }
       };
 
-      const inputStyle = { width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14 };
+      const inputStyle = {
+        width: "100%", background: "#080f18", border: "1px solid #1e2d3d",
+        borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14,
+      };
 
       return (
         <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0d1825 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 18, padding: "40px 44px", width: 440, boxShadow: "0 40px 120px rgba(0,0,0,0.7)" }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 18, padding: "40px 44px", width: 420, boxShadow: "0 40px 120px rgba(0,0,0,0.7)" }}>
             <div style={{ textAlign: "center", marginBottom: 32 }}>
               <div style={{ fontSize: 44, marginBottom: 8 }}>🗃️</div>
               <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 30, letterSpacing: "-0.02em", margin: 0, color: "#e2e8f0" }}>TrackHub</h1>
               <div style={{ color: "#4a6080", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>Your personal collection suite</div>
             </div>
 
-            {mode !== "reset" && (
-              <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#080f18", borderRadius: 10, padding: 4 }}>
-                {["login","signup"].map(m => (
-                  <button key={m} onClick={() => { setMode(m); setError(null); setInfo(null); }}
-                    style={{ flex: 1, background: mode === m ? "#1a2535" : "transparent", border: "none", borderRadius: 8, padding: "8px 12px", cursor: "pointer", color: mode === m ? "#e2e8f0" : "#3d526a", fontWeight: 600, fontSize: 13 }}>
-                    {m === "login" ? "Sign in" : "Create account"}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 4, marginBottom: 28, background: "#080f18", borderRadius: 10, padding: 4 }}>
+              {[["login","Sign in"],["signup","Create account"]].map(([m, label]) => (
+                <button key={m} onClick={() => { setMode(m); setError(null); }}
+                  style={{ flex: 1, background: mode === m ? "#1a2535" : "transparent", border: "none", borderRadius: 8, padding: "8px 12px", cursor: "pointer", color: mode === m ? "#e2e8f0" : "#3d526a", fontWeight: 600, fontSize: 13 }}>
+                  {label}
+                </button>
+              ))}
+            </div>
 
-            <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Email</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handle()} placeholder="you@example.com"
-              style={{ ...inputStyle, marginBottom: 12 }}
+            <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Username</label>
+            <input type="text" value={username} onChange={e => setUsername(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handle()} placeholder="yourname"
+              autoComplete="username" autoCapitalize="none" spellCheck={false}
+              style={{ ...inputStyle, marginBottom: 14, fontFamily: "'DM Mono', monospace" }}
               onFocus={e => e.target.style.borderColor = "#e2c97e66"}
               onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
 
-            {mode !== "reset" && (
-              <>
-                <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Password</label>
-                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
-                  style={{ ...inputStyle, marginBottom: 20 }}
-                  onFocus={e => e.target.style.borderColor = "#e2c97e66"}
-                  onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
-              </>
-            )}
+            <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Password</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              style={{ ...inputStyle, marginBottom: 20 }}
+              onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+              onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
 
-            {error && <div style={{ marginBottom: 14, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>{error}</div>}
-            {info  && <div style={{ marginBottom: 14, padding: "10px 14px", background: "#0a1f0a", border: "1px solid #1a3d1a", borderRadius: 8, color: "#4ade80", fontSize: 13 }}>{info}</div>}
+            {error && (
+              <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>
+                {error}
+              </div>
+            )}
 
             <button onClick={handle} disabled={loading}
-              style={{ width: "100%", background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: loading ? 0.6 : 1, marginBottom: 12 }}>
-              {loading ? "…" : mode === "login" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
+              style={{ width: "100%", background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: loading ? 0.6 : 1 }}>
+              {loading ? "…" : mode === "login" ? "Sign in" : "Create account"}
             </button>
 
-            {mode === "login" && (
-              <button onClick={() => { setMode("reset"); setError(null); setInfo(null); }}
-                style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 12, width: "100%", textAlign: "center", padding: "4px 0" }}
-                onMouseEnter={e => e.currentTarget.style.color = "#60a5fa"}
-                onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>
-                Forgot password?
-              </button>
-            )}
-            {mode === "reset" && (
-              <button onClick={() => setMode("login")}
-                style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 12, width: "100%", textAlign: "center", padding: "4px 0" }}>
-                ← Back to sign in
-              </button>
-            )}
+            <div style={{ marginTop: 20, fontSize: 11, color: "#1e2d3d", textAlign: "center", lineHeight: 1.6 }}>
+              {mode === "signup" ? "2–20 characters · letters, numbers, _ or -" : "No email required · username + password only"}
+            </div>
           </div>
         </div>
       );
@@ -5446,12 +5476,18 @@
     // ─── TrackHub shell ────────────────────────────────────────────────────────
     function TrackHub() {
       const [user,        setUser]        = useState(null);
+      const [username,    setUsername]    = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
       const [activeId,    setActiveId]    = useState("meeplelog");
 
       useEffect(() => {
-        _sb.auth.getSession().then(({ data: { session } }) => {
-          if (session?.user) { _sbUser = session.user; setUser(session.user); }
+        _sb.auth.getSession().then(async ({ data: { session } }) => {
+          if (session?.user) {
+            _sbUser = session.user;
+            setUser(session.user);
+            const uname = await getUsernameForUser(session.user.id);
+            setUsername(uname);
+          }
           setAuthLoading(false);
         });
         const { data: { subscription } } = _sb.auth.onAuthStateChange((_event, session) => {
@@ -5467,9 +5503,13 @@
         </div>
       );
 
-      if (!user) return <AuthScreen onAuth={u => { _sbUser = u; setUser(u); }} />;
+      if (!user) return <AuthScreen onAuth={async u => {
+        _sbUser = u; setUser(u);
+        const uname = await getUsernameForUser(u.id);
+        setUsername(uname);
+      }} />;
 
-      const handleSignOut = async () => { await _sb.auth.signOut(); _sbUser = null; setUser(null); };
+      const handleSignOut = async () => { await _sb.auth.signOut(); _sbUser = null; setUser(null); setUsername(null); };
 
       const logoSlot = (
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -5478,7 +5518,7 @@
             style={{ background: "none", border: "none", cursor: "pointer", color: "#2d3f55", fontSize: 13, padding: "4px 8px", borderRadius: 6, fontWeight: 600 }}
             onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
             onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>
-            Sign out
+            {username ? username : "Sign out"}
           </button>
         </div>
       );
@@ -5495,3 +5535,4 @@
   </script>
 </body>
 </html>
+
