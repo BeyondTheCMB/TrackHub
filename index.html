@@ -2113,6 +2113,7 @@
     function App({ logoSlot }) {
       const [bggToken,       setBggToken]       = useState(null);
       const [setupDone,      setSetupDone]      = useState(false);
+      const [mlLoading,      setMlLoading]      = useState(true);
       const [collection,     setCollection]     = useState([]);
       const [customSubcolls, setCustomSubcolls] = useState([]);
       const [activeSubcoll,  setActiveSubcoll]  = useState("all");
@@ -5564,4 +5565,5 @@
   </script>
 </body>
 </html>
+
 
