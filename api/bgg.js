@@ -1,19 +1,17 @@
 // Vercel serverless function: BGG API proxy
-// Forwards requests to boardgamegeek.com/xmlapi2, handling CORS and 202 retries.
-// The BGG token is stored in VERCEL_BGG_TOKEN env var (set in Vercel dashboard).
+// Token is passed per-request from the frontend (stored in user's Supabase config).
+// No server-side env var needed — each user provides their own BGG token.
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
 
-  const path = req.query.path;
+  const { path, token } = req.query;
   if (!path) { res.status(400).json({ error: "Missing path" }); return; }
 
   const BGG_BASE = "https://boardgamegeek.com/xmlapi2";
-  const token    = process.env.BGG_TOKEN;
   const headers  = token ? { Authorization: `Bearer ${token}` } : {};
-
-  const url = path.startsWith("http") ? path : `${BGG_BASE}${path}`;
+  const url      = path.startsWith("http") ? path : `${BGG_BASE}${path}`;
 
   try {
     let attempts = 0;
@@ -21,7 +19,6 @@ export default async function handler(req, res) {
       const upstream = await fetch(url, { headers, redirect: "follow" });
 
       if (upstream.status === 202) {
-        // BGG queued the request — wait and retry
         await new Promise(r => setTimeout(r, 2000));
         attempts++;
         continue;
@@ -43,3 +40,4 @@ export default async function handler(req, res) {
     res.status(500).send(e.message);
   }
 }
+
