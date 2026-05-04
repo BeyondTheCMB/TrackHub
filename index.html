@@ -5115,12 +5115,6 @@
       const [key, setKey] = useState(apiKey || "");
       const [msg, setMsg] = useState(null);
       const [validating, setValidating] = useState(false);
-      const [editingId, setEditingId] = useState(null);
-      const [editName, setEditName] = useState("");
-      const [creatingNew, setCreatingNew] = useState(false);
-      const [newName, setNewName] = useState("");
-      const [newColor, setNewColor] = useState("blue");
-      const [confirmDelete, setConfirmDelete] = useState(null);
 
       const update = async () => {
         setMsg(null);
@@ -5133,59 +5127,9 @@
         setMsg({ type: "ok", text: "API key updated." });
       };
 
-      const submitRename = (id) => {
-        if (editName.trim()) onRenameProfile(id, editName.trim());
-        setEditingId(null);
-      };
-      const submitNew = () => {
-        if (!newName.trim()) return;
-        onCreateProfile(newName.trim(), newColor);
-        setNewName(""); setNewColor("blue"); setCreatingNew(false);
-      };
 
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-
-          {/* Profiles — managed by shell */}
-          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
-            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 12 }}>Profiles</div>
-            <div style={{ fontSize: 13, color: "#4a6080", lineHeight: 1.6 }}>
-              Profiles are managed from the TrackHub home screen.
-            </div>
-          </div>
-
-          </div>
-
-            {creatingNew ? (
-              <div style={{ marginTop: 12, padding: "12px 14px", background: "#080f18", border: `1px dashed ${colorOf(newColor)}66`, borderRadius: 10 }}>
-                <input autoFocus value={newName} onChange={(e) => setNewName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") submitNew(); if (e.key === "Escape") { setCreatingNew(false); setNewName(""); } }}
-                  placeholder="Profile name…"
-                  style={{ width: "100%", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 6, padding: "8px 12px", color: "#e2e8f0", fontSize: 13 }} />
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, gap: 10 }}>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {PROFILE_COLORS.map(col => (
-                      <button key={col.id} onClick={() => setNewColor(col.id)}
-                        style={{ width: 18, height: 18, borderRadius: "50%", background: col.value, border: newColor === col.id ? "2px solid #e2e8f0" : "2px solid transparent", cursor: "pointer", padding: 0, opacity: newColor === col.id ? 1 : 0.5 }} />
-                    ))}
-                  </div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button onClick={() => { setCreatingNew(false); setNewName(""); }}
-                      style={{ background: "transparent", border: "1px solid #1a2535", color: "#94a3b8", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
-                    <button onClick={submitNew} disabled={!newName.trim()}
-                      style={{ background: newName.trim() ? colorOf(newColor) : "#1a2535", color: newName.trim() ? "#0f172a" : "#3d526a", border: "none", borderRadius: 6, padding: "6px 14px", cursor: newName.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 12 }}>Create</button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <button onClick={() => setCreatingNew(true)}
-                style={{ marginTop: 12, background: "transparent", border: "1px dashed #2d3f55", color: "#7a90a8", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, width: "100%" }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#e2c97e66"; e.currentTarget.style.color = "#e2c97e"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2d3f55"; e.currentTarget.style.color = "#7a90a8"; }}>
-                + Add profile
-              </button>
-            )}
-          </div>
 
           {/* Mode + API key */}
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
@@ -5270,28 +5214,6 @@
             onImport={onImport}
           />
 
-          {/* Confirm delete profile modal */}
-          {confirmDelete && (() => {
-            const p = null; // profile data not available in this scope
-            if (!p) return null;
-            return (
-              <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-                onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
-                <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 12, padding: 24, width: 440 }}>
-                  <div style={{ fontSize: 16, color: "#e2e8f0", marginBottom: 8, fontWeight: 600 }}>Delete profile <span style={{ color: colorOf(p.color), fontFamily: "'Playfair Display', serif" }}>{p.name}</span>?</div>
-                  <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 18, lineHeight: 1.5 }}>
-                    All of <strong>{p.name}</strong>'s books, lists and reading data will be permanently deleted. This cannot be undone.
-                  </div>
-                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                    <button onClick={() => setConfirmDelete(null)}
-                      style={{ background: "transparent", border: "1px solid #1a2535", color: "#94a3b8", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}>Cancel</button>
-                    <button onClick={() => { onDeleteProfile(p.id); setConfirmDelete(null); }}
-                      style={{ background: "#f87171", border: "none", color: "#0f172a", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Delete profile</button>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
         </div>
       );
     }
@@ -5428,7 +5350,5 @@
   </script>
 </body>
 </html>
-
-
 
 
