@@ -195,49 +195,171 @@
       );
     }
 
-    // ─── Home screen (module launcher) ──────────────────────────────────────
-    function HomeScreen({ username, modules, onSelect, onSignOut }) {
-      const cards = [
-        { id: "meeplelog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa",
-          label: "MeepleLog", desc: "Board game collection tracker" },
-        { id: "plottwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa",
-          label: "PlotTwist", desc: "Book library & reading tracker" },
-      ];
+    // ─── Shared profile system ───────────────────────────────────────────────
+    const PROFILE_COLORS = [
+      { id: "gold",   value: "#e2c97e" }, { id: "blue",   value: "#60a5fa" },
+      { id: "green",  value: "#4ade80" }, { id: "rose",   value: "#fb7185" },
+      { id: "purple", value: "#a78bfa" }, { id: "orange", value: "#fb923c" },
+      { id: "teal",   value: "#2dd4bf" }, { id: "slate",  value: "#94a3b8" },
+    ];
+    const profileColorOf = (cid) => (PROFILE_COLORS.find(c => c.id === cid) || PROFILE_COLORS[1]).value;
+
+    const loadSharedProfiles = async () => {
+      const { data } = await _sb.from("trackhub_profiles").select("*").eq("user_id", _sbUser.id).order("created_at");
+      return data || [];
+    };
+    const saveSharedProfile = async (profile) => {
+      await _sb.from("trackhub_profiles").upsert({ user_id: _sbUser.id, ...profile }, { onConflict: "user_id,id" });
+    };
+    const deleteSharedProfile = async (profileId) => {
+      await _sb.from("trackhub_profiles").delete().eq("user_id", _sbUser.id).eq("id", profileId);
+    };
+    const saveShellActiveProfile = async (profileId) => {
+      await _sb.from("ml_config").upsert({ user_id: _sbUser.id, active_profile_id: profileId }, { onConflict: "user_id" });
+    };
+    const loadShellActiveProfile = async () => {
+      const { data } = await _sb.from("ml_config").select("active_profile_id").eq("user_id", _sbUser.id).single();
+      return data?.active_profile_id || null;
+    };
+
+    function ShellProfilePicker({ profiles, activeProfileId, onSelect, onCreate, onDelete }) {
+      const [creating,   setCreating]   = useState(profiles.length === 0);
+      const [newName,    setNewName]    = useState("");
+      const [colorId,    setColorId]    = useState("blue");
+      const [confirmDel, setConfirmDel] = useState(null);
+
+      const create = () => {
+        const name = newName.trim();
+        if (!name) return;
+        onCreate({ id: "profile_" + Date.now(), name, color: colorId });
+        setNewName(""); setColorId("blue"); setCreating(false);
+      };
+
       return (
-        <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0a1520 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32 }}>
-          <div style={{ marginBottom: 48, textAlign: "center" }}>
-            <div style={{ fontSize: 52, marginBottom: 12 }}>🗃️</div>
-            <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 34, letterSpacing: "-0.02em", color: "#e2e8f0", margin: 0 }}>TrackHub</h1>
-            <div style={{ color: "#3d526a", fontSize: 13, marginTop: 6 }}>
-              Welcome back, <span style={{ color: "#94a3b8", fontWeight: 600 }}>{username}</span>
+        <div>
+          {profiles.length > 0 && (
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginBottom: 18 }}>
+              {profiles.map(p => {
+                const color = profileColorOf(p.color);
+                const isActive = p.id === activeProfileId;
+                return (
+                  <div key={p.id} style={{ textAlign: "center" }}>
+                    <button onClick={() => onSelect(p.id)}
+                      style={{ width: 52, height: 52, borderRadius: "50%", background: color + "22", border: `2px solid ${isActive ? color : color + "44"}`, color, fontWeight: 700, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {p.name.charAt(0).toUpperCase()}
+                    </button>
+                    <div style={{ fontSize: 11, color: isActive ? color : "#4a6080", marginTop: 5, fontWeight: isActive ? 700 : 400 }}>{p.name}</div>
+                    {profiles.length > 1 && (
+                      <button onClick={() => setConfirmDel(p.id)}
+                        style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 10, marginTop: 2 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
+                        onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>remove</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {confirmDel && (
+            <div style={{ background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 13, color: "#f87171" }}>
+              Remove "{profiles.find(p => p.id === confirmDel)?.name}"? All their data will be deleted.
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button onClick={() => { onDelete(confirmDel); setConfirmDel(null); }}
+                  style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Remove</button>
+                <button onClick={() => setConfirmDel(null)}
+                  style={{ background: "transparent", color: "#94a3b8", border: "1px solid #2d3f55", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {!creating ? (
+            <button onClick={() => setCreating(true)}
+              style={{ background: "transparent", color: "#3d526a", border: "1px dashed #1a2535", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12, width: "100%" }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "#3d526a"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+              + Add profile
+            </button>
+          ) : (
+            <div style={{ background: "#080f18", borderRadius: 10, padding: "14px 16px" }}>
+              <input value={newName} onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && create()} placeholder="Profile name" autoFocus
+                style={{ width: "100%", background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, marginBottom: 10 }}
+                onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+                onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+              <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                {PROFILE_COLORS.map(c => (
+                  <button key={c.id} onClick={() => setColorId(c.id)}
+                    style={{ width: 22, height: 22, borderRadius: "50%", background: c.value + "33", border: `2px solid ${colorId === c.id ? c.value : "transparent"}`, cursor: "pointer" }} />
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={create} disabled={!newName.trim()}
+                  style={{ flex: 1, background: newName.trim() ? profileColorOf(colorId) : "#1a2535", color: newName.trim() ? "#0f172a" : "#3d526a", border: "none", borderRadius: 8, padding: "8px", cursor: newName.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 13 }}>
+                  Create
+                </button>
+                {profiles.length > 0 && (
+                  <button onClick={() => { setCreating(false); setNewName(""); }}
+                    style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 13 }}>
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── HomeScreen (module launcher) ──────────────────────────────────────
+    function HomeScreen({ username, profiles, activeProfileId, onSelect, onSignOut, onProfileCreate, onProfileDelete, onProfileSelect }) {
+      const cards = [
+        { id: "meeplelog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa", label: "MeepleLog", desc: "Board game collection" },
+        { id: "plottwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa", label: "PlotTwist", desc: "Book library" },
+      ];
+      const canEnter = !!activeProfileId && profiles.some(p => p.id === activeProfileId);
+      return (
+        <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0a1520 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "32px 24px" }}>
+          <div style={{ marginBottom: 32, textAlign: "center" }}>
+            <div style={{ fontSize: 46, marginBottom: 10 }}>🗃️</div>
+            <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 30, letterSpacing: "-0.02em", color: "#e2e8f0", margin: 0 }}>TrackHub</h1>
+            <div style={{ color: "#3d526a", fontSize: 13, marginTop: 5 }}>
+              <span style={{ color: "#94a3b8", fontWeight: 600 }}>{username}</span>
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center", marginBottom: 48 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 16, padding: "22px 26px", width: "100%", maxWidth: 460, marginBottom: 24 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, marginBottom: 14 }}>
+              {profiles.length === 0 ? "Create your first profile" : "Who's tracking today?"}
+            </div>
+            <ShellProfilePicker profiles={profiles} activeProfileId={activeProfileId}
+              onSelect={onProfileSelect} onCreate={onProfileCreate} onDelete={onProfileDelete} />
+          </div>
+
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginBottom: 28, opacity: canEnter ? 1 : 0.3, pointerEvents: canEnter ? "auto" : "none", transition: "opacity 0.2s" }}>
             {cards.map(card => (
               <button key={card.id} onClick={() => onSelect(card.id)}
-                style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 18, padding: "32px 36px", width: 220, cursor: "pointer", textAlign: "center", transition: "border-color 0.15s, transform 0.15s" }}
+                style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 16, padding: "24px 26px", width: 180, cursor: "pointer", textAlign: "center", transition: "border-color 0.15s, transform 0.15s" }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = card.accentA; e.currentTarget.style.transform = "translateY(-2px)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.transform = "none"; }}>
-                <div style={{ fontSize: 40, marginBottom: 14 }}>{card.icon}</div>
-                <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 20, letterSpacing: "-0.01em", marginBottom: 8 }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>{card.icon}</div>
+                <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 16, letterSpacing: "-0.01em", marginBottom: 6 }}>
                   <span style={{ color: card.accentA }}>{card.label.slice(0, Math.ceil(card.label.length / 2))}</span>
                   <span style={{ color: card.accentB }}>{card.label.slice(Math.ceil(card.label.length / 2))}</span>
                 </div>
-                <div style={{ color: "#3d526a", fontSize: 12, lineHeight: 1.5 }}>{card.desc}</div>
+                <div style={{ color: "#3d526a", fontSize: 11 }}>{card.desc}</div>
               </button>
             ))}
-
-            {/* Future module placeholder */}
-            <div style={{ background: "#080f18", border: "1px dashed #1a2535", borderRadius: 18, padding: "32px 36px", width: 220, textAlign: "center", opacity: 0.4 }}>
-              <div style={{ fontSize: 40, marginBottom: 14 }}>＋</div>
-              <div style={{ color: "#2d3f55", fontSize: 14, fontWeight: 600, marginBottom: 8 }}>More coming</div>
-              <div style={{ color: "#1e2d3d", fontSize: 12, lineHeight: 1.5 }}>New trackers will appear here</div>
+            <div style={{ background: "#080f18", border: "1px dashed #1a2535", borderRadius: 16, padding: "24px 26px", width: 180, textAlign: "center", opacity: 0.4 }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>＋</div>
+              <div style={{ color: "#2d3f55", fontSize: 12, fontWeight: 600 }}>More coming</div>
             </div>
           </div>
 
+          {!canEnter && <div style={{ color: "#2d3f55", fontSize: 12, marginBottom: 20 }}>
+            {profiles.length === 0 ? "Create a profile to get started" : "Select a profile to continue"}
+          </div>}
+
           <button onClick={onSignOut}
-            style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 12, padding: "4px 8px" }}
+            style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 12 }}
             onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
             onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>
             Sign out
@@ -414,23 +536,21 @@
 
     // ─── Collection storage ───────────────────────────────────────────────────
     // ─── MeepleLog Supabase storage ──────────────────────────────────────────
-    async function loadCollection() {
-      const { data, error } = await _sb.from("ml_collection").select("data").eq("user_id", _sbUser.id);
+    async function loadCollection(pid) {
+      const { data, error } = await _sb.from("ml_collection").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid || "default");
       if (error) { console.error("loadCollection:", error); return []; }
       return data ? data.map(r => r.data) : [];
     }
-    async function saveCollection(col) {
-      if (!col.length) {
-        await _sb.from("ml_collection").delete().eq("user_id", _sbUser.id);
-        return;
-      }
-      const rows = col.map(g => ({ user_id: _sbUser.id, game_id: String(g.id), data: g }));
-      await _sb.from("ml_collection").upsert(rows, { onConflict: "user_id,game_id" });
+    async function saveCollection(col, pid) {
+      pid = pid || "default";
+      if (!col.length) { await _sb.from("ml_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", pid); return; }
+      const rows = col.map(g => ({ user_id: _sbUser.id, profile_id: pid, game_id: String(g.id), data: g }));
+      await _sb.from("ml_collection").upsert(rows, { onConflict: "user_id,profile_id,game_id" });
       const ids = col.map(g => String(g.id));
-      const { data: existing } = await _sb.from("ml_collection").select("game_id").eq("user_id", _sbUser.id);
+      const { data: existing } = await _sb.from("ml_collection").select("game_id").eq("user_id", _sbUser.id).eq("profile_id", pid);
       if (existing) {
         const toDelete = existing.map(r => r.game_id).filter(id => !ids.includes(id));
-        if (toDelete.length) await _sb.from("ml_collection").delete().eq("user_id", _sbUser.id).in("game_id", toDelete);
+        if (toDelete.length) await _sb.from("ml_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", pid).in("game_id", toDelete);
       }
     }
 
@@ -785,12 +905,12 @@
       { id: "plan_to_buy",  label: "Wishlist",  builtin: true },
     ];
 
-    async function loadSubcollections() {
-      const { data } = await _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single();
+    async function loadSubcollections(pid) {
+      const { data } = await _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid || "default").single();
       return (data && data.data) ? data.data : [];
     }
-    async function saveSubcollections(list) {
-      await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, data: list }, { onConflict: "user_id" });
+    async function saveSubcollections(list, pid) {
+      await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, profile_id: pid || "default", data: list }, { onConflict: "user_id,profile_id" });
     }
 
     function filterBySubcollection(collection, subcollId, customSubcolls) {
@@ -2161,7 +2281,7 @@
       );
     }
 
-    function App({ logoSlot }) {
+    function App({ logoSlot, profileId }) {
       const [bggToken,       setBggToken]       = useState(null);
       const [setupDone,      setSetupDone]      = useState(false);
       const [mlLoading,      setMlLoading]      = useState(true);
@@ -2173,9 +2293,10 @@
       useEffect(() => {
         (async () => {
           try {
+            const pid = profileId || "default";
             const [col, subcollData, cfg] = await Promise.all([
-              loadCollection(),
-              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single(),
+              loadCollection(pid),
+              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid).single(),
               loadMlConfig(),
             ]);
             setCollection(col);
@@ -2206,12 +2327,12 @@
       const isFirstRender = useRef(true);
       useEffect(() => {
         if (isFirstRender.current) { isFirstRender.current = false; return; }
-        saveCollection(collection);
-      }, [collection]);
+        saveCollection(collection, profileId);
+      }, [collection, profileId]);
 
       useEffect(() => {
-        saveSubcollections(customSubcolls);
-      }, [customSubcolls]);
+        saveSubcollections(customSubcolls, profileId);
+      }, [customSubcolls, profileId]);
 
       const addGame        = (game)  => setCollection((c) => {
         const idx = c.findIndex(g => g.id === game.id);
@@ -4553,13 +4674,11 @@
     }
 
     // ─── Main App ─────────────────────────────────────────────────────────────
-    function App({ logoSlot }) {
+    function App({ logoSlot, profileId }) {
       const [ptLoading,       setPtLoading]       = useState(true);
       const [apiKey,          setApiKey]           = useState(null);
       const [offlineMode,     setOfflineMode]      = useState(false);
       const [currency,        setCurrency]         = useState("EUR");
-      const [profiles,        setProfiles]         = useState([]);
-      const [activeProfileId, setActiveProfileId]  = useState(null);
       const [library,         setLibrary]          = useState([]);
       const [lists,           setLists]            = useState([]);
       const [activeList,      setActiveList]       = useState("all");
@@ -4575,64 +4694,44 @@
       const [confirmDeleteList,setConfirmDeleteList]= useState(null);
       const [profileMenuOpen, setProfileMenuOpen]  = useState(false);
 
-      // Load all data from Supabase on mount
+      // Load all data from Supabase on mount / when profileId changes
       useEffect(() => {
         (async () => {
+          setPtLoading(true);
           try {
-            const [cfg, profs] = await Promise.all([loadConfig(), loadProfiles()]);
+            const pid = profileId || "default";
+            const [cfg, lib, ls] = await Promise.all([loadConfig(), loadLibrary(pid), loadLists(pid)]);
             setApiKey(cfg.apiKey || null);
             setOfflineMode(cfg.offlineMode || false);
             setCurrency(cfg.currency || "EUR");
-            setProfiles(profs);
-            const profId = cfg.activeProfileId || (profs[0] && profs[0].id) || null;
-            setActiveProfileId(profId);
-            if (profId) {
-              const [lib, ls] = await Promise.all([loadLibrary(profId), loadLists(profId)]);
-              setLibrary(lib.map(b => { const m = migrateStatus(b); if (m.image) m.image = upgradeCoverUrl(m.image); return m; }));
-              setLists(ls);
-            }
+            setLibrary(lib.map(b => { const m = migrateStatus(b); if (m.image) m.image = upgradeCoverUrl(m.image); return m; }));
+            setLists(ls);
+            setActiveList("all"); setActiveTab("library"); setSelected(null); setFilterQ("");
           } catch(e) { console.error("PT load error:", e); }
           finally { setPtLoading(false); }
         })();
-      }, []);
+      }, [profileId]);
 
-      const activeProfile = profiles.find(p => p.id === activeProfileId) || null;
-      const accent = activeProfile ? colorOf(activeProfile.color) : "#e2c97e";
-
-      // Re-load library + lists whenever the active profile changes (skip on first load)
-      const ptFirstRender = useRef(true);
-      useEffect(() => {
-        if (ptFirstRender.current) { ptFirstRender.current = false; return; }
-        if (!activeProfileId) { setLibrary([]); setLists([]); return; }
-        (async () => {
-          const [lib, ls] = await Promise.all([loadLibrary(activeProfileId), loadLists(activeProfileId)]);
-          setLibrary(lib.map(b => { const m = migrateStatus(b); if (m.image) m.image = upgradeCoverUrl(m.image); return m; }));
-          setLists(ls);
-          setActiveList("all");
-          setActiveTab("library");
-          setSelected(null);
-          setFilterQ("");
-        })();
-      }, [activeProfileId]);
+      const accent = "#e2c97e";
 
       // Persist library / lists whenever they change (skipped on first render of a profile)
       const lastSavedFor = useRef({ profile: null, library: false, lists: false });
       useEffect(() => {
-        if (!activeProfileId) return;
-        if (lastSavedFor.current.profile !== activeProfileId) {
-          lastSavedFor.current = { profile: activeProfileId, library: false, lists: false };
+        if (!profileId) return;
+        if (lastSavedFor.current.profile !== profileId) {
+          lastSavedFor.current = { profile: profileId, library: false, lists: false };
           return;
         }
         if (!lastSavedFor.current.library) { lastSavedFor.current.library = true; return; }
-        saveLibrary(activeProfileId, library);
-      }, [library, activeProfileId]);
+        saveLibrary(profileId || "default", library);
+      }, [library, profileId]);
 
       useEffect(() => {
-        if (!activeProfileId) return;
-        if (lastSavedFor.current.profile !== activeProfileId) return;
+        if (!profileId) return;
+        if (lastSavedFor.current.profile !== profileId) return;
         if (!lastSavedFor.current.lists) { lastSavedFor.current.lists = true; return; }
-        saveLists(activeProfileId, lists);
-      }, [lists, activeProfileId]);
+        saveLists(profileId || "default", lists);
+      }, [lists, profileId]);
 
       // Persist profiles index
       const isFirstProfilesRender = useRef(true);
@@ -4642,11 +4741,7 @@
       }, [profiles]);
 
       // Persist active profile id whenever it changes
-      useEffect(() => {
-        if (activeProfileId) {
-          saveConfig({ activeProfileId }); // partial update — only saves this field
-        }
-      }, [activeProfileId]);
+      // (profile managed by TrackHub shell)
 
       const addBook = (book) => setLibrary(cur => {
         const idx = cur.findIndex(b => b.id === book.id);
@@ -4741,42 +4836,15 @@
       const activeCustom = lists.find(l => l.id === activeList);
 
       // ── Profile management handlers ──
-      const createProfile = (name, colorId) => {
-        const trimmed = (name || "").trim();
-        if (!trimmed) return null;
-        const id = "prof_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        const p = { id, name: trimmed, color: colorId || "gold", createdAt: new Date().toISOString() };
-        setProfiles(cur => [...cur, p]);
-        return p;
-      };
+      const createProfile = (name, colorId) => null; // managed by shell
 
-      const renameProfile = (id, newName) => {
-        const trimmed = (newName || "").trim();
-        if (!trimmed) return;
-        setProfiles(cur => cur.map(p => p.id === id ? { ...p, name: trimmed } : p));
-      };
+      const renameProfile = (id, newName) => {};
 
-      const setProfileColor = (id, colorId) => {
-        setProfiles(cur => cur.map(p => p.id === id ? { ...p, color: colorId } : p));
-      };
+      const setProfileColor = (id, colorId) => {};
 
-      const deleteProfile = (id) => {
-        // Never allow deleting the last profile
-        if (profiles.length <= 1) return;
-        // Wipe profile data on disk
-        deleteProfileData(id);
-        const remaining = profiles.filter(p => p.id !== id);
-        setProfiles(remaining);
-        // If we deleted the active profile, switch to another one
-        if (activeProfileId === id) {
-          setActiveProfileId(remaining[0].id);
-        }
-      };
+      const deleteProfile = (id) => {}; // managed by shell
 
-      const switchProfile = (id) => {
-        if (id !== activeProfileId) setActiveProfileId(id);
-        setProfileMenuOpen(false);
-      };
+      const switchProfile = (id) => { setProfileMenuOpen(false); };
 
       // ── Gating ──
       // 0. Loading guard
@@ -4786,19 +4854,7 @@
         </div>
       );
 
-      // 1. No profiles or no active profile → profile picker
-      if (profiles.length === 0 || !activeProfile) {
-        return (
-          <ProfilePicker
-            profiles={profiles}
-            onCreate={(name, colorId) => {
-              const p = createProfile(name, colorId);
-              if (p) setActiveProfileId(p.id);
-            }}
-            onSelect={(id) => setActiveProfileId(id)}
-          />
-        );
-      }
+      // profiles managed by shell
 
       return (
         <div style={{ minHeight: "100vh", background: "#060d14" }}>
@@ -4845,7 +4901,7 @@
                     <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 8, background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 12, minWidth: 220, padding: 6, zIndex: 91, boxShadow: "0 16px 48px rgba(0,0,0,0.6)" }}>
                       <div style={{ padding: "8px 12px 4px", fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>Profiles</div>
                       {profiles.map(p => {
-                        const isActive = p.id === activeProfileId;
+                        const isActive = p.id === profileId;
                         const c = colorOf(p.color);
                         return (
                           <button key={p.id} onClick={() => switchProfile(p.id)}
@@ -4916,7 +4972,7 @@
                   setLists(result.lists);
                 }}
                 profiles={profiles}
-                activeProfileId={activeProfileId}
+                activeProfileId={profileId}
                 onCreateProfile={(name, colorId) => { createProfile(name, colorId); }}
                 onRenameProfile={renameProfile}
                 onSetProfileColor={setProfileColor}
@@ -5285,7 +5341,7 @@
     }
 
     function SettingsPanel({ apiKey, offlineMode, currency, onApiKeyChange, onGoOffline, onCurrencyChange, library, lists, onImport,
-                              profiles, activeProfileId,
+                              profiles: [], activeProfileId: profileId,
                               onCreateProfile, onRenameProfile, onSetProfileColor,
                               onDeleteProfile, onSwitchProfile }) {
       const [key, setKey] = useState(apiKey || "");
@@ -5327,7 +5383,7 @@
             <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 14 }}>Profiles</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {profiles.map(p => {
-                const isActive = p.id === activeProfileId;
+                const isActive = p.id === profileId;
                 const c = colorOf(p.color);
                 const isEditing = editingId === p.id;
                 return (
@@ -5484,7 +5540,7 @@
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
             <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 12 }}>Data (this profile)</div>
             <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>
-              Stored locally at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace", fontSize: 12 }}>plottwist-data/profiles/{activeProfileId}/</code>
+              Synced to cloud
             </div>
             <div style={{ fontSize: 12, color: "#4a6080", fontFamily: "'DM Mono', monospace", marginTop: 10 }}>
               {library.length} books · {library.filter(b => effectiveBucket(b) === "read").length} read · {library.filter(b => effectiveBucket(b) === "reading").length} reading · {library.filter(b => effectiveBucket(b) === "onhold").length} on hold · {library.filter(b => effectiveBucket(b) === "sleeping").length} sleeping · {library.filter(b => effectiveBucket(b) === "wishlist").length} wishlist
@@ -5495,7 +5551,7 @@
           <ExportImportPanel
             library={library}
             lists={lists}
-            profileName={profiles.find(p => p.id === activeProfileId)?.name}
+            profileName={profiles.find(p => p.id === profileId)?.name}
             onImport={onImport}
           />
 
@@ -5572,27 +5628,55 @@
 
     // ─── TrackHub shell ────────────────────────────────────────────────────────
     function TrackHub() {
-      const [user,        setUser]        = useState(null);
-      const [username,    setUsername]    = useState(null);
-      const [authLoading, setAuthLoading] = useState(true);
-      const [activeId,    setActiveId]    = useState(null); // null = home screen
+      const [user,            setUser]            = useState(null);
+      const [username,        setUsername]        = useState(null);
+      const [authLoading,     setAuthLoading]     = useState(true);
+      const [activeId,        setActiveId]        = useState(null);
+      const [profiles,        setProfiles]        = useState([]);
+      const [activeProfileId, setActiveProfileId] = useState(null);
+
+      const loadAll = async (u) => {
+        const [uname, profs, lastProfId] = await Promise.all([
+          getUsernameForUser(u.id), loadSharedProfiles(), loadShellActiveProfile(),
+        ]);
+        setUsername(uname); setProfiles(profs);
+        const profId = lastProfId || (profs[0] && profs[0].id) || null;
+        setActiveProfileId(profId);
+      };
 
       useEffect(() => {
         _sb.auth.getSession().then(async ({ data: { session } }) => {
-          if (session?.user) {
-            _sbUser = session.user;
-            setUser(session.user);
-            const uname = await getUsernameForUser(session.user.id);
-            setUsername(uname);
-          }
+          if (session?.user) { _sbUser = session.user; setUser(session.user); await loadAll(session.user); }
           setAuthLoading(false);
         });
         const { data: { subscription } } = _sb.auth.onAuthStateChange((_event, session) => {
           if (session?.user) { _sbUser = session.user; setUser(session.user); }
-          else { _sbUser = null; setUser(null); setActiveId(null); }
+          else { _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); }
         });
         return () => subscription.unsubscribe();
       }, []);
+
+      const handleProfileSelect = (id) => { setActiveProfileId(id); saveShellActiveProfile(id); };
+      const handleProfileCreate = async (profile) => {
+        await saveSharedProfile(profile);
+        const profs = await loadSharedProfiles();
+        setProfiles(profs); handleProfileSelect(profile.id);
+      };
+      const handleProfileDelete = async (id) => {
+        await deleteSharedProfile(id);
+        await Promise.all([
+          _sb.from("ml_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("ml_subcollections").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("pt_library").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("pt_lists").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+        ]);
+        const profs = await loadSharedProfiles();
+        setProfiles(profs);
+        if (activeProfileId === id) {
+          const next = profs[0]?.id || null;
+          setActiveProfileId(next); if (next) saveShellActiveProfile(next);
+        }
+      };
 
       if (authLoading) return (
         <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -5600,49 +5684,44 @@
         </div>
       );
 
-      if (!user) return <AuthScreen onAuth={async u => {
-        _sbUser = u; setUser(u);
-        const uname = await getUsernameForUser(u.id);
-        setUsername(uname);
-      }} />;
+      if (!user) return <AuthScreen onAuth={async u => { _sbUser = u; setUser(u); await loadAll(u); }} />;
 
       const handleSignOut = async () => {
         await _sb.auth.signOut();
-        _sbUser = null; setUser(null); setUsername(null); setActiveId(null);
+        _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null);
       };
 
-      // Home screen — no module selected yet
+      const activeProfile = profiles.find(p => p.id === profileId) || null;
+
       if (!activeId) return (
-        <HomeScreen
-          username={username}
-          modules={MODULE_REGISTRY}
-          onSelect={id => setActiveId(id)}
-          onSignOut={handleSignOut}
-        />
+        <HomeScreen username={username} profiles={profiles} activeProfileId={profileId}
+          onSelect={id => setActiveId(id)} onSignOut={handleSignOut}
+          onProfileCreate={handleProfileCreate} onProfileDelete={handleProfileDelete}
+          onProfileSelect={handleProfileSelect} />
       );
 
+      const pColor = activeProfile ? profileColorOf(activeProfile.color) : "#e2c97e";
       const logoSlot = (
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <ModuleSwitcher active={activeId} modules={MODULE_REGISTRY} onChange={setActiveId} />
-          <button onClick={() => setActiveId(null)} title="Home"
-            style={{ background: "none", border: "none", cursor: "pointer", color: "#2d3f55", fontSize: 13, padding: "4px 8px", borderRadius: 6, fontWeight: 600 }}
-            onMouseEnter={e => e.currentTarget.style.color = "#e2c97e"}
-            onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>
-            ⌂
-          </button>
-          <button onClick={handleSignOut} title="Sign out"
-            style={{ background: "none", border: "none", cursor: "pointer", color: "#2d3f55", fontSize: 12, padding: "4px 8px", borderRadius: 6, fontWeight: 600 }}
-            onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
-            onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>
-            {username || "Sign out"}
+          <button onClick={() => setActiveId(null)} title="Back to home"
+            style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: "3px 6px", borderRadius: 8 }}
+            onMouseEnter={e => e.currentTarget.style.background = "#0d1825"}
+            onMouseLeave={e => e.currentTarget.style.background = "none"}>
+            {activeProfile && (
+              <div style={{ width: 24, height: 24, borderRadius: "50%", background: pColor + "22", border: `2px solid ${pColor}`, color: pColor, fontWeight: 700, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {activeProfile.name.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <span style={{ color: "#3d526a", fontSize: 12, fontWeight: 600 }}>{activeProfile?.name || username}</span>
           </button>
         </div>
       );
 
       return (
         <div style={{ minHeight: "100vh", background: "#060d14" }}>
-          {activeId === "meeplelog" && <MeepleLogApp logoSlot={logoSlot} />}
-          {activeId === "plottwist" && <PlotTwistApp logoSlot={logoSlot} />}
+          {activeId === "meeplelog" && <MeepleLogApp logoSlot={logoSlot} profileId={activeProfileId} />}
+          {activeId === "plottwist" && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} />}
         </div>
       );
     }
@@ -5651,6 +5730,7 @@
   </script>
 </body>
 </html>
+
 
 
 
