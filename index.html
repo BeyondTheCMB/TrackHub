@@ -195,6 +195,57 @@
       );
     }
 
+    // ─── Home screen (module launcher) ──────────────────────────────────────
+    function HomeScreen({ username, modules, onSelect, onSignOut }) {
+      const cards = [
+        { id: "meeplelog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa",
+          label: "MeepleLog", desc: "Board game collection tracker" },
+        { id: "plottwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa",
+          label: "PlotTwist", desc: "Book library & reading tracker" },
+      ];
+      return (
+        <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0a1520 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32 }}>
+          <div style={{ marginBottom: 48, textAlign: "center" }}>
+            <div style={{ fontSize: 52, marginBottom: 12 }}>🗃️</div>
+            <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 34, letterSpacing: "-0.02em", color: "#e2e8f0", margin: 0 }}>TrackHub</h1>
+            <div style={{ color: "#3d526a", fontSize: 13, marginTop: 6 }}>
+              Welcome back, <span style={{ color: "#94a3b8", fontWeight: 600 }}>{username}</span>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center", marginBottom: 48 }}>
+            {cards.map(card => (
+              <button key={card.id} onClick={() => onSelect(card.id)}
+                style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 18, padding: "32px 36px", width: 220, cursor: "pointer", textAlign: "center", transition: "border-color 0.15s, transform 0.15s" }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = card.accentA; e.currentTarget.style.transform = "translateY(-2px)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.transform = "none"; }}>
+                <div style={{ fontSize: 40, marginBottom: 14 }}>{card.icon}</div>
+                <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 20, letterSpacing: "-0.01em", marginBottom: 8 }}>
+                  <span style={{ color: card.accentA }}>{card.label.slice(0, Math.ceil(card.label.length / 2))}</span>
+                  <span style={{ color: card.accentB }}>{card.label.slice(Math.ceil(card.label.length / 2))}</span>
+                </div>
+                <div style={{ color: "#3d526a", fontSize: 12, lineHeight: 1.5 }}>{card.desc}</div>
+              </button>
+            ))}
+
+            {/* Future module placeholder */}
+            <div style={{ background: "#080f18", border: "1px dashed #1a2535", borderRadius: 18, padding: "32px 36px", width: 220, textAlign: "center", opacity: 0.4 }}>
+              <div style={{ fontSize: 40, marginBottom: 14 }}>＋</div>
+              <div style={{ color: "#2d3f55", fontSize: 14, fontWeight: 600, marginBottom: 8 }}>More coming</div>
+              <div style={{ color: "#1e2d3d", fontSize: 12, lineHeight: 1.5 }}>New trackers will appear here</div>
+            </div>
+          </div>
+
+          <button onClick={onSignOut}
+            style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 12, padding: "4px 8px" }}
+            onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
+            onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>
+            Sign out
+          </button>
+        </div>
+      );
+    }
+
     // ─── MeepleLog module ─────────────────────────────────────────────────────
     const MeepleLogApp = (() => {
     // ─── BGG API (proxied via /api/bgg) ──────────────────────────────────────
@@ -4735,14 +4786,7 @@
         </div>
       );
 
-      // 1. If no API key AND not explicitly offline → setup screen
-      if (!apiKey && !offlineMode) {
-        return <ApiKeySetup
-          onSaved={(k) => { setApiKey(k); setOfflineMode(false); }}
-          onWorkOffline={() => { setOfflineMode(true); setApiKey(null); }}
-        />;
-      }
-      // 2. If we have an API key but no profiles or no active profile → profile picker
+      // 1. No profiles or no active profile → profile picker
       if (profiles.length === 0 || !activeProfile) {
         return (
           <ProfilePicker
@@ -5531,7 +5575,7 @@
       const [user,        setUser]        = useState(null);
       const [username,    setUsername]    = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
-      const [activeId,    setActiveId]    = useState("meeplelog");
+      const [activeId,    setActiveId]    = useState(null); // null = home screen
 
       useEffect(() => {
         _sb.auth.getSession().then(async ({ data: { session } }) => {
@@ -5545,7 +5589,7 @@
         });
         const { data: { subscription } } = _sb.auth.onAuthStateChange((_event, session) => {
           if (session?.user) { _sbUser = session.user; setUser(session.user); }
-          else { _sbUser = null; setUser(null); }
+          else { _sbUser = null; setUser(null); setActiveId(null); }
         });
         return () => subscription.unsubscribe();
       }, []);
@@ -5562,16 +5606,35 @@
         setUsername(uname);
       }} />;
 
-      const handleSignOut = async () => { await _sb.auth.signOut(); _sbUser = null; setUser(null); setUsername(null); };
+      const handleSignOut = async () => {
+        await _sb.auth.signOut();
+        _sbUser = null; setUser(null); setUsername(null); setActiveId(null);
+      };
+
+      // Home screen — no module selected yet
+      if (!activeId) return (
+        <HomeScreen
+          username={username}
+          modules={MODULE_REGISTRY}
+          onSelect={id => setActiveId(id)}
+          onSignOut={handleSignOut}
+        />
+      );
 
       const logoSlot = (
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <ModuleSwitcher active={activeId} modules={MODULE_REGISTRY} onChange={setActiveId} />
-          <button onClick={handleSignOut} title="Sign out"
+          <button onClick={() => setActiveId(null)} title="Home"
             style={{ background: "none", border: "none", cursor: "pointer", color: "#2d3f55", fontSize: 13, padding: "4px 8px", borderRadius: 6, fontWeight: 600 }}
+            onMouseEnter={e => e.currentTarget.style.color = "#e2c97e"}
+            onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>
+            ⌂
+          </button>
+          <button onClick={handleSignOut} title="Sign out"
+            style={{ background: "none", border: "none", cursor: "pointer", color: "#2d3f55", fontSize: 12, padding: "4px 8px", borderRadius: 6, fontWeight: 600 }}
             onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
             onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>
-            {username ? username : "Sign out"}
+            {username || "Sign out"}
           </button>
         </div>
       );
@@ -5588,5 +5651,6 @@
   </script>
 </body>
 </html>
+
 
 
