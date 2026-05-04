@@ -2334,7 +2334,6 @@
                 onMouseLeave={(e) => e.currentTarget.style.borderColor = "#1e3a5f"}>
                 ⬆ Export / Import
               </button>
-              {profileChip}
               <button onClick={() => { setSearchAsWishlist(false); setShowSearch(true); }}
                 style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}
                 onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#e2c97e")}
@@ -2347,6 +2346,7 @@
                 onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#c084fc44")}>
                 + Add to Wishlist
               </button>
+              {profileChip}
             </div>
           </nav>
 
@@ -5392,6 +5392,7 @@
   </script>
 </body>
 </html>
+
 
 
 
