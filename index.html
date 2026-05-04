@@ -4432,12 +4432,12 @@
         setValidating(false);
         if (!valid) { setError(`Invalid key: ${error}`); return; }
         // Preserve any existing config (e.g. activeProfileId, currency) when saving the key
-        saveConfig({ ...loadConfig(), apiKey: key.trim(), offlineMode: false });
+        saveConfig({ apiKey: key.trim(), offlineMode: false });
         onSaved(key.trim());
       };
 
       const goOffline = () => {
-        saveConfig({ ...loadConfig(), apiKey: null, offlineMode: true });
+        saveConfig({ apiKey: null, offlineMode: true });
         onWorkOffline && onWorkOffline();
       };
 
@@ -4503,48 +4503,65 @@
 
     // ─── Main App ─────────────────────────────────────────────────────────────
     function App({ logoSlot }) {
-      const initialConfig = useMemo(() => loadConfig(), []);
-      const [apiKey, setApiKey]    = useState(initialConfig.apiKey);
-      const [offlineMode, setOfflineMode] = useState(initialConfig.offlineMode);
-      const [currency, setCurrency] = useState(initialConfig.currency);
-      const [profiles, setProfiles] = useState(() => loadProfiles());
-      const [activeProfileId, setActiveProfileId] = useState(initialConfig.activeProfileId);
-      const [library, setLibrary] = useState([]);
-      const [lists, setLists] = useState([]);
-      const [activeList, setActiveList] = useState("all");
-      const [selected, setSelected] = useState(null);
-      const [showSearch, setShowSearch] = useState(false);
-      const [searchAsWishlist, setSearchAsWishlist] = useState(false);
-      const [activeTab, setActiveTab] = useState("library");
-      const [filterQ, setFilterQ] = useState("");
-      const [sortBy, setSortBy] = useState("added");
-      const [newListName, setNewListName] = useState("");
-      const [renamingId, setRenamingId] = useState(null);
-      const [renameVal, setRenameVal] = useState("");
-      const [confirmDeleteList, setConfirmDeleteList] = useState(null);
-      const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+      const [ptLoading,       setPtLoading]       = useState(true);
+      const [apiKey,          setApiKey]           = useState(null);
+      const [offlineMode,     setOfflineMode]      = useState(false);
+      const [currency,        setCurrency]         = useState("EUR");
+      const [profiles,        setProfiles]         = useState([]);
+      const [activeProfileId, setActiveProfileId]  = useState(null);
+      const [library,         setLibrary]          = useState([]);
+      const [lists,           setLists]            = useState([]);
+      const [activeList,      setActiveList]       = useState("all");
+      const [selected,        setSelected]         = useState(null);
+      const [showSearch,      setShowSearch]       = useState(false);
+      const [searchAsWishlist,setSearchAsWishlist] = useState(false);
+      const [activeTab,       setActiveTab]        = useState("library");
+      const [filterQ,         setFilterQ]          = useState("");
+      const [sortBy,          setSortBy]           = useState("added");
+      const [newListName,     setNewListName]      = useState("");
+      const [renamingId,      setRenamingId]       = useState(null);
+      const [renameVal,       setRenameVal]        = useState("");
+      const [confirmDeleteList,setConfirmDeleteList]= useState(null);
+      const [profileMenuOpen, setProfileMenuOpen]  = useState(false);
+
+      // Load all data from Supabase on mount
+      useEffect(() => {
+        (async () => {
+          try {
+            const [cfg, profs] = await Promise.all([loadConfig(), loadProfiles()]);
+            setApiKey(cfg.apiKey || null);
+            setOfflineMode(cfg.offlineMode || false);
+            setCurrency(cfg.currency || "EUR");
+            setProfiles(profs);
+            const profId = cfg.activeProfileId || (profs[0] && profs[0].id) || null;
+            setActiveProfileId(profId);
+            if (profId) {
+              const [lib, ls] = await Promise.all([loadLibrary(profId), loadLists(profId)]);
+              setLibrary(lib.map(b => { const m = migrateStatus(b); if (m.image) m.image = upgradeCoverUrl(m.image); return m; }));
+              setLists(ls);
+            }
+          } catch(e) { console.error("PT load error:", e); }
+          finally { setPtLoading(false); }
+        })();
+      }, []);
 
       const activeProfile = profiles.find(p => p.id === activeProfileId) || null;
       const accent = activeProfile ? colorOf(activeProfile.color) : "#e2c97e";
 
-      // Re-load library + lists whenever the active profile changes
+      // Re-load library + lists whenever the active profile changes (skip on first load)
+      const ptFirstRender = useRef(true);
       useEffect(() => {
-        if (!activeProfileId) {
-          setLibrary([]);
-          setLists([]);
-          return;
-        }
-        setLibrary(loadLibrary(activeProfileId).map(b => {
-          const migrated = migrateStatus(b);
-          if (migrated.image) migrated.image = upgradeCoverUrl(migrated.image);
-          return migrated;
-        }));
-        setLists(loadLists(activeProfileId));
-        // Reset transient view state when switching profiles
-        setActiveList("all");
-        setActiveTab("library");
-        setSelected(null);
-        setFilterQ("");
+        if (ptFirstRender.current) { ptFirstRender.current = false; return; }
+        if (!activeProfileId) { setLibrary([]); setLists([]); return; }
+        (async () => {
+          const [lib, ls] = await Promise.all([loadLibrary(activeProfileId), loadLists(activeProfileId)]);
+          setLibrary(lib.map(b => { const m = migrateStatus(b); if (m.image) m.image = upgradeCoverUrl(m.image); return m; }));
+          setLists(ls);
+          setActiveList("all");
+          setActiveTab("library");
+          setSelected(null);
+          setFilterQ("");
+        })();
       }, [activeProfileId]);
 
       // Persist library / lists whenever they change (skipped on first render of a profile)
@@ -4576,8 +4593,7 @@
       // Persist active profile id whenever it changes
       useEffect(() => {
         if (activeProfileId) {
-          const cfg = loadConfig();
-          saveConfig({ ...cfg, activeProfileId });
+          saveConfig({ activeProfileId }); // partial update — only saves this field
         }
       }, [activeProfileId]);
 
@@ -4712,6 +4728,13 @@
       };
 
       // ── Gating ──
+      // 0. Loading guard
+      if (ptLoading) return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ color: "#3d526a", fontSize: 14 }}>Loading library…</div>
+        </div>
+      );
+
       // 1. If no API key AND not explicitly offline → setup screen
       if (!apiKey && !offlineMode) {
         return <ApiKeySetup
@@ -4821,17 +4844,17 @@
                 currency={currency}
                 onApiKeyChange={(k) => {
                   // Setting a key always exits offline mode
-                  saveConfig({ ...loadConfig(), apiKey: k, offlineMode: false });
+                  saveConfig({ apiKey: k, offlineMode: false });
                   setApiKey(k);
                   setOfflineMode(false);
                 }}
                 onGoOffline={() => {
-                  saveConfig({ ...loadConfig(), apiKey: null, offlineMode: true });
+                  saveConfig({ apiKey: null, offlineMode: true });
                   setApiKey(null);
                   setOfflineMode(true);
                 }}
                 onCurrencyChange={(c) => {
-                  saveConfig({ ...loadConfig(), currency: c });
+                  saveConfig({ currency: c });
                   setCurrency(c);
                 }}
                 library={library}
@@ -5565,5 +5588,6 @@
   </script>
 </body>
 </html>
+
 
 
