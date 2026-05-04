@@ -675,14 +675,11 @@
       { id: "plan_to_buy",  label: "Wishlist",  builtin: true },
     ];
 
-    function loadSubcollections() {
-      try {
-        const r = storage.get(SUBCOLL_KEY);
-        if (!r) return [];
-        return JSON.parse(r.value); // [{id, name, gameIds:[]}]
-      } catch { return []; }
+    async function loadSubcollections() {
+      const { data } = await _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single();
+      return (data && data.data) ? data.data : [];
     }
-    function saveSubcollections(list) {
+    async function saveSubcollections(list) {
       await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, data: list }, { onConflict: "user_id" });
     }
 
@@ -2093,10 +2090,7 @@
       const [activeWishlistTag, setActiveWishlistTag] = useState(null);
       const [newWishlistTag, setNewWishlistTag]   = useState("");
 
-      useEffect(() => {
-        setCollection(loadCollection());
-        setCustomSubcolls(loadSubcollections());
-      }, []);
+      // data loaded by async useEffect above
 
       const isFirstRender = useRef(true);
       useEffect(() => {
