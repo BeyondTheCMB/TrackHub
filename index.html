@@ -139,8 +139,21 @@
     // ─── MeepleLog module ─────────────────────────────────────────────────────
     const MeepleLogApp = (() => {
     // ─── BGG API (proxied via /api/bgg) ──────────────────────────────────────
+    // ─── MeepleLog config (BGG token stored in Supabase) ────────────────────
+    const ML_CONFIG_KEY = "meeplelog_config";
+    const loadMlConfig = async () => {
+      const { data } = await _sb.from("ml_config").select("*").eq("user_id", _sbUser.id).single();
+      return data || { bgg_token: null };
+    };
+    const saveMlConfig = async (cfg) => {
+      await _sb.from("ml_config").upsert({ user_id: _sbUser.id, ...cfg }, { onConflict: "user_id" });
+    };
+
     async function bggRequest(path) {
-      const url = `/api/bgg?path=${encodeURIComponent(path)}`;
+      const cfg   = await loadMlConfig();
+      const token = cfg.bgg_token || "";
+      const qs    = `path=${encodeURIComponent(path)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+      const url   = `/api/bgg?${qs}`;
       let attempts = 0;
       while (attempts < 8) {
         const res = await fetch(url);
@@ -152,6 +165,15 @@
         return await res.text();
       }
       throw new Error("BGG timeout after retries");
+    }
+
+    async function validateBggToken(token) {
+      try {
+        const res = await fetch(`/api/bgg?path=${encodeURIComponent("/thing?id=13&type=boardgame")}&token=${encodeURIComponent(token)}`);
+        if (res.ok) return { valid: true };
+        if (res.status === 401 || res.status === 403) return { valid: false, error: "Invalid or expired token" };
+        return { valid: false, error: `HTTP ${res.status}` };
+      } catch(e) { return { valid: false, error: e.message }; }
     }
 
     // Parse a <thing> item block from BGG XML into a game entry
@@ -1908,7 +1930,133 @@
     }
 
     // ─── Main App ─────────────────────────────────────────────────────────────
+    // ─── BGG token editor (MeepleLog Settings tab) ───────────────────────────
+    function MlTokenEditor({ currentToken, onSaved }) {
+      const [editing,    setEditing]    = React.useState(false);
+      const [token,      setToken]      = React.useState(currentToken || "");
+      const [validating, setValidating] = React.useState(false);
+      const [error,      setError]      = React.useState(null);
+      const [saved,      setSaved]      = React.useState(false);
+
+      const save = async () => {
+        setError(null); setSaved(false);
+        if (!token.trim()) { setError("Enter a token."); return; }
+        setValidating(true);
+        const { valid, error: err } = await validateBggToken(token.trim());
+        setValidating(false);
+        if (!valid) { setError(`Could not validate: ${err}`); return; }
+        await saveMlConfig({ bgg_token: token.trim() });
+        onSaved(token.trim());
+        setEditing(false); setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      };
+      const remove = async () => {
+        await saveMlConfig({ bgg_token: null });
+        onSaved(null); setToken(""); setEditing(false);
+      };
+
+      if (!editing) return (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200, background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "9px 14px", fontFamily: "'DM Mono', monospace", fontSize: 13, color: currentToken ? "#4a6080" : "#1e2d3d" }}>
+            {currentToken ? "••••••••" + currentToken.slice(-6) : "No token — using public BGG API"}
+          </div>
+          <button onClick={() => { setToken(currentToken || ""); setEditing(true); setError(null); setSaved(false); }}
+            style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = "#e2c97e"}
+            onMouseLeave={e => e.currentTarget.style.borderColor = "#e2c97e44"}>
+            {currentToken ? "Change" : "Add token"}
+          </button>
+          {currentToken && <button onClick={remove} style={{ background: "transparent", color: "#f87171", border: "1px solid #f8717133", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>Remove</button>}
+          {saved && <span style={{ color: "#4ade80", fontSize: 13 }}>✓ Saved</span>}
+        </div>
+      );
+
+      return (
+        <div>
+          <input type="password" value={token} onChange={e => setToken(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && save()} placeholder="paste BGG token…" autoFocus
+            style={{ width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "10px 14px", color: "#e2e8f0", fontSize: 14, fontFamily: "'DM Mono', monospace", marginBottom: 10 }}
+            onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+            onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+          {error && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={save} disabled={validating}
+              style={{ background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 8, padding: "9px 18px", cursor: validating ? "default" : "pointer", fontWeight: 700, fontSize: 13, opacity: validating ? 0.6 : 1 }}>
+              {validating ? "Validating…" : "Save"}
+            </button>
+            <button onClick={() => { setEditing(false); setError(null); }}
+              style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── BGG API key setup screen (first run) ─────────────────────────────────
+    function BggApiKeySetup({ onSaved, onSkip }) {
+      const [token,      setToken]      = React.useState("");
+      const [validating, setValidating] = React.useState(false);
+      const [error,      setError]      = React.useState(null);
+
+      const save = async () => {
+        setError(null);
+        if (!token.trim()) { setError("Enter a BGG API token, or skip below."); return; }
+        setValidating(true);
+        const { valid, error: err } = await validateBggToken(token.trim());
+        setValidating(false);
+        if (!valid) { setError(`Could not validate: ${err}. You can skip and add it later in Settings.`); return; }
+        await saveMlConfig({ bgg_token: token.trim() });
+        onSaved(token.trim());
+      };
+
+      return (
+        <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0d1825 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 18, padding: "40px 44px", width: 520, boxShadow: "0 40px 120px rgba(0,0,0,0.7)" }}>
+            <div style={{ textAlign: "center", marginBottom: 28 }}>
+              <div style={{ fontSize: 44, marginBottom: 6 }}>🎲</div>
+              <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 32, letterSpacing: "-0.02em", margin: 0 }}>
+                <span style={{ color: "#e2c97e" }}>Meeple</span><span style={{ color: "#60a5fa" }}>Log</span>
+              </h1>
+              <div style={{ color: "#4a6080", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>Your board game collection</div>
+            </div>
+            <h2 style={{ fontSize: 15, color: "#e2e8f0", marginBottom: 10, fontWeight: 600 }}>One-time setup</h2>
+            <p style={{ color: "#7a90a8", fontSize: 13, lineHeight: 1.6, marginBottom: 6 }}>
+              Add your BoardGameGeek API token to search and import games automatically.
+            </p>
+            <p style={{ color: "#4a6080", fontSize: 12, lineHeight: 1.6, marginBottom: 18 }}>
+              Get a free token at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace" }}>boardgamegeek.com</code> → Account → Preferences → API Token.
+            </p>
+            <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>BGG API Token</label>
+            <input type="password" value={token} onChange={e => setToken(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && save()} placeholder="paste your token here…"
+              style={{ width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14, fontFamily: "'DM Mono', monospace" }}
+              onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+              onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+            {error && <div style={{ marginTop: 12, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>{error}</div>}
+            <button onClick={save} disabled={validating}
+              style={{ width: "100%", marginTop: 18, background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: validating ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: validating ? 0.6 : 1 }}>
+              {validating ? "Validating…" : "Save & start logging"}
+            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "20px 0 16px" }}>
+              <div style={{ flex: 1, height: 1, background: "#1a2535" }} />
+              <span style={{ fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>or</span>
+              <div style={{ flex: 1, height: 1, background: "#1a2535" }} />
+            </div>
+            <button onClick={() => { saveMlConfig({ bgg_token: null }); onSkip(); }}
+              style={{ width: "100%", background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = "#3d526a"; e.currentTarget.style.color = "#94a3b8"; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = "#1e2d3d"; e.currentTarget.style.color = "#7a90a8"; }}>
+              Skip — add token later in Settings
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     function App({ logoSlot }) {
+      const [bggToken,       setBggToken]       = useState(null);
+      const [setupDone,      setSetupDone]      = useState(false);
       const [collection,     setCollection]     = useState([]);
       const [customSubcolls, setCustomSubcolls] = useState([]);
       const [activeSubcoll,  setActiveSubcoll]  = useState("all");
@@ -1917,12 +2065,15 @@
       useEffect(() => {
         (async () => {
           try {
-            const [col, subcollData] = await Promise.all([
+            const [col, subcollData, cfg] = await Promise.all([
               loadCollection(),
-              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single()
+              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single(),
+              loadMlConfig(),
             ]);
             setCollection(col);
             setSubcollections(subcollData.data?.data || []);
+            setBggToken(cfg.bgg_token || null);
+            setSetupDone(cfg.bgg_token !== undefined);
           } catch(e) { console.error("ML load error:", e); }
           finally { setMlLoading(false); }
         })();
@@ -2117,6 +2268,13 @@
         </div>
       );
 
+      if (!setupDone) return (
+        <BggApiKeySetup
+          onSaved={token => { setBggToken(token); setSetupDone(true); }}
+          onSkip={() => setSetupDone(true)}
+        />
+      );
+
       return (
         <div style={{ minHeight: "100vh", background: "#060d14" }}>
 
@@ -2170,6 +2328,14 @@
           {activeTab === "settings" ? (
             <main style={{ maxWidth: 720, margin: "0 auto", padding: "36px 28px 60px" }}>
               <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, color: "#e2c97e", marginBottom: 28 }}>Settings</h1>
+              <section style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, padding: "24px 28px", marginBottom: 20 }}>
+                <h2 style={{ fontSize: 14, color: "#94a3b8", fontWeight: 700, marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.07em" }}>BoardGameGeek API Token</h2>
+                <p style={{ color: "#4a6080", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>
+                  Your personal BGG token for searching and importing games. Get one at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace" }}>boardgamegeek.com</code> → Account → Preferences → API Token.
+                </p>
+                <MlTokenEditor currentToken={bggToken} onSaved={t => setBggToken(t)} />
+              </section>
+
               <section style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, padding: "24px 28px", marginBottom: 20 }}>
                 <h2 style={{ fontSize: 14, color: "#94a3b8", fontWeight: 700, marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.07em" }}>Backup &amp; Import</h2>
                 <p style={{ color: "#4a6080", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>Export your full collection to CSV or XML, or restore from a backup.</p>
