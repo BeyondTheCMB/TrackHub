@@ -5154,43 +5154,7 @@
             </div>
           </div>
 
-          {/* Color picker dots */}
-                    <div style={{ display: "flex", gap: 4 }}>
-                      {PROFILE_COLORS.map(col => (
-                        <button key={col.id} onClick={() => onSetProfileColor(p.id, col.id)}
-                          title={col.id}
-                          style={{ width: 14, height: 14, borderRadius: "50%", background: col.value, border: p.color === col.id ? "2px solid #e2e8f0" : "2px solid transparent", cursor: "pointer", padding: 0, opacity: p.color === col.id ? 1 : 0.5, transition: "opacity 0.15s" }}
-                          onMouseEnter={(e) => e.currentTarget.style.opacity = "1"}
-                          onMouseLeave={(e) => e.currentTarget.style.opacity = p.color === col.id ? "1" : "0.5"} />
-                      ))}
-                    </div>
-
-                    <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
-                      {!isActive && (
-                        <button onClick={() => onSwitchProfile(p.id)} title="Switch to this profile"
-                          style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
-                          Switch
-                        </button>
-                      )}
-                      {!isEditing && (
-                        <button onClick={() => { setEditingId(p.id); setEditName(p.name); }} title="Rename"
-                          style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 11 }}>
-                          ✎
-                        </button>
-                      )}
-                      {profiles.length > 1 && (
-                        <button onClick={() => setConfirmDelete(p.id)} title="Delete"
-                          style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 11 }}
-                          onMouseEnter={(e) => { e.currentTarget.style.color = "#f87171"; e.currentTarget.style.borderColor = "#5a2a30"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.color = "#7a90a8"; e.currentTarget.style.borderColor = "#1a2535"; }}>
-                          ✕
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          </div>
 
             {creatingNew ? (
               <div style={{ marginTop: 12, padding: "12px 14px", background: "#080f18", border: `1px dashed ${colorOf(newColor)}66`, borderRadius: 10 }}>
