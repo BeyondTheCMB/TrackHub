@@ -837,7 +837,7 @@
         return JSON.parse(r.value); // [{id, name, gameIds:[]}]
       } catch { return []; }
     }
-    function saveSubcollections(list) {
+    async function saveSubcollections(list) {
       await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, data: list }, { onConflict: "user_id" });
     }
 
@@ -4526,6 +4526,7 @@
 
       // Persist profiles index
       const isFirstProfilesRender = useRef(true);
+      // (profile persistence handled by shell)
       useEffect(() => {
         if (isFirstProfilesRender.current) { isFirstProfilesRender.current = false; return; }
         saveProfiles(profiles);
@@ -4690,20 +4691,7 @@
                       style={{ position: "fixed", inset: 0, zIndex: 90 }} />
                     <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 8, background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 12, minWidth: 220, padding: 6, zIndex: 91, boxShadow: "0 16px 48px rgba(0,0,0,0.6)" }}>
                       <div style={{ padding: "8px 12px 4px", fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>Profiles</div>
-                      {profiles.map(p => {
-                        const isActive = p.id === activeProfileId;
-                        const c = colorOf(p.color);
-                        return (
-                          <button key={p.id} onClick={() => switchProfile(p.id)}
-                            style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: isActive ? `${c}15` : "transparent", border: "none", cursor: "pointer", borderRadius: 7, textAlign: "left" }}
-                            onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "#0a1520"; }}
-                            onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}>
-                            <ProfileChip profile={p} size={28} />
-                            <span style={{ flex: 1, fontSize: 13, color: isActive ? c : "#94a3b8", fontWeight: isActive ? 700 : 500 }}>{p.name}</span>
-                            {isActive && <span style={{ fontSize: 11, color: c }}>✓</span>}
-                          </button>
-                        );
-                      })}
+                       <div style={{ padding: "6px 10px 4px", fontSize: 12, color: "#4a6080" }}>Switch profiles from the home screen.</div>
                       <div style={{ height: 1, background: "#1a2535", margin: "6px 4px" }} />
                       <button onClick={() => { setProfileMenuOpen(false); setActiveTab("settings"); }}
                         style={{ width: "100%", padding: "8px 10px", background: "transparent", border: "none", cursor: "pointer", borderRadius: 7, color: "#7a90a8", fontSize: 13, textAlign: "left", display: "flex", alignItems: "center", gap: 10 }}
@@ -4761,13 +4749,6 @@
                   setLibrary(cleanLib);
                   setLists(result.lists);
                 }}
-                profiles={profiles}
-                activeProfileId={activeProfileId}
-                onCreateProfile={(name, colorId) => { createProfile(name, colorId); }}
-                onRenameProfile={renameProfile}
-                onSetProfileColor={setProfileColor}
-                onDeleteProfile={deleteProfile}
-                onSwitchProfile={switchProfile}
               />
             </main>
           ) : (
@@ -5130,10 +5111,7 @@
       );
     }
 
-    function SettingsPanel({ apiKey, offlineMode, currency, onApiKeyChange, onGoOffline, onCurrencyChange, library, lists, onImport,
-                              profiles, activeProfileId,
-                              onCreateProfile, onRenameProfile, onSetProfileColor,
-                              onDeleteProfile, onSwitchProfile }) {
+    function SettingsPanel({ apiKey, offlineMode, currency, onApiKeyChange, onGoOffline, onCurrencyChange, library, lists, onImport }) {
       const [key, setKey] = useState(apiKey || "");
       const [msg, setMsg] = useState(null);
       const [validating, setValidating] = useState(false);
@@ -5168,32 +5146,15 @@
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 
-          {/* Profiles */}
+          {/* Profiles — managed by shell */}
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
-            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 14 }}>Profiles</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {profiles.map(p => {
-                const isActive = p.id === activeProfileId;
-                const c = colorOf(p.color);
-                const isEditing = editingId === p.id;
-                return (
-                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: isActive ? `${c}10` : "#080f18", border: `1px solid ${isActive ? `${c}33` : "#1a2535"}`, borderRadius: 10 }}>
-                    <ProfileChip profile={p} size={36} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {isEditing ? (
-                        <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") submitRename(p.id); if (e.key === "Escape") setEditingId(null); }}
-                          onBlur={() => submitRename(p.id)}
-                          style={{ width: "100%", background: "#0a1520", border: `1px solid ${c}66`, borderRadius: 6, padding: "5px 10px", color: "#e2e8f0", fontSize: 14, fontFamily: "'Playfair Display', serif" }} />
-                      ) : (
-                        <div style={{ fontSize: 15, fontFamily: "'Playfair Display', serif", color: c, fontWeight: 600 }}>
-                          {p.name}
-                          {isActive && <span style={{ marginLeft: 8, fontSize: 10, color: "#3d526a", fontFamily: "'DM Sans', sans-serif", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Active</span>}
-                        </div>
-                      )}
-                    </div>
+            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 12 }}>Profiles</div>
+            <div style={{ fontSize: 13, color: "#4a6080", lineHeight: 1.6 }}>
+              Profiles are managed from the TrackHub home screen.
+            </div>
+          </div>
 
-                    {/* Color picker dots */}
+          {/* Color picker dots */}
                     <div style={{ display: "flex", gap: 4 }}>
                       {PROFILE_COLORS.map(col => (
                         <button key={col.id} onClick={() => onSetProfileColor(p.id, col.id)}
@@ -5330,7 +5291,7 @@
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
             <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 12 }}>Data (this profile)</div>
             <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>
-              Stored locally at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace", fontSize: 12 }}>plottwist-data/profiles/{activeProfileId}/</code>
+              Synced to cloud
             </div>
             <div style={{ fontSize: 12, color: "#4a6080", fontFamily: "'DM Mono', monospace", marginTop: 10 }}>
               {library.length} books · {library.filter(b => effectiveBucket(b) === "read").length} read · {library.filter(b => effectiveBucket(b) === "reading").length} reading · {library.filter(b => effectiveBucket(b) === "onhold").length} on hold · {library.filter(b => effectiveBucket(b) === "sleeping").length} sleeping · {library.filter(b => effectiveBucket(b) === "wishlist").length} wishlist
@@ -5341,13 +5302,13 @@
           <ExportImportPanel
             library={library}
             lists={lists}
-            profileName={profiles.find(p => p.id === activeProfileId)?.name}
+            profileName={undefined}
             onImport={onImport}
           />
 
           {/* Confirm delete profile modal */}
           {confirmDelete && (() => {
-            const p = profiles.find(x => x.id === confirmDelete);
+            const p = null; // profile data not available in this scope
             if (!p) return null;
             return (
               <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
@@ -5503,8 +5464,6 @@
   </script>
 </body>
 </html>
-
-
 
 
 
