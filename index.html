@@ -2122,10 +2122,7 @@
       const [activeWishlistTag, setActiveWishlistTag] = useState(null);
       const [newWishlistTag, setNewWishlistTag]   = useState("");
 
-      useEffect(() => {
-        setCollection(loadCollection());
-        setCustomSubcolls(loadSubcollections());
-      }, []);
+      // data loaded by async useEffect above
 
       const isFirstRender = useRef(true);
       useEffect(() => {
@@ -5350,6 +5347,7 @@
   </script>
 </body>
 </html>
+
 
 
 
