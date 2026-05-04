@@ -46,15 +46,9 @@
               <div style={{ marginTop: 16, padding: "10px 14px", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 8, color: "#3d526a", fontSize: 12, lineHeight: 1.6 }}>
                 Please contact an admin if the error persists.
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                <button onClick={() => window.location.reload()}
-                  style={{ background: "#1a2535", border: "1px solid #2d3f55", borderRadius: 8, padding: "8px 18px", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>
-                  Reload
-                </button>
-                <button onClick={() => window.location.href = "/"}
-                  style={{ background: "#1a2535", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 18px", color: "#e2c97e", cursor: "pointer", fontSize: 13 }}>
-                  Go to main page
-                </button>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => window.location.reload()} style={{ background: "#1a2535", border: "1px solid #2d3f55", borderRadius: 8, padding: "8px 18px", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>Reload</button>
+                <button onClick={() => window.location.href = "/"} style={{ background: "#1a2535", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 18px", color: "#e2c97e", cursor: "pointer", fontSize: 13 }}>Go to main page</button>
               </div>
             </div>
           </div>
@@ -78,19 +72,14 @@
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
-    // Username-only auth: we store username in a profiles table and derive
-    // a fake email (username@trackhub.app) for Supabase Auth internally.
     const toFakeEmail = (username) => `${username.toLowerCase().trim()}@trackhub.app`;
-
     const checkUsernameAvailable = async (username) => {
       const { data } = await _sb.from("user_profiles").select("username").eq("username", username.toLowerCase().trim()).single();
-      return !data; // true = available
+      return !data;
     };
-
     const createUserProfile = async (userId, username) => {
       await _sb.from("user_profiles").insert({ user_id: userId, username: username.toLowerCase().trim() });
     };
-
     const getUsernameForUser = async (userId) => {
       const { data } = await _sb.from("user_profiles").select("username").eq("user_id", userId).single();
       return data ? data.username : null;
@@ -98,7 +87,7 @@
 
     // ─── Auth screen ──────────────────────────────────────────────────────────
     function AuthScreen({ onAuth }) {
-      const [mode,     setMode]     = useState("login"); // login | signup
+      const [mode,     setMode]     = useState("login");
       const [username, setUsername] = useState("");
       const [password, setPassword] = useState("");
       const [loading,  setLoading]  = useState(false);
@@ -106,10 +95,7 @@
 
       const validate = () => {
         if (!username.trim()) { setError("Choose a username."); return false; }
-        if (!/^[a-zA-Z0-9_-]{2,20}$/.test(username.trim())) {
-          setError("Username must be 2–20 characters: letters, numbers, _ or -");
-          return false;
-        }
+        if (!/^[a-zA-Z0-9_-]{2,20}$/.test(username.trim())) { setError("Username: 2–20 chars, letters/numbers/_ or -"); return false; }
         if (!password) { setError("Enter a password."); return false; }
         if (mode === "signup" && password.length < 6) { setError("Password must be at least 6 characters."); return false; }
         return true;
@@ -122,34 +108,22 @@
         const email = toFakeEmail(username);
         try {
           if (mode === "signup") {
-            // Check username isn't taken first
             const available = await checkUsernameAvailable(username);
             if (!available) { setError("That username is already taken."); setLoading(false); return; }
-
             const { data, error: e } = await _sb.auth.signUp({ email, password });
             if (e) throw e;
-            // Create the username profile row
             await createUserProfile(data.user.id, username);
-            _sbUser = data.user;
-            onAuth(data.user);
+            _sbUser = data.user; onAuth(data.user);
           } else {
             const { data, error: e } = await _sb.auth.signInWithPassword({ email, password });
-            if (e) {
-              // Give a friendlier message than Supabase's default
-              if (e.message.includes("Invalid login")) throw new Error("Incorrect username or password.");
-              throw e;
-            }
-            _sbUser = data.user;
-            onAuth(data.user);
+            if (e) { if (e.message.includes("Invalid login")) throw new Error("Incorrect username or password."); throw e; }
+            _sbUser = data.user; onAuth(data.user);
           }
         } catch(e) { setError(e.message); }
         finally { setLoading(false); }
       };
 
-      const inputStyle = {
-        width: "100%", background: "#080f18", border: "1px solid #1e2d3d",
-        borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14,
-      };
+      const inputStyle = { width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14 };
 
       return (
         <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0d1825 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -159,7 +133,6 @@
               <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 30, letterSpacing: "-0.02em", margin: 0, color: "#e2e8f0" }}>TrackHub</h1>
               <div style={{ color: "#4a6080", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>Your personal collection suite</div>
             </div>
-
             <div style={{ display: "flex", gap: 4, marginBottom: 28, background: "#080f18", borderRadius: 10, padding: 4 }}>
               {[["login","Sign in"],["signup","Create account"]].map(([m, label]) => (
                 <button key={m} onClick={() => { setMode(m); setError(null); }}
@@ -168,7 +141,6 @@
                 </button>
               ))}
             </div>
-
             <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Username</label>
             <input type="text" value={username} onChange={e => setUsername(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handle()} placeholder="yourname"
@@ -176,7 +148,6 @@
               style={{ ...inputStyle, marginBottom: 14, fontFamily: "'DM Mono', monospace" }}
               onFocus={e => e.target.style.borderColor = "#e2c97e66"}
               onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
-
             <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Password</label>
             <input type="password" value={password} onChange={e => setPassword(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
@@ -184,20 +155,13 @@
               style={{ ...inputStyle, marginBottom: 20 }}
               onFocus={e => e.target.style.borderColor = "#e2c97e66"}
               onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
-
-            {error && (
-              <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>
-                {error}
-              </div>
-            )}
-
+            {error && <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>{error}</div>}
             <button onClick={handle} disabled={loading}
               style={{ width: "100%", background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: loading ? 0.6 : 1 }}>
               {loading ? "…" : mode === "login" ? "Sign in" : "Create account"}
             </button>
-
-            <div style={{ marginTop: 20, fontSize: 11, color: "#1e2d3d", textAlign: "center", lineHeight: 1.6 }}>
-              {mode === "signup" ? "2–20 characters · letters, numbers, _ or -" : "No email required · username + password only"}
+            <div style={{ marginTop: 16, fontSize: 11, color: "#1e2d3d", textAlign: "center" }}>
+              {mode === "signup" ? "2–20 characters · letters, numbers, _ or -" : "No email required"}
             </div>
           </div>
         </div>
@@ -205,13 +169,13 @@
     }
 
     // ─── Shared profile system ───────────────────────────────────────────────
-    const PROFILE_COLORS = [
+    const PROFILE_COLORS_SHELL = [
       { id: "gold",   value: "#e2c97e" }, { id: "blue",   value: "#60a5fa" },
       { id: "green",  value: "#4ade80" }, { id: "rose",   value: "#fb7185" },
       { id: "purple", value: "#a78bfa" }, { id: "orange", value: "#fb923c" },
       { id: "teal",   value: "#2dd4bf" }, { id: "slate",  value: "#94a3b8" },
     ];
-    const profileColorOf = (cid) => (PROFILE_COLORS.find(c => c.id === cid) || PROFILE_COLORS[1]).value;
+    const profileColorOf = (cid) => (PROFILE_COLORS_SHELL.find(c => c.id === cid) || PROFILE_COLORS_SHELL[1]).value;
 
     const loadSharedProfiles = async () => {
       const { data } = await _sb.from("trackhub_profiles").select("*").eq("user_id", _sbUser.id).order("created_at");
@@ -236,21 +200,17 @@
       const [newName,    setNewName]    = useState("");
       const [colorId,    setColorId]    = useState("blue");
       const [confirmDel, setConfirmDel] = useState(null);
-
       const create = () => {
-        const name = newName.trim();
-        if (!name) return;
+        const name = newName.trim(); if (!name) return;
         onCreate({ id: "profile_" + Date.now(), name, color: colorId });
         setNewName(""); setColorId("blue"); setCreating(false);
       };
-
       return (
         <div>
           {profiles.length > 0 && (
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginBottom: 18 }}>
               {profiles.map(p => {
-                const color = profileColorOf(p.color);
-                const isActive = p.id === activeProfileId;
+                const color = profileColorOf(p.color); const isActive = p.id === activeProfileId;
                 return (
                   <div key={p.id} style={{ textAlign: "center" }}>
                     <button onClick={() => onSelect(p.id)}
@@ -259,10 +219,8 @@
                     </button>
                     <div style={{ fontSize: 11, color: isActive ? color : "#4a6080", marginTop: 5, fontWeight: isActive ? 700 : 400 }}>{p.name}</div>
                     {profiles.length > 1 && (
-                      <button onClick={() => setConfirmDel(p.id)}
-                        style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 10, marginTop: 2 }}
-                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
-                        onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>remove</button>
+                      <button onClick={() => setConfirmDel(p.id)} style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 10, marginTop: 2 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>remove</button>
                     )}
                   </div>
                 );
@@ -273,31 +231,24 @@
             <div style={{ background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 13, color: "#f87171" }}>
               Remove "{profiles.find(p => p.id === confirmDel)?.name}"? All their data will be deleted.
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button onClick={() => { onDelete(confirmDel); setConfirmDel(null); }}
-                  style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Remove</button>
-                <button onClick={() => setConfirmDel(null)}
-                  style={{ background: "transparent", color: "#94a3b8", border: "1px solid #2d3f55", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                <button onClick={() => { onDelete(confirmDel); setConfirmDel(null); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Remove</button>
+                <button onClick={() => setConfirmDel(null)} style={{ background: "transparent", color: "#94a3b8", border: "1px solid #2d3f55", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
               </div>
             </div>
           )}
           {!creating ? (
-            <button onClick={() => setCreating(true)}
-              style={{ background: "transparent", color: "#3d526a", border: "1px dashed #1a2535", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12, width: "100%" }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = "#3d526a"}
-              onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+            <button onClick={() => setCreating(true)} style={{ background: "transparent", color: "#3d526a", border: "1px dashed #1a2535", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12, width: "100%" }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "#3d526a"} onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
               + Add profile
             </button>
           ) : (
             <div style={{ background: "#080f18", borderRadius: 10, padding: "14px 16px" }}>
-              <input value={newName} onChange={e => setNewName(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && create()} placeholder="Profile name" autoFocus
+              <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && create()} placeholder="Profile name" autoFocus
                 style={{ width: "100%", background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, marginBottom: 10 }}
-                onFocus={e => e.target.style.borderColor = "#e2c97e66"}
-                onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+                onFocus={e => e.target.style.borderColor = "#e2c97e66"} onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
               <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-                {PROFILE_COLORS.map(c => (
-                  <button key={c.id} onClick={() => setColorId(c.id)}
-                    style={{ width: 22, height: 22, borderRadius: "50%", background: c.value + "33", border: `2px solid ${colorId === c.id ? c.value : "transparent"}`, cursor: "pointer" }} />
+                {PROFILE_COLORS_SHELL.map(c => (
+                  <button key={c.id} onClick={() => setColorId(c.id)} style={{ width: 22, height: 22, borderRadius: "50%", background: c.value + "33", border: `2px solid ${colorId === c.id ? c.value : "transparent"}`, cursor: "pointer" }} />
                 ))}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -306,10 +257,7 @@
                   Create
                 </button>
                 {profiles.length > 0 && (
-                  <button onClick={() => { setCreating(false); setNewName(""); }}
-                    style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 13 }}>
-                    Cancel
-                  </button>
+                  <button onClick={() => { setCreating(false); setNewName(""); }} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 13 }}>Cancel</button>
                 )}
               </div>
             </div>
@@ -318,7 +266,6 @@
       );
     }
 
-    // ─── HomeScreen (module launcher) ──────────────────────────────────────
     function HomeScreen({ username, profiles, activeProfileId, onSelect, onSignOut, onProfileCreate, onProfileDelete, onProfileSelect }) {
       const cards = [
         { id: "meeplelog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa", label: "MeepleLog", desc: "Board game collection" },
@@ -330,20 +277,15 @@
           <div style={{ marginBottom: 32, textAlign: "center" }}>
             <div style={{ fontSize: 46, marginBottom: 10 }}>🗃️</div>
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 30, letterSpacing: "-0.02em", color: "#e2e8f0", margin: 0 }}>TrackHub</h1>
-            <div style={{ color: "#3d526a", fontSize: 13, marginTop: 5 }}>
-              <span style={{ color: "#94a3b8", fontWeight: 600 }}>{username}</span>
-            </div>
+            <div style={{ color: "#3d526a", fontSize: 13, marginTop: 5 }}><span style={{ color: "#94a3b8", fontWeight: 600 }}>{username}</span></div>
           </div>
-
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 16, padding: "22px 26px", width: "100%", maxWidth: 460, marginBottom: 24 }}>
             <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, marginBottom: 14 }}>
               {profiles.length === 0 ? "Create your first profile" : "Who's tracking today?"}
             </div>
-            <ShellProfilePicker profiles={profiles} activeProfileId={activeProfileId}
-              onSelect={onProfileSelect} onCreate={onProfileCreate} onDelete={onProfileDelete} />
+            <ShellProfilePicker profiles={profiles} activeProfileId={activeProfileId} onSelect={onProfileSelect} onCreate={onProfileCreate} onDelete={onProfileDelete} />
           </div>
-
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginBottom: 28, opacity: canEnter ? 1 : 0.3, pointerEvents: canEnter ? "auto" : "none", transition: "opacity 0.2s" }}>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginBottom: 24, opacity: canEnter ? 1 : 0.3, pointerEvents: canEnter ? "auto" : "none", transition: "opacity 0.2s" }}>
             {cards.map(card => (
               <button key={card.id} onClick={() => onSelect(card.id)}
                 style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 16, padding: "24px 26px", width: 180, cursor: "pointer", textAlign: "center", transition: "border-color 0.15s, transform 0.15s" }}
@@ -362,15 +304,11 @@
               <div style={{ color: "#2d3f55", fontSize: 12, fontWeight: 600 }}>More coming</div>
             </div>
           </div>
-
           {!canEnter && <div style={{ color: "#2d3f55", fontSize: 12, marginBottom: 20 }}>
             {profiles.length === 0 ? "Create a profile to get started" : "Select a profile to continue"}
           </div>}
-
-          <button onClick={onSignOut}
-            style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 12 }}
-            onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
-            onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>
+          <button onClick={onSignOut} style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 12 }}
+            onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#1e2d3d"}>
             Sign out
           </button>
         </div>
@@ -380,21 +318,8 @@
     // ─── MeepleLog module ─────────────────────────────────────────────────────
     const MeepleLogApp = (() => {
     // ─── BGG API (proxied via /api/bgg) ──────────────────────────────────────
-    // ─── MeepleLog config (BGG token stored in Supabase) ────────────────────
-    const ML_CONFIG_KEY = "meeplelog_config";
-    const loadMlConfig = async () => {
-      const { data } = await _sb.from("ml_config").select("*").eq("user_id", _sbUser.id).single();
-      return data || { bgg_token: null };
-    };
-    const saveMlConfig = async (cfg) => {
-      await _sb.from("ml_config").upsert({ user_id: _sbUser.id, ...cfg }, { onConflict: "user_id" });
-    };
-
     async function bggRequest(path) {
-      const cfg   = await loadMlConfig();
-      const token = cfg.bgg_token || "";
-      const qs    = `path=${encodeURIComponent(path)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
-      const url   = `/api/bgg?${qs}`;
+      const url = `/api/bgg?path=${encodeURIComponent(path)}`;
       let attempts = 0;
       while (attempts < 8) {
         const res = await fetch(url);
@@ -406,15 +331,6 @@
         return await res.text();
       }
       throw new Error("BGG timeout after retries");
-    }
-
-    async function validateBggToken(token) {
-      try {
-        const res = await fetch(`/api/bgg?path=${encodeURIComponent("/thing?id=13&type=boardgame")}&token=${encodeURIComponent(token)}`);
-        if (res.ok) return { valid: true };
-        if (res.status === 401 || res.status === 403) return { valid: false, error: "Invalid or expired token" };
-        return { valid: false, error: `HTTP ${res.status}` };
-      } catch(e) { return { valid: false, error: e.message }; }
     }
 
     // Parse a <thing> item block from BGG XML into a game entry
@@ -914,12 +830,15 @@
       { id: "plan_to_buy",  label: "Wishlist",  builtin: true },
     ];
 
-    async function loadSubcollections(pid) {
-      const { data } = await _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid || "default").single();
-      return (data && data.data) ? data.data : [];
+    function loadSubcollections() {
+      try {
+        const r = storage.get(SUBCOLL_KEY);
+        if (!r) return [];
+        return JSON.parse(r.value); // [{id, name, gameIds:[]}]
+      } catch { return []; }
     }
-    async function saveSubcollections(list, pid) {
-      await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, profile_id: pid || "default", data: list }, { onConflict: "user_id,profile_id" });
+    function saveSubcollections(list) {
+      await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, data: list }, { onConflict: "user_id" });
     }
 
     function filterBySubcollection(collection, subcollId, customSubcolls) {
@@ -2166,134 +2085,7 @@
     }
 
     // ─── Main App ─────────────────────────────────────────────────────────────
-    // ─── BGG token editor (MeepleLog Settings tab) ───────────────────────────
-    function MlTokenEditor({ currentToken, onSaved }) {
-      const [editing,    setEditing]    = React.useState(false);
-      const [token,      setToken]      = React.useState(currentToken || "");
-      const [validating, setValidating] = React.useState(false);
-      const [error,      setError]      = React.useState(null);
-      const [saved,      setSaved]      = React.useState(false);
-
-      const save = async () => {
-        setError(null); setSaved(false);
-        if (!token.trim()) { setError("Enter a token."); return; }
-        setValidating(true);
-        const { valid, error: err } = await validateBggToken(token.trim());
-        setValidating(false);
-        if (!valid) { setError(`Could not validate: ${err}`); return; }
-        await saveMlConfig({ bgg_token: token.trim() });
-        onSaved(token.trim());
-        setEditing(false); setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-      };
-      const remove = async () => {
-        await saveMlConfig({ bgg_token: null });
-        onSaved(null); setToken(""); setEditing(false);
-      };
-
-      if (!editing) return (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 200, background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "9px 14px", fontFamily: "'DM Mono', monospace", fontSize: 13, color: currentToken ? "#4a6080" : "#1e2d3d" }}>
-            {currentToken ? "••••••••" + currentToken.slice(-6) : "No token — using public BGG API"}
-          </div>
-          <button onClick={() => { setToken(currentToken || ""); setEditing(true); setError(null); setSaved(false); }}
-            style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
-            onMouseEnter={e => e.currentTarget.style.borderColor = "#e2c97e"}
-            onMouseLeave={e => e.currentTarget.style.borderColor = "#e2c97e44"}>
-            {currentToken ? "Change" : "Add token"}
-          </button>
-          {currentToken && <button onClick={remove} style={{ background: "transparent", color: "#f87171", border: "1px solid #f8717133", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>Remove</button>}
-          {saved && <span style={{ color: "#4ade80", fontSize: 13 }}>✓ Saved</span>}
-        </div>
-      );
-
-      return (
-        <div>
-          <input type="password" value={token} onChange={e => setToken(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && save()} placeholder="paste BGG token…" autoFocus
-            style={{ width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "10px 14px", color: "#e2e8f0", fontSize: 14, fontFamily: "'DM Mono', monospace", marginBottom: 10 }}
-            onFocus={e => e.target.style.borderColor = "#e2c97e66"}
-            onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
-          {error && <div style={{ color: "#f87171", fontSize: 12, marginBottom: 10 }}>{error}</div>}
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={save} disabled={validating}
-              style={{ background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 8, padding: "9px 18px", cursor: validating ? "default" : "pointer", fontWeight: 700, fontSize: 13, opacity: validating ? 0.6 : 1 }}>
-              {validating ? "Validating…" : "Save"}
-            </button>
-            <button onClick={() => { setEditing(false); setError(null); }}
-              style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    // ─── BGG API key setup screen (first run) ─────────────────────────────────
-    function BggApiKeySetup({ onSaved, onSkip }) {
-      const [token,      setToken]      = React.useState("");
-      const [validating, setValidating] = React.useState(false);
-      const [error,      setError]      = React.useState(null);
-
-      const save = async () => {
-        setError(null);
-        if (!token.trim()) { setError("Enter a BGG API token, or skip below."); return; }
-        setValidating(true);
-        const { valid, error: err } = await validateBggToken(token.trim());
-        setValidating(false);
-        if (!valid) { setError(`Could not validate: ${err}. You can skip and add it later in Settings.`); return; }
-        await saveMlConfig({ bgg_token: token.trim() });
-        onSaved(token.trim());
-      };
-
-      return (
-        <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0d1825 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 18, padding: "40px 44px", width: 520, boxShadow: "0 40px 120px rgba(0,0,0,0.7)" }}>
-            <div style={{ textAlign: "center", marginBottom: 28 }}>
-              <div style={{ fontSize: 44, marginBottom: 6 }}>🎲</div>
-              <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 32, letterSpacing: "-0.02em", margin: 0 }}>
-                <span style={{ color: "#e2c97e" }}>Meeple</span><span style={{ color: "#60a5fa" }}>Log</span>
-              </h1>
-              <div style={{ color: "#4a6080", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>Your board game collection</div>
-            </div>
-            <h2 style={{ fontSize: 15, color: "#e2e8f0", marginBottom: 10, fontWeight: 600 }}>One-time setup</h2>
-            <p style={{ color: "#7a90a8", fontSize: 13, lineHeight: 1.6, marginBottom: 6 }}>
-              Add your BoardGameGeek API token to search and import games automatically.
-            </p>
-            <p style={{ color: "#4a6080", fontSize: 12, lineHeight: 1.6, marginBottom: 18 }}>
-              Get a free token at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace" }}>boardgamegeek.com</code> → Account → Preferences → API Token.
-            </p>
-            <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>BGG API Token</label>
-            <input type="password" value={token} onChange={e => setToken(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && save()} placeholder="paste your token here…"
-              style={{ width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14, fontFamily: "'DM Mono', monospace" }}
-              onFocus={e => e.target.style.borderColor = "#e2c97e66"}
-              onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
-            {error && <div style={{ marginTop: 12, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>{error}</div>}
-            <button onClick={save} disabled={validating}
-              style={{ width: "100%", marginTop: 18, background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: validating ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: validating ? 0.6 : 1 }}>
-              {validating ? "Validating…" : "Save & start logging"}
-            </button>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "20px 0 16px" }}>
-              <div style={{ flex: 1, height: 1, background: "#1a2535" }} />
-              <span style={{ fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>or</span>
-              <div style={{ flex: 1, height: 1, background: "#1a2535" }} />
-            </div>
-            <button onClick={() => { saveMlConfig({ bgg_token: null }); onSkip(); }}
-              style={{ width: "100%", background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = "#3d526a"; e.currentTarget.style.color = "#94a3b8"; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = "#1e2d3d"; e.currentTarget.style.color = "#7a90a8"; }}>
-              Skip — add token later in Settings
-            </button>
-          </div>
-        </div>
-      );
-    }
-
     function App({ logoSlot, profileId }) {
-      const [bggToken,       setBggToken]       = useState(null);
-      const [setupDone,      setSetupDone]      = useState(false);
-      const [mlLoading,      setMlLoading]      = useState(true);
       const [collection,     setCollection]     = useState([]);
       const [customSubcolls, setCustomSubcolls] = useState([]);
       const [activeSubcoll,  setActiveSubcoll]  = useState("all");
@@ -2302,16 +2094,12 @@
       useEffect(() => {
         (async () => {
           try {
-            const pid = profileId || "default";
-            const [col, subcollData, cfg] = await Promise.all([
-              loadCollection(pid),
-              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid).single(),
-              loadMlConfig(),
+            const [col, subcollData] = await Promise.all([
+              loadCollection(),
+              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single()
             ]);
             setCollection(col);
             setSubcollections(subcollData.data?.data || []);
-            setBggToken(cfg.bgg_token || null);
-            setSetupDone(cfg.bgg_token !== undefined);
           } catch(e) { console.error("ML load error:", e); }
           finally { setMlLoading(false); }
         })();
@@ -2331,7 +2119,10 @@
       const [activeWishlistTag, setActiveWishlistTag] = useState(null);
       const [newWishlistTag, setNewWishlistTag]   = useState("");
 
-      // data loaded by async useEffect above
+      useEffect(() => {
+        setCollection(loadCollection());
+        setCustomSubcolls(loadSubcollections());
+      }, []);
 
       const isFirstRender = useRef(true);
       useEffect(() => {
@@ -2503,11 +2294,10 @@
         </div>
       );
 
-      if (!setupDone) return (
-        <BggApiKeySetup
-          onSaved={token => { setBggToken(token); setSetupDone(true); }}
-          onSkip={() => setSetupDone(true)}
-        />
+      if (mlLoading) return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ color: "#3d526a", fontSize: 14 }}>Loading collection…</div>
+        </div>
       );
 
       return (
@@ -2563,14 +2353,6 @@
           {activeTab === "settings" ? (
             <main style={{ maxWidth: 720, margin: "0 auto", padding: "36px 28px 60px" }}>
               <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 28, color: "#e2c97e", marginBottom: 28 }}>Settings</h1>
-              <section style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, padding: "24px 28px", marginBottom: 20 }}>
-                <h2 style={{ fontSize: 14, color: "#94a3b8", fontWeight: 700, marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.07em" }}>BoardGameGeek API Token</h2>
-                <p style={{ color: "#4a6080", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>
-                  Your personal BGG token for searching and importing games. Get one at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace" }}>boardgamegeek.com</code> → Account → Preferences → API Token.
-                </p>
-                <MlTokenEditor currentToken={bggToken} onSaved={t => setBggToken(t)} />
-              </section>
-
               <section style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, padding: "24px 28px", marginBottom: 20 }}>
                 <h2 style={{ fontSize: 14, color: "#94a3b8", fontWeight: 700, marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.07em" }}>Backup &amp; Import</h2>
                 <p style={{ color: "#4a6080", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>Export your full collection to CSV or XML, or restore from a backup.</p>
@@ -4613,12 +4395,12 @@
         setValidating(false);
         if (!valid) { setError(`Invalid key: ${error}`); return; }
         // Preserve any existing config (e.g. activeProfileId, currency) when saving the key
-        saveConfig({ apiKey: key.trim(), offlineMode: false });
+        saveConfig({ ...loadConfig(), apiKey: key.trim(), offlineMode: false });
         onSaved(key.trim());
       };
 
       const goOffline = () => {
-        saveConfig({ apiKey: null, offlineMode: true });
+        saveConfig({ ...loadConfig(), apiKey: null, offlineMode: true });
         onWorkOffline && onWorkOffline();
       };
 
@@ -4684,26 +4466,28 @@
 
     // ─── Main App ─────────────────────────────────────────────────────────────
     function App({ logoSlot, profileId }) {
-      const [ptLoading,       setPtLoading]       = useState(true);
-      const [apiKey,          setApiKey]           = useState(null);
-      const [offlineMode,     setOfflineMode]      = useState(false);
-      const [currency,        setCurrency]         = useState("EUR");
-      const [library,         setLibrary]          = useState([]);
-      const [lists,           setLists]            = useState([]);
-      const [activeList,      setActiveList]       = useState("all");
-      const [selected,        setSelected]         = useState(null);
-      const [showSearch,      setShowSearch]       = useState(false);
-      const [searchAsWishlist,setSearchAsWishlist] = useState(false);
-      const [activeTab,       setActiveTab]        = useState("library");
-      const [filterQ,         setFilterQ]          = useState("");
-      const [sortBy,          setSortBy]           = useState("added");
-      const [newListName,     setNewListName]      = useState("");
-      const [renamingId,      setRenamingId]       = useState(null);
-      const [renameVal,       setRenameVal]        = useState("");
-      const [confirmDeleteList,setConfirmDeleteList]= useState(null);
-      const [profileMenuOpen, setProfileMenuOpen]  = useState(false);
+      const [ptLoading,   setPtLoading]   = useState(true);
+      const [apiKey,      setApiKey]      = useState(null);
+      const [offlineMode, setOfflineMode] = useState(false);
+      const [currency,    setCurrency]    = useState("EUR");
+      const [library,     setLibrary]    = useState([]);
+      const [lists, setLists] = useState([]);
+      const [activeList, setActiveList] = useState("all");
+      const [selected, setSelected] = useState(null);
+      const [showSearch, setShowSearch] = useState(false);
+      const [searchAsWishlist, setSearchAsWishlist] = useState(false);
+      const [activeTab, setActiveTab] = useState("library");
+      const [filterQ, setFilterQ] = useState("");
+      const [sortBy, setSortBy] = useState("added");
+      const [newListName, setNewListName] = useState("");
+      const [renamingId, setRenamingId] = useState(null);
+      const [renameVal, setRenameVal] = useState("");
+      const [confirmDeleteList, setConfirmDeleteList] = useState(null);
+      const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
-      // Load all data from Supabase on mount / when profileId changes
+      const accent = "#e2c97e";
+
+      // Load data from Supabase on mount and when profileId changes
       useEffect(() => {
         (async () => {
           setPtLoading(true);
@@ -4720,8 +4504,6 @@
           finally { setPtLoading(false); }
         })();
       }, [profileId]);
-
-      const accent = "#e2c97e";
 
       // Persist library / lists whenever they change (skipped on first render of a profile)
       const lastSavedFor = useRef({ profile: null, library: false, lists: false });
@@ -4845,25 +4627,24 @@
       const activeCustom = lists.find(l => l.id === activeList);
 
       // ── Profile management handlers ──
-      const createProfile = (name, colorId) => null; // managed by shell
+      const createProfile = (name, colorId) => null;
 
       const renameProfile = (id, newName) => {};
 
       const setProfileColor = (id, colorId) => {};
 
-      const deleteProfile = (id) => {}; // managed by shell
+      const deleteProfile = (id) => {};
 
       const switchProfile = (id) => { setProfileMenuOpen(false); };
 
       // ── Gating ──
-      // 0. Loading guard
+      // (profile gating moved to shell)
+
       if (ptLoading) return (
         <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ color: "#3d526a", fontSize: 14 }}>Loading library…</div>
         </div>
       );
-
-      // profiles managed by shell
 
       return (
         <div style={{ minHeight: "100vh", background: "#060d14" }}>
@@ -4898,7 +4679,7 @@
               <div style={{ position: "relative", marginLeft: 4 }}>
                 <button onClick={() => setProfileMenuOpen(o => !o)}
                   style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-                  <ProfileChip profile={activeProfile} size={36} />
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#1a2535", border: "1px solid #2d3f55", display: "flex", alignItems: "center", justifyContent: "center", color: "#60a5fa", fontSize: 16 }}>📖</div>
                   <span style={{ color: "#3d526a", fontSize: 11, transform: profileMenuOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▾</span>
                 </button>
 
@@ -4910,7 +4691,7 @@
                     <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 8, background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 12, minWidth: 220, padding: 6, zIndex: 91, boxShadow: "0 16px 48px rgba(0,0,0,0.6)" }}>
                       <div style={{ padding: "8px 12px 4px", fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>Profiles</div>
                       {profiles.map(p => {
-                        const isActive = p.id === profileId;
+                        const isActive = p.id === activeProfileId;
                         const c = colorOf(p.color);
                         return (
                           <button key={p.id} onClick={() => switchProfile(p.id)}
@@ -4953,17 +4734,17 @@
                 currency={currency}
                 onApiKeyChange={(k) => {
                   // Setting a key always exits offline mode
-                  saveConfig({ apiKey: k, offlineMode: false });
+                  saveConfig({ ...loadConfig(), apiKey: k, offlineMode: false });
                   setApiKey(k);
                   setOfflineMode(false);
                 }}
                 onGoOffline={() => {
-                  saveConfig({ apiKey: null, offlineMode: true });
+                  saveConfig({ ...loadConfig(), apiKey: null, offlineMode: true });
                   setApiKey(null);
                   setOfflineMode(true);
                 }}
                 onCurrencyChange={(c) => {
-                  saveConfig({ currency: c });
+                  saveConfig({ ...loadConfig(), currency: c });
                   setCurrency(c);
                 }}
                 library={library}
@@ -4981,7 +4762,7 @@
                   setLists(result.lists);
                 }}
                 profiles={profiles}
-                activeProfileId={profileId}
+                activeProfileId={activeProfileId}
                 onCreateProfile={(name, colorId) => { createProfile(name, colorId); }}
                 onRenameProfile={renameProfile}
                 onSetProfileColor={setProfileColor}
@@ -5350,7 +5131,7 @@
     }
 
     function SettingsPanel({ apiKey, offlineMode, currency, onApiKeyChange, onGoOffline, onCurrencyChange, library, lists, onImport,
-                              profiles: [], activeProfileId: profileId,
+                              profiles, activeProfileId,
                               onCreateProfile, onRenameProfile, onSetProfileColor,
                               onDeleteProfile, onSwitchProfile }) {
       const [key, setKey] = useState(apiKey || "");
@@ -5387,13 +5168,341 @@
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 
-          {/* Profiles — managed by shell */}
+          {/* Profiles */}
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
-            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 12 }}>Profiles</div>
-            <div style={{ fontSize: 13, color: "#4a6080", lineHeight: 1.6 }}>
-              Profiles are managed from the TrackHub home screen. Go back to switch or create profiles.
+            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 14 }}>Profiles</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {profiles.map(p => {
+                const isActive = p.id === activeProfileId;
+                const c = colorOf(p.color);
+                const isEditing = editingId === p.id;
+                return (
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: isActive ? `${c}10` : "#080f18", border: `1px solid ${isActive ? `${c}33` : "#1a2535"}`, borderRadius: 10 }}>
+                    <ProfileChip profile={p} size={36} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {isEditing ? (
+                        <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") submitRename(p.id); if (e.key === "Escape") setEditingId(null); }}
+                          onBlur={() => submitRename(p.id)}
+                          style={{ width: "100%", background: "#0a1520", border: `1px solid ${c}66`, borderRadius: 6, padding: "5px 10px", color: "#e2e8f0", fontSize: 14, fontFamily: "'Playfair Display', serif" }} />
+                      ) : (
+                        <div style={{ fontSize: 15, fontFamily: "'Playfair Display', serif", color: c, fontWeight: 600 }}>
+                          {p.name}
+                          {isActive && <span style={{ marginLeft: 8, fontSize: 10, color: "#3d526a", fontFamily: "'DM Sans', sans-serif", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Active</span>}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Color picker dots */}
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {PROFILE_COLORS.map(col => (
+                        <button key={col.id} onClick={() => onSetProfileColor(p.id, col.id)}
+                          title={col.id}
+                          style={{ width: 14, height: 14, borderRadius: "50%", background: col.value, border: p.color === col.id ? "2px solid #e2e8f0" : "2px solid transparent", cursor: "pointer", padding: 0, opacity: p.color === col.id ? 1 : 0.5, transition: "opacity 0.15s" }}
+                          onMouseEnter={(e) => e.currentTarget.style.opacity = "1"}
+                          onMouseLeave={(e) => e.currentTarget.style.opacity = p.color === col.id ? "1" : "0.5"} />
+                      ))}
+                    </div>
+
+                    <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+                      {!isActive && (
+                        <button onClick={() => onSwitchProfile(p.id)} title="Switch to this profile"
+                          style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
+                          Switch
+                        </button>
+                      )}
+                      {!isEditing && (
+                        <button onClick={() => { setEditingId(p.id); setEditName(p.name); }} title="Rename"
+                          style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 11 }}>
+                          ✎
+                        </button>
+                      )}
+                      {profiles.length > 1 && (
+                        <button onClick={() => setConfirmDelete(p.id)} title="Delete"
+                          style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 11 }}
+                          onMouseEnter={(e) => { e.currentTarget.style.color = "#f87171"; e.currentTarget.style.borderColor = "#5a2a30"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.color = "#7a90a8"; e.currentTarget.style.borderColor = "#1a2535"; }}>
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {creatingNew ? (
+              <div style={{ marginTop: 12, padding: "12px 14px", background: "#080f18", border: `1px dashed ${colorOf(newColor)}66`, borderRadius: 10 }}>
+                <input autoFocus value={newName} onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitNew(); if (e.key === "Escape") { setCreatingNew(false); setNewName(""); } }}
+                  placeholder="Profile name…"
+                  style={{ width: "100%", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 6, padding: "8px 12px", color: "#e2e8f0", fontSize: 13 }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, gap: 10 }}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {PROFILE_COLORS.map(col => (
+                      <button key={col.id} onClick={() => setNewColor(col.id)}
+                        style={{ width: 18, height: 18, borderRadius: "50%", background: col.value, border: newColor === col.id ? "2px solid #e2e8f0" : "2px solid transparent", cursor: "pointer", padding: 0, opacity: newColor === col.id ? 1 : 0.5 }} />
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => { setCreatingNew(false); setNewName(""); }}
+                      style={{ background: "transparent", border: "1px solid #1a2535", color: "#94a3b8", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                    <button onClick={submitNew} disabled={!newName.trim()}
+                      style={{ background: newName.trim() ? colorOf(newColor) : "#1a2535", color: newName.trim() ? "#0f172a" : "#3d526a", border: "none", borderRadius: 6, padding: "6px 14px", cursor: newName.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 12 }}>Create</button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setCreatingNew(true)}
+                style={{ marginTop: 12, background: "transparent", border: "1px dashed #2d3f55", color: "#7a90a8", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 12, width: "100%" }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#e2c97e66"; e.currentTarget.style.color = "#e2c97e"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#2d3f55"; e.currentTarget.style.color = "#7a90a8"; }}>
+                + Add profile
+              </button>
+            )}
+          </div>
+
+          {/* Mode + API key */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+              <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Google Books API Key</div>
+              <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                background: offlineMode ? "#94a3b822" : "#4ade8022",
+                color:      offlineMode ? "#94a3b8" : "#4ade80",
+                border:     offlineMode ? "1px solid #94a3b844" : "1px solid #4ade8044" }}>
+                {offlineMode ? "● Offline" : "● Online"}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 12 }}>
+              {offlineMode
+                ? "You're working offline — only manual entry is available. Add a key to enable search."
+                : "Shared across all profiles. Enables Title / Author and ISBN search."}
+            </div>
+            <input type="password" value={key} onChange={(e) => setKey(e.target.value)}
+              placeholder={offlineMode ? "Paste a key to switch to online mode…" : "AIzaSy…"}
+              style={{ width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, fontFamily: "'DM Mono', monospace" }}
+              onFocus={(e) => e.target.style.borderColor = "#e2c97e44"}
+              onBlur={(e) => e.target.style.borderColor = "#1e2d3d"} />
+            <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={update} disabled={validating}
+                style={{ background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 8, padding: "9px 20px", cursor: validating ? "default" : "pointer", fontWeight: 700, fontSize: 13, opacity: validating ? 0.6 : 1 }}>
+                {validating ? "Validating…" : (offlineMode ? "Save & go online" : "Update")}
+              </button>
+              {!offlineMode && onGoOffline && (
+                <button onClick={() => { onGoOffline(); setKey(""); setMsg({ type: "ok", text: "Switched to offline mode." }); }}
+                  style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 16px", cursor: "pointer", fontSize: 13 }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#3d526a"; e.currentTarget.style.color = "#94a3b8"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#1e2d3d"; e.currentTarget.style.color = "#7a90a8"; }}>
+                  Go offline
+                </button>
+              )}
+            </div>
+            {msg && (
+              <div style={{ marginTop: 12, padding: "9px 14px", borderRadius: 8, fontSize: 13,
+                background: msg.type === "error" ? "#2d1518" : "#0a1f0a",
+                border: msg.type === "error" ? "1px solid #5a2a30" : "1px solid #1a3d1a",
+                color: msg.type === "error" ? "#f87171" : "#4ade80" }}>
+                {msg.text}
+              </div>
+            )}
+          </div>
+
+          {/* Currency */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
+            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 4 }}>Currency</div>
+            <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 12 }}>
+              Used for purchase prices and spending stats. Existing prices keep their numeric value — only the symbol changes.
+            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <select value={currency} onChange={(e) => onCurrencyChange && onCurrencyChange(e.target.value)}
+                style={{ background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, cursor: "pointer", minWidth: 220 }}>
+                {CURRENCIES.map(c => (
+                  <option key={c.code} value={c.code}>{c.label}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 12, color: "#4a6080", fontFamily: "'DM Mono', monospace" }}>
+                e.g. {formatPrice(19.95, currency)}
+              </span>
             </div>
           </div>
+
+          {/* Data summary */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "20px 22px" }}>
+            <div style={{ fontSize: 11, color: "#6b8199", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 12 }}>Data (this profile)</div>
+            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>
+              Stored locally at <code style={{ background: "#080f18", padding: "1px 6px", borderRadius: 3, color: "#60a5fa", fontFamily: "'DM Mono', monospace", fontSize: 12 }}>plottwist-data/profiles/{activeProfileId}/</code>
+            </div>
+            <div style={{ fontSize: 12, color: "#4a6080", fontFamily: "'DM Mono', monospace", marginTop: 10 }}>
+              {library.length} books · {library.filter(b => effectiveBucket(b) === "read").length} read · {library.filter(b => effectiveBucket(b) === "reading").length} reading · {library.filter(b => effectiveBucket(b) === "onhold").length} on hold · {library.filter(b => effectiveBucket(b) === "sleeping").length} sleeping · {library.filter(b => effectiveBucket(b) === "wishlist").length} wishlist
+            </div>
+          </div>
+
+          {/* Backup & sharing */}
+          <ExportImportPanel
+            library={library}
+            lists={lists}
+            profileName={profiles.find(p => p.id === activeProfileId)?.name}
+            onImport={onImport}
+          />
+
+          {/* Confirm delete profile modal */}
+          {confirmDelete && (() => {
+            const p = profiles.find(x => x.id === confirmDelete);
+            if (!p) return null;
+            return (
+              <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(0,0,0,0.88)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+                onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
+                <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 12, padding: 24, width: 440 }}>
+                  <div style={{ fontSize: 16, color: "#e2e8f0", marginBottom: 8, fontWeight: 600 }}>Delete profile <span style={{ color: colorOf(p.color), fontFamily: "'Playfair Display', serif" }}>{p.name}</span>?</div>
+                  <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 18, lineHeight: 1.5 }}>
+                    All of <strong>{p.name}</strong>'s books, lists and reading data will be permanently deleted. This cannot be undone.
+                  </div>
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                    <button onClick={() => setConfirmDelete(null)}
+                      style={{ background: "transparent", border: "1px solid #1a2535", color: "#94a3b8", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+                    <button onClick={() => { onDeleteProfile(p.id); setConfirmDelete(null); }}
+                      style={{ background: "#f87171", border: "none", color: "#0f172a", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Delete profile</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      );
+    }
+
+      return App;
+    })();
+    // ─── Module switcher ──────────────────────────────────────────────────────
+    function ModuleSwitcher({ active, modules, onChange }) {
+      const [open, setOpen] = useState(false);
+      const mod = modules.find(m => m.id === active);
+      return (
+        <div style={{ position: "relative", marginRight: 28 }}>
+          <button onClick={() => setOpen(o => !o)}
+            style={{ display: "flex", alignItems: "center", gap: 10, background: "none", border: "none", cursor: "pointer", padding: "4px 8px 4px 0", borderRadius: 8 }}>
+            <span style={{ fontSize: 20 }}>{mod.icon}</span>
+            <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 19, letterSpacing: "-0.02em" }}>
+              <span style={{ color: mod.accentA }}>{mod.label.slice(0, Math.ceil(mod.label.length / 2))}</span>
+              <span style={{ color: mod.accentB }}>{mod.label.slice(Math.ceil(mod.label.length / 2))}</span>
+            </span>
+            <span style={{ color: "#2d3f55", fontSize: 10, marginLeft: 2, display: "inline-block", transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
+          </button>
+          {open && (
+            <>
+              <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 98 }} />
+              <div style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: 6, zIndex: 99, minWidth: 200, boxShadow: "0 20px 60px rgba(0,0,0,0.7)" }}>
+                <div style={{ padding: "6px 12px 4px", fontSize: 10, color: "#2d3f55", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>Switch tracker</div>
+                {modules.map(m => {
+                  const isActive = m.id === active;
+                  return (
+                    <button key={m.id} onClick={() => { onChange(m.id); setOpen(false); }}
+                      style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: isActive ? "#e2c97e12" : "transparent", border: "none", cursor: "pointer", borderRadius: 8, textAlign: "left" }}
+                      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "#0a1520"; }}
+                      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}>
+                      <span style={{ fontSize: 18 }}>{m.icon}</span>
+                      <span style={{ fontSize: 13, fontWeight: isActive ? 700 : 500, color: isActive ? m.accentA : "#94a3b8" }}>{m.label}</span>
+                      {isActive && <span style={{ marginLeft: "auto", color: m.accentA, fontSize: 12 }}>●</span>}
+                    </button>
+                  );
+                })}
+                <div style={{ borderTop: "1px solid #1a2535", margin: "6px 0" }} />
+                <div style={{ padding: "6px 12px 2px", fontSize: 10, color: "#1e2d3d", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>Coming soon</div>
+                <div style={{ padding: "8px 12px", fontSize: 12, color: "#1e2d3d", fontStyle: "italic" }}>New trackers will appear here</div>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ─── TrackHub shell ────────────────────────────────────────────────────────
+    function TrackHub() {
+      const [user,            setUser]            = useState(null);
+      const [username,        setUsername]        = useState(null);
+      const [authLoading,     setAuthLoading]     = useState(true);
+      const [activeId,        setActiveId]        = useState(null);
+      const [profiles,        setProfiles]        = useState([]);
+      const [activeProfileId, setActiveProfileId] = useState(null);
+
+      const loadAll = async (u) => {
+        const [uname, profs, lastProfId] = await Promise.all([
+          getUsernameForUser(u.id), loadSharedProfiles(), loadShellActiveProfile(),
+        ]);
+        setUsername(uname); setProfiles(profs);
+        setActiveProfileId(lastProfId || profs[0]?.id || null);
+      };
+
+      useEffect(() => {
+        _sb.auth.getSession().then(async ({ data: { session } }) => {
+          if (session?.user) { _sbUser = session.user; setUser(session.user); await loadAll(session.user); }
+          setAuthLoading(false);
+        });
+        const { data: { subscription } } = _sb.auth.onAuthStateChange((_event, session) => {
+          if (session?.user) { _sbUser = session.user; setUser(session.user); }
+          else { _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); }
+        });
+        return () => subscription.unsubscribe();
+      }, []);
+
+      if (authLoading) return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ color: "#3d526a", fontSize: 14 }}>Loading…</div>
+        </div>
+      );
+
+      if (!user) return <AuthScreen onAuth={async u => { _sbUser = u; setUser(u); await loadAll(u); }} />;
+
+      const handleSignOut = async () => { await _sb.auth.signOut(); _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); };
+
+      const handleProfileSelect = (id) => { setActiveProfileId(id); saveShellActiveProfile(id); };
+      const handleProfileCreate = async (profile) => {
+        await saveSharedProfile(profile);
+        const profs = await loadSharedProfiles(); setProfiles(profs); handleProfileSelect(profile.id);
+      };
+      const handleProfileDelete = async (id) => {
+        await deleteSharedProfile(id);
+        await Promise.all([
+          _sb.from("ml_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("ml_subcollections").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("pt_library").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("pt_lists").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+        ]);
+        const profs = await loadSharedProfiles(); setProfiles(profs);
+        if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
+      };
+      const activeProfile = profiles.find(p => p.id === activeProfileId) || null;
+      if (!activeId) return (
+        <HomeScreen username={username} profiles={profiles} activeProfileId={activeProfileId}
+          onSelect={id => setActiveId(id)} onSignOut={handleSignOut}
+          onProfileCreate={handleProfileCreate} onProfileDelete={handleProfileDelete}
+          onProfileSelect={handleProfileSelect} />
+      );
+      const pColor = activeProfile ? profileColorOf(activeProfile.color) : "#e2c97e";
+      const logoSlot = (
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <ModuleSwitcher active={activeId} modules={MODULE_REGISTRY} onChange={setActiveId} />
+          <button onClick={() => setActiveId(null)}
+            style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: "3px 6px", borderRadius: 8 }}
+            onMouseEnter={e => e.currentTarget.style.background = "#0d1825"}
+            onMouseLeave={e => e.currentTarget.style.background = "none"}>
+            {activeProfile && <div style={{ width: 24, height: 24, borderRadius: "50%", background: pColor + "22", border: `2px solid ${pColor}`, color: pColor, fontWeight: 700, fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>{activeProfile.name.charAt(0).toUpperCase()}</div>}
+            <span style={{ color: "#3d526a", fontSize: 12, fontWeight: 600 }}>{activeProfile?.name || username}</span>
+          </button>
+        </div>
+      );
+      return (
+        <div style={{ minHeight: "100vh", background: "#060d14" }}>
+          {activeId === "meeplelog" && <MeepleLogApp logoSlot={logoSlot} profileId={activeProfileId} />}
+          {activeId === "plottwist" && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} />}
+        </div>
+      )
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><TrackHub /></ErrorBoundary>);
+  </script>
+</body>
+</html>
 
 
 
