@@ -25,6 +25,35 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
+    // ─── Error boundary ───────────────────────────────────────────────────────
+    class ErrorBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { error: null }; }
+      static getDerivedStateFromError(e) { return { error: e }; }
+      componentDidCatch(e, info) { console.error("TrackHub error:", e, info); }
+      render() {
+        if (this.state.error) return (
+          <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+            <div style={{ background: "#1a0a0a", border: "1px solid #5a2a30", borderRadius: 14, padding: "28px 32px", maxWidth: 640, width: "100%" }}>
+              <div style={{ color: "#f87171", fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Something went wrong</div>
+              <pre style={{ color: "#f87171", fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "'DM Mono', monospace", opacity: 0.8 }}>
+                {this.state.error.message}
+              </pre>
+              {this.state.error.stack && (
+                <pre style={{ color: "#4a6080", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "'DM Mono', monospace", marginTop: 12, maxHeight: 300, overflow: "auto" }}>
+                  {this.state.error.stack}
+                </pre>
+              )}
+              <button onClick={() => window.location.reload()}
+                style={{ marginTop: 20, background: "#1a2535", border: "1px solid #2d3f55", borderRadius: 8, padding: "8px 18px", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>
+                Reload
+              </button>
+            </div>
+          </div>
+        );
+        return this.props.children;
+      }
+    }
+
     // ─── Supabase client ──────────────────────────────────────────────────────
     const _sb = supabase.createClient(
       "https://kedjdmfmvrgdkyikgrqe.supabase.co",
@@ -5531,7 +5560,7 @@
       );
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<TrackHub />);
+    ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><TrackHub /></ErrorBoundary>);
   </script>
 </body>
 </html>
