@@ -2086,6 +2086,7 @@
 
     // ─── Main App ─────────────────────────────────────────────────────────────
     function App({ logoSlot, profileId }) {
+      const [mlLoading,      setMlLoading]      = useState(true);
       const [collection,     setCollection]     = useState([]);
       const [customSubcolls, setCustomSubcolls] = useState([]);
       const [activeSubcoll,  setActiveSubcoll]  = useState("all");
@@ -2093,17 +2094,19 @@
 
       useEffect(() => {
         (async () => {
+          setMlLoading(true);
           try {
+            const pid = profileId || "default";
             const [col, subcollData] = await Promise.all([
-              loadCollection(),
-              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).single()
+              loadCollection(pid),
+              _sb.from("ml_subcollections").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid).single()
             ]);
             setCollection(col);
             setSubcollections(subcollData.data?.data || []);
           } catch(e) { console.error("ML load error:", e); }
           finally { setMlLoading(false); }
         })();
-      }, []);
+      }, [profileId]);
       const [searchAsWishlist, setSearchAsWishlist] = useState(false);
       const [showExport,     setShowExport]     = useState(false);
       const [selectedEntry,  setSelectedEntry]  = useState(null);
@@ -4527,10 +4530,7 @@
       // Persist profiles index
       const isFirstProfilesRender = useRef(true);
       // (profile persistence handled by shell)
-      useEffect(() => {
-        if (isFirstProfilesRender.current) { isFirstProfilesRender.current = false; return; }
-        saveProfiles(profiles);
-      }, [profiles]);
+      // (profile persistence removed)
 
       // Persist active profile id whenever it changes
       // (profile managed by TrackHub shell)
@@ -5350,5 +5350,6 @@
   </script>
 </body>
 </html>
+
 
 
