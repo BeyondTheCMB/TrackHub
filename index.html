@@ -5550,10 +5550,79 @@
     }
 
     // ─── TrackHub shell ────────────────────────────────────────────────────────
+    // ─── Password reset screen (shown after clicking email link) ────────────
+    function PasswordResetScreen({ onDone }) {
+      const [password,  setPassword]  = useState("");
+      const [confirm,   setConfirm]   = useState("");
+      const [loading,   setLoading]   = useState(false);
+      const [error,     setError]     = useState(null);
+      const [success,   setSuccess]   = useState(false);
+
+      const handle = async () => {
+        setError(null);
+        if (!password) { setError("Enter a new password."); return; }
+        if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+        if (password !== confirm) { setError("Passwords don't match."); return; }
+        setLoading(true);
+        try {
+          const { error: e } = await _sb.auth.updateUser({ password });
+          if (e) throw e;
+          setSuccess(true);
+          setTimeout(onDone, 1500);
+        } catch(e) { setError(e.message); }
+        finally { setLoading(false); }
+      };
+
+      const inputStyle = { width: "100%", background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 10, padding: "11px 14px", color: "#e2e8f0", fontSize: 14 };
+
+      return (
+        <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #060d14 0%, #0d1825 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderRadius: 18, padding: "40px 44px", width: 420, boxShadow: "0 40px 120px rgba(0,0,0,0.7)" }}>
+            <div style={{ textAlign: "center", marginBottom: 32 }}>
+              <div style={{ fontSize: 44, marginBottom: 8 }}>🔑</div>
+              <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 28, letterSpacing: "-0.02em", margin: 0, color: "#e2e8f0" }}>Set new password</h1>
+              <div style={{ color: "#4a6080", fontSize: 13, marginTop: 6 }}>Choose a new password for your account</div>
+            </div>
+
+            {success ? (
+              <div style={{ textAlign: "center", padding: "20px 0" }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>✓</div>
+                <div style={{ color: "#4ade80", fontSize: 15, fontWeight: 600 }}>Password updated!</div>
+                <div style={{ color: "#3d526a", fontSize: 13, marginTop: 6 }}>Taking you to the app…</div>
+              </div>
+            ) : (
+              <>
+                <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>New password</label>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
+                  autoComplete="new-password" autoFocus
+                  style={{ ...inputStyle, marginBottom: 14 }}
+                  onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+                  onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+                <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Confirm password</label>
+                <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
+                  autoComplete="new-password"
+                  style={{ ...inputStyle, marginBottom: 20 }}
+                  onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+                  onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+                {error && <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>{error}</div>}
+                <button onClick={handle} disabled={loading}
+                  style={{ width: "100%", background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: loading ? 0.6 : 1 }}>
+                  {loading ? "Updating…" : "Set password"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function TrackHub() {
       const [user,            setUser]            = useState(null);
       const [username,        setUsername]        = useState(null);
       const [authLoading,     setAuthLoading]     = useState(true);
+      const [recovering,      setRecovering]      = useState(false);
       const [activeId,        setActiveId]        = useState(null);
       const [profiles,        setProfiles]        = useState([]);
       const [activeProfileId, setActiveProfileId] = useState(null);
@@ -5571,9 +5640,12 @@
           if (session?.user) { _sbUser = session.user; setUser(session.user); await loadAll(session.user); }
           setAuthLoading(false);
         });
-        const { data: { subscription } } = _sb.auth.onAuthStateChange((_event, session) => {
-          if (session?.user) { _sbUser = session.user; setUser(session.user); }
-          else { _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); }
+        const { data: { subscription } } = _sb.auth.onAuthStateChange((event, session) => {
+          if (event === 'PASSWORD_RECOVERY') {
+            // User clicked reset link — show password change form
+            _sbUser = session.user; setUser(session.user); setRecovering(true);
+          } else if (session?.user) { _sbUser = session.user; setUser(session.user); }
+          else { _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); setRecovering(false); }
         });
         return () => subscription.unsubscribe();
       }, []);
@@ -5585,6 +5657,8 @@
       );
 
       if (!user) return <AuthScreen onAuth={async u => { _sbUser = u; setUser(u); await loadAll(u); }} />;
+
+      if (recovering) return <PasswordResetScreen onDone={() => { setRecovering(false); loadAll(user); }} />;
 
       const handleSignOut = async () => { await _sb.auth.signOut(); _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); };
 
@@ -5680,4 +5754,5 @@
   </script>
 </body>
 </html>
+
 
