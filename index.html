@@ -850,7 +850,7 @@
       } catch { return []; }
     }
     async function saveSubcollections(list) {
-      await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, data: list }, { onConflict: "user_id" });
+      await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, profile_id: pid || "default", data: list }, { onConflict: "user_id,profile_id" });
     }
 
     function filterBySubcollection(collection, subcollId, customSubcolls) {
@@ -2169,6 +2169,7 @@
       const [bggToken,       setBggToken]       = useState(null);
       const [mlLoading,      setMlLoading]      = useState(true);
       const [collection,     setCollection]     = useState([]);
+      const [subcollections, setSubcollections] = useState([]);
       const [customSubcolls, setCustomSubcolls] = useState([]);
       const [activeSubcoll,  setActiveSubcoll]  = useState("all");
       const [showSearch,     setShowSearch]     = useState(false);
@@ -4697,11 +4698,15 @@
           try {
             let fresh = null;
             if (book.googleBooksId) {
+              // Direct volume lookup — most reliable, least rate-limited
               fresh = await fetchWithRetry(() => gbGetVolume(book.googleBooksId, apiKey));
-            } else {
+            } else if (book.isbn13 || book.isbn10) {
+              // ISBN search — slower endpoint, only use if no direct ID available
               const isbn = book.isbn13 || book.isbn10;
               const results = await fetchWithRetry(() => gbSearch(`isbn:${isbn}`, apiKey, { maxResults: 1 }));
               if (results && results.length) fresh = results[0];
+              // Save the googleBooksId so future refreshes use direct lookup
+              if (fresh) book.googleBooksId = fresh.googleBooksId || fresh.id;
             }
             if (fresh) updates[book.id] = mergeBook(book, fresh);
             else console.warn("PT refresh: no result for", book.title || book.isbn13);
@@ -4710,7 +4715,7 @@
           }
           done++;
           setPtRefreshProg(Math.round((done / toFetch.length) * 100));
-          await new Promise(r => setTimeout(r, 300));
+          await new Promise(r => setTimeout(r, 1000)); // 1s between requests
         }
 
         setLibrary(cur => cur.map(b => updates[b.id] || b));
@@ -5589,6 +5594,7 @@
   </script>
 </body>
 </html>
+
 
 
 
