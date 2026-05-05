@@ -849,7 +849,7 @@
         return JSON.parse(r.value); // [{id, name, gameIds:[]}]
       } catch { return []; }
     }
-    async function saveSubcollections(list) {
+    async function saveSubcollections(list, pid) {
       await _sb.from("ml_subcollections").upsert({ user_id: _sbUser.id, profile_id: pid || "default", data: list }, { onConflict: "user_id,profile_id" });
     }
 
@@ -5594,6 +5594,7 @@
   </script>
 </body>
 </html>
+
 
 
 
