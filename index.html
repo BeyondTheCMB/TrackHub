@@ -4648,54 +4648,50 @@
         "infoLink","isbn13","isbn10","googleBooksId"];
 
       const refreshAllFromGB = async () => {
-        if (!apiKey) return; // need API key to refresh
-        // Include books with googleBooksId OR isbn13/isbn10 (CSV imports may only have ISBN)
+        if (!apiKey) return;
         const toFetch = library.filter(b => !b.isManual && (b.googleBooksId || b.isbn13 || b.isbn10));
         if (!toFetch.length) return;
         setPtRefreshing(true); setPtRefreshProg(0);
+
+        // Build a map of id → merged book, then apply in one setLibrary call
+        const updates = {};
         let done = 0;
+
         for (const book of toFetch) {
           try {
             let fresh = null;
             if (book.googleBooksId) {
               fresh = await gbGetVolume(book.googleBooksId, apiKey);
             } else {
-              // CSV import: search by ISBN
               const isbn = book.isbn13 || book.isbn10;
               const results = await gbSearch(`isbn:${isbn}`, apiKey, { maxResults: 1 });
               if (results.length) fresh = results[0];
             }
             if (fresh) {
-              setLibrary(cur => cur.map(b => {
-                if (b.id !== book.id) return b;
-                // Merge: for each API field, only overwrite if fresh value is non-null/non-empty
-                // AND (existing value is null/undefined, OR the field is image/cover)
-                const merged = { ...b };
-                for (const field of PT_API_FIELDS) {
-                  const freshVal = fresh[field];
-                  const existVal = b[field];
-                  if (field === "image") {
-                    // Always update image from API if we got one
-                    if (freshVal) merged[field] = upgradeCoverUrl(freshVal);
-                  } else if (field === "pageCount") {
-                    // Only overwrite pageCount if existing is null/0 (user may have set it manually)
-                    if (!existVal && freshVal) merged[field] = freshVal;
-                  } else {
-                    // For other API fields: overwrite only if fresh has a value
-                    if (freshVal !== null && freshVal !== undefined &&
-                        !(Array.isArray(freshVal) && freshVal.length === 0)) {
-                      merged[field] = freshVal;
-                    }
+              const merged = { ...book };
+              for (const field of PT_API_FIELDS) {
+                const freshVal = fresh[field];
+                if (field === "image") {
+                  if (freshVal) merged[field] = upgradeCoverUrl(freshVal);
+                } else if (field === "pageCount") {
+                  if (!merged[field] && freshVal) merged[field] = freshVal;
+                } else {
+                  if (freshVal !== null && freshVal !== undefined &&
+                      !(Array.isArray(freshVal) && freshVal.length === 0)) {
+                    merged[field] = freshVal;
                   }
                 }
-                return merged;
-              }));
+              }
+              updates[book.id] = merged;
             }
           } catch(e) { console.warn("PT refresh error:", book.title, e); }
           done++;
           setPtRefreshProg(Math.round((done / toFetch.length) * 100));
-          await new Promise(r => setTimeout(r, 200)); // gentle rate limiting
+          await new Promise(r => setTimeout(r, 150));
         }
+
+        // Single atomic update — no intermediate re-renders
+        setLibrary(cur => cur.map(b => updates[b.id] || b));
         setPtRefreshing(false); setPtRefreshProg(null);
       };
 
