@@ -4653,44 +4653,66 @@
         if (!toFetch.length) return;
         setPtRefreshing(true); setPtRefreshProg(0);
 
-        // Build a map of id → merged book, then apply in one setLibrary call
         const updates = {};
         let done = 0;
+
+        const mergeBook = (book, fresh) => {
+          const merged = { ...book };
+          for (const field of PT_API_FIELDS) {
+            const freshVal = fresh[field];
+            if (field === "image") {
+              if (freshVal) merged[field] = upgradeCoverUrl(freshVal);
+            } else if (field === "pageCount") {
+              if (!merged[field] && freshVal) merged[field] = freshVal;
+            } else {
+              if (freshVal !== null && freshVal !== undefined &&
+                  !(Array.isArray(freshVal) && freshVal.length === 0)) {
+                merged[field] = freshVal;
+              }
+            }
+          }
+          return merged;
+        };
+
+        const fetchWithRetry = async (fn, retries = 3) => {
+          for (let attempt = 0; attempt < retries; attempt++) {
+            try {
+              return await fn();
+            } catch(e) {
+              const is429 = e.message.includes("429");
+              if (attempt < retries - 1 && is429) {
+                // Exponential backoff: 2s, 4s, 8s
+                await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+              } else if (attempt < retries - 1) {
+                await new Promise(r => setTimeout(r, 500));
+              } else {
+                throw e;
+              }
+            }
+          }
+        };
 
         for (const book of toFetch) {
           try {
             let fresh = null;
             if (book.googleBooksId) {
-              fresh = await gbGetVolume(book.googleBooksId, apiKey);
+              fresh = await fetchWithRetry(() => gbGetVolume(book.googleBooksId, apiKey));
             } else {
               const isbn = book.isbn13 || book.isbn10;
-              const results = await gbSearch(`isbn:${isbn}`, apiKey, { maxResults: 1 });
-              if (results.length) fresh = results[0];
+              const results = await fetchWithRetry(() => gbSearch(`isbn:${isbn}`, apiKey, { maxResults: 1 }));
+              if (results && results.length) fresh = results[0];
             }
-            if (fresh) {
-              const merged = { ...book };
-              for (const field of PT_API_FIELDS) {
-                const freshVal = fresh[field];
-                if (field === "image") {
-                  if (freshVal) merged[field] = upgradeCoverUrl(freshVal);
-                } else if (field === "pageCount") {
-                  if (!merged[field] && freshVal) merged[field] = freshVal;
-                } else {
-                  if (freshVal !== null && freshVal !== undefined &&
-                      !(Array.isArray(freshVal) && freshVal.length === 0)) {
-                    merged[field] = freshVal;
-                  }
-                }
-              }
-              updates[book.id] = merged;
-            }
-          } catch(e) { console.warn("PT refresh error:", book.title, e); }
+            if (fresh) updates[book.id] = mergeBook(book, fresh);
+            else console.warn("PT refresh: no result for", book.title || book.isbn13);
+          } catch(e) {
+            console.warn("PT refresh failed after retries:", book.title, e.message);
+          }
           done++;
           setPtRefreshProg(Math.round((done / toFetch.length) * 100));
-          await new Promise(r => setTimeout(r, 150));
+          // 500ms between requests — well within Google Books quota (1 req/s safe limit)
+          await new Promise(r => setTimeout(r, 500));
         }
 
-        // Single atomic update — no intermediate re-renders
         setLibrary(cur => cur.map(b => updates[b.id] || b));
         setPtRefreshing(false); setPtRefreshProg(null);
       };
@@ -5567,6 +5589,7 @@
   </script>
 </body>
 </html>
+
 
 
 
