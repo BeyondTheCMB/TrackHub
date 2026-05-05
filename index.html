@@ -78,8 +78,8 @@
       const { data } = await _sb.from("user_profiles").select("username").eq("username", username.toLowerCase().trim()).single();
       return !data;
     };
-    const createUserProfile = async (userId, username) => {
-      await _sb.from("user_profiles").insert({ user_id: userId, username: username.toLowerCase().trim() });
+    const createUserProfile = async (userId, username, email = null) => {
+      await _sb.from("user_profiles").insert({ user_id: userId, username: username.toLowerCase().trim(), email });
     };
     const getUsernameForUser = async (userId) => {
       const { data } = await _sb.from("user_profiles").select("username").eq("user_id", userId).single();
@@ -87,36 +87,75 @@
     };
 
     // ─── Auth screen ──────────────────────────────────────────────────────────
+    // Look up a user's real email by username (for login + password reset)
+    const getEmailForUsername = async (username) => {
+      const { data } = await _sb.from("user_profiles")
+        .select("email")
+        .eq("username", username.toLowerCase().trim())
+        .single();
+      // Fall back to fake email if no real email stored
+      return (data && data.email) ? data.email : toFakeEmail(username);
+    };
+
     function AuthScreen({ onAuth }) {
       const [mode,     setMode]     = useState("login");
       const [username, setUsername] = useState("");
+      const [email,    setEmail]    = useState("");
       const [password, setPassword] = useState("");
       const [loading,  setLoading]  = useState(false);
       const [error,    setError]    = useState(null);
+      const [info,     setInfo]     = useState(null);
 
       const validate = () => {
+        if (mode === "reset") {
+          if (!username.trim()) { setError("Enter your username."); return false; }
+          return true;
+        }
         if (!username.trim()) { setError("Choose a username."); return false; }
         if (!/^[a-zA-Z0-9_-]{2,20}$/.test(username.trim())) { setError("Username: 2–20 chars, letters/numbers/_ or -"); return false; }
         if (!password) { setError("Enter a password."); return false; }
         if (mode === "signup" && password.length < 6) { setError("Password must be at least 6 characters."); return false; }
+        if (mode === "signup" && email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+          setError("Enter a valid email address."); return false;
+        }
         return true;
       };
 
       const handle = async () => {
-        setError(null);
+        setError(null); setInfo(null);
         if (!validate()) return;
         setLoading(true);
-        const email = toFakeEmail(username);
         try {
-          if (mode === "signup") {
+          if (mode === "reset") {
+            // Look up real email for this username, then send reset
+            const userEmail = await getEmailForUsername(username);
+            if (userEmail === toFakeEmail(username)) {
+              // No real email stored — can't reset
+              throw new Error("No email address on file for this username. Contact an admin to reset your password.");
+            }
+            const { error: e } = await _sb.auth.resetPasswordForEmail(userEmail, {
+              redirectTo: window.location.origin,
+            });
+            if (e) throw e;
+            setInfo("Password reset link sent! Check your email.");
+          } else if (mode === "signup") {
             const available = await checkUsernameAvailable(username);
             if (!available) { setError("That username is already taken."); setLoading(false); return; }
-            const { data, error: e } = await _sb.auth.signUp({ email, password });
+            // Use real email if provided, otherwise fake email
+            const authEmail = email.trim() ? email.trim().toLowerCase() : toFakeEmail(username);
+            const { data, error: e } = await _sb.auth.signUp({ email: authEmail, password });
             if (e) throw e;
-            await createUserProfile(data.user.id, username);
+            // Store username + real email in profile
+            await _sb.from("user_profiles").insert({
+              user_id: data.user.id,
+              username: username.toLowerCase().trim(),
+              email: email.trim() ? email.trim().toLowerCase() : null,
+            });
             _sbUser = data.user; onAuth(data.user);
           } else {
-            const { data, error: e } = await _sb.auth.signInWithPassword({ email, password });
+            // Login: look up their real email by username
+            const authEmail = await getEmailForUsername(username);
+            const { data, error: e } = await _sb.auth.signInWithPassword({ email: authEmail, password });
             if (e) { if (e.message.includes("Invalid login")) throw new Error("Incorrect username or password."); throw e; }
             _sbUser = data.user; onAuth(data.user);
           }
@@ -134,14 +173,25 @@
               <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 30, letterSpacing: "-0.02em", margin: 0, color: "#e2e8f0" }}>TrackHub</h1>
               <div style={{ color: "#4a6080", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>Your personal collection suite</div>
             </div>
-            <div style={{ display: "flex", gap: 4, marginBottom: 28, background: "#080f18", borderRadius: 10, padding: 4 }}>
-              {[["login","Sign in"],["signup","Create account"]].map(([m, label]) => (
-                <button key={m} onClick={() => { setMode(m); setError(null); }}
-                  style={{ flex: 1, background: mode === m ? "#1a2535" : "transparent", border: "none", borderRadius: 8, padding: "8px 12px", cursor: "pointer", color: mode === m ? "#e2e8f0" : "#3d526a", fontWeight: 600, fontSize: 13 }}>
-                  {label}
-                </button>
-              ))}
-            </div>
+
+            {mode !== "reset" && (
+              <div style={{ display: "flex", gap: 4, marginBottom: 28, background: "#080f18", borderRadius: 10, padding: 4 }}>
+                {[["login","Sign in"],["signup","Create account"]].map(([m, label]) => (
+                  <button key={m} onClick={() => { setMode(m); setError(null); setInfo(null); }}
+                    style={{ flex: 1, background: mode === m ? "#1a2535" : "transparent", border: "none", borderRadius: 8, padding: "8px 12px", cursor: "pointer", color: mode === m ? "#e2e8f0" : "#3d526a", fontWeight: 600, fontSize: 13 }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {mode === "reset" && (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 600, marginBottom: 6 }}>Reset password</div>
+                <div style={{ fontSize: 13, color: "#4a6080", lineHeight: 1.6 }}>Enter your username and we'll send a reset link to your registered email.</div>
+              </div>
+            )}
+
             <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Username</label>
             <input type="text" value={username} onChange={e => setUsername(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handle()} placeholder="yourname"
@@ -149,20 +199,59 @@
               style={{ ...inputStyle, marginBottom: 14, fontFamily: "'DM Mono', monospace" }}
               onFocus={e => e.target.style.borderColor = "#e2c97e66"}
               onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
-            <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Password</label>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
-              autoComplete={mode === "signup" ? "new-password" : "current-password"}
-              style={{ ...inputStyle, marginBottom: 20 }}
-              onFocus={e => e.target.style.borderColor = "#e2c97e66"}
-              onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+
+            {mode === "signup" && (
+              <>
+                <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Email <span style={{ color: "#1e2d3d", textTransform: "none", fontSize: 11 }}>(optional — needed for password recovery)</span>
+                </label>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handle()} placeholder="you@example.com"
+                  autoComplete="email"
+                  style={{ ...inputStyle, marginBottom: 14 }}
+                  onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+                  onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+              </>
+            )}
+
+            {mode !== "reset" && (
+              <>
+                <label style={{ display: "block", fontSize: 11, color: "#3d526a", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Password</label>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handle()} placeholder="••••••••"
+                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  style={{ ...inputStyle, marginBottom: 20 }}
+                  onFocus={e => e.target.style.borderColor = "#e2c97e66"}
+                  onBlur={e => e.target.style.borderColor = "#1e2d3d"} />
+              </>
+            )}
+
             {error && <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 13 }}>{error}</div>}
+            {info  && <div style={{ marginBottom: 16, padding: "10px 14px", background: "#0a1f0a", border: "1px solid #1a3d1a", borderRadius: 8, color: "#4ade80", fontSize: 13 }}>{info}</div>}
+
             <button onClick={handle} disabled={loading}
               style={{ width: "100%", background: "#e2c97e", color: "#0f172a", border: "none", borderRadius: 10, padding: "12px 20px", cursor: loading ? "default" : "pointer", fontWeight: 700, fontSize: 14, opacity: loading ? 0.6 : 1 }}>
-              {loading ? "…" : mode === "login" ? "Sign in" : "Create account"}
+              {loading ? "…" : mode === "login" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
             </button>
-            <div style={{ marginTop: 16, fontSize: 11, color: "#1e2d3d", textAlign: "center" }}>
-              {mode === "signup" ? "2–20 characters · letters, numbers, _ or -" : "No email required"}
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              {mode === "login" && (
+                <button onClick={() => { setMode("reset"); setError(null); setInfo(null); }}
+                  style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 12, padding: 0 }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#60a5fa"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>
+                  Forgot password?
+                </button>
+              )}
+              {mode === "reset" && (
+                <button onClick={() => { setMode("login"); setError(null); setInfo(null); }}
+                  style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 12, padding: 0 }}>
+                  ← Back to sign in
+                </button>
+              )}
+              {mode === "signup" && (
+                <div style={{ fontSize: 11, color: "#1e2d3d" }}>2–20 chars · letters, numbers, _ or -</div>
+              )}
             </div>
           </div>
         </div>
@@ -5591,3 +5680,4 @@
   </script>
 </body>
 </html>
+
