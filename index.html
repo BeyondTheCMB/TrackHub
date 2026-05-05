@@ -3192,14 +3192,7 @@
     const GB_BASE = "https://www.googleapis.com/books/v1/volumes";
 
     async function gbFetch(url) {
-      // Route through /api/gb proxy to avoid browser-side rate limiting
-      const gbBase = "https://www.googleapis.com/books/v1";
-      let path = url.startsWith(gbBase) ? url.slice(gbBase.length) : url;
-      const keyMatch = path.match(/[?&]key=([^&]+)/);
-      const key = keyMatch ? decodeURIComponent(keyMatch[1]) : "";
-      path = path.replace(/([?&])key=[^&]+&?/, "$1").replace(/[?&]$/, "");
-      const proxyUrl = `/api/gb?path=${encodeURIComponent(path)}&key=${encodeURIComponent(key)}`;
-      const res = await fetch(proxyUrl);
+      const res = await fetch(url);
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
@@ -4681,19 +4674,20 @@
           return merged;
         };
 
-        const fetchWithRetry = async (fn, retries = 4) => {
+        const fetchWithRetry = async (fn, retries = 3) => {
           for (let attempt = 0; attempt < retries; attempt++) {
             try {
               return await fn();
             } catch(e) {
-              const isRateLimit = e.message.includes("429") || e.message.includes("503");
-              if (attempt < retries - 1) {
-                // Exponential backoff: 2s, 4s, 8s, 16s for rate limit errors
-                const delay = isRateLimit ? 2000 * Math.pow(2, attempt) : 1000;
-                console.warn(`PT refresh retry ${attempt + 1} for: ${e.message}`);
+              const isRetryable = e.message.includes("429") || e.message.includes("503") || e.message.includes("500");
+              if (attempt < retries - 1 && isRetryable) {
+                const delay = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s
+                console.warn(`PT refresh retry ${attempt + 1}: ${e.message}`);
                 await new Promise(r => setTimeout(r, delay));
+              } else if (attempt < retries - 1 && isRetryable) {
+                await new Promise(r => setTimeout(r, 1000));
               } else {
-                throw e;
+                throw e; // non-retryable or exhausted
               }
             }
           }
