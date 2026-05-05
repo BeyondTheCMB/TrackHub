@@ -4656,6 +4656,8 @@
 
         const updates = {};
         let done = 0;
+        const BATCH_SIZE = 5; // parallel requests per batch
+        const BATCH_DELAY = 1200; // ms between batches
 
         const mergeBook = (book, fresh) => {
           const merged = { ...book };
@@ -4675,47 +4677,41 @@
           return merged;
         };
 
-        const fetchWithRetry = async (fn, retries = 3) => {
-          for (let attempt = 0; attempt < retries; attempt++) {
+        const fetchOne = async (book) => {
+          for (let attempt = 0; attempt < 3; attempt++) {
             try {
-              return await fn();
+              let fresh = null;
+              if (book.googleBooksId) {
+                fresh = await gbGetVolume(book.googleBooksId, apiKey);
+              } else if (book.isbn13 || book.isbn10) {
+                const isbn = book.isbn13 || book.isbn10;
+                const results = await gbSearch(`isbn:${isbn}`, apiKey, { maxResults: 1 });
+                if (results && results.length) fresh = results[0];
+                if (fresh) book.googleBooksId = fresh.googleBooksId || fresh.id;
+              }
+              if (fresh) updates[book.id] = mergeBook(book, fresh);
+              return;
             } catch(e) {
               const isRetryable = e.message.includes("429") || e.message.includes("503") || e.message.includes("500");
-              if (attempt < retries - 1 && isRetryable) {
-                const delay = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s
-                console.warn(`PT refresh retry ${attempt + 1}: ${e.message}`);
-                await new Promise(r => setTimeout(r, delay));
-              } else if (attempt < retries - 1 && isRetryable) {
-                await new Promise(r => setTimeout(r, 1000));
+              if (attempt < 2 && isRetryable) {
+                await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
               } else {
-                throw e; // non-retryable or exhausted
+                console.warn("PT refresh failed:", book.title, e.message);
+                return;
               }
             }
           }
         };
 
-        for (const book of toFetch) {
-          try {
-            let fresh = null;
-            if (book.googleBooksId) {
-              // Direct volume lookup — most reliable, least rate-limited
-              fresh = await fetchWithRetry(() => gbGetVolume(book.googleBooksId, apiKey));
-            } else if (book.isbn13 || book.isbn10) {
-              // ISBN search — slower endpoint, only use if no direct ID available
-              const isbn = book.isbn13 || book.isbn10;
-              const results = await fetchWithRetry(() => gbSearch(`isbn:${isbn}`, apiKey, { maxResults: 1 }));
-              if (results && results.length) fresh = results[0];
-              // Save the googleBooksId so future refreshes use direct lookup
-              if (fresh) book.googleBooksId = fresh.googleBooksId || fresh.id;
-            }
-            if (fresh) updates[book.id] = mergeBook(book, fresh);
-            else console.warn("PT refresh: no result for", book.title || book.isbn13);
-          } catch(e) {
-            console.warn("PT refresh failed after retries:", book.title, e.message);
-          }
-          done++;
+        // Process in parallel batches
+        for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
+          const batch = toFetch.slice(i, i + BATCH_SIZE);
+          await Promise.all(batch.map(book => fetchOne(book)));
+          done += batch.length;
           setPtRefreshProg(Math.round((done / toFetch.length) * 100));
-          await new Promise(r => setTimeout(r, 1000)); // 1s between requests
+          if (i + BATCH_SIZE < toFetch.length) {
+            await new Promise(r => setTimeout(r, BATCH_DELAY));
+          }
         }
 
         setLibrary(cur => cur.map(b => updates[b.id] || b));
@@ -5594,6 +5590,7 @@
   </script>
 </body>
 </html>
+
 
 
 
