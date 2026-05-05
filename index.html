@@ -2173,7 +2173,20 @@
             setCollection(cur => cur.map(g => {
               const blockM = xml.match(new RegExp(`<item[^>]+id="${g.id}"[^>]*>[\\s\\S]*?<\\/item>`, "i"));
               if (!blockM) return g;
-              return { ...g, ...parseThingItem(blockM[0], g) };
+              const fresh = parseThingItem(blockM[0], g);
+              // Never overwrite user fields; never overwrite with null/empty
+              const merged = { ...g };
+              for (const [k, v] of Object.entries(fresh)) {
+                const isUserField = ["score","notes","buyYear","playStatus","ownership",
+                  "advScores","wishlistTags","status"].includes(k);
+                if (isUserField) continue; // always keep user's value
+                if (v === null || v === undefined) continue; // never overwrite with null
+                if (Array.isArray(v) && v.length === 0) continue; // never overwrite with []
+                merged[k] = v;
+              }
+              // Always update image if BGG has one
+              if (fresh.image) merged.image = fresh.image;
+              return merged;
             }));
           } catch(e) { console.warn("Refresh batch error:", e); }
           setRefreshProgress(Math.round(((i + 20) / toFetch.length) * 100));
@@ -4467,7 +4480,9 @@
 
     // ─── Main App ─────────────────────────────────────────────────────────────
     function App({ logoSlot, profileId, profileChip }) {
-      const [ptLoading,   setPtLoading]   = useState(true);
+      const [ptLoading,      setPtLoading]      = useState(true);
+      const [ptRefreshing,   setPtRefreshing]   = useState(false);
+      const [ptRefreshProg,  setPtRefreshProg]  = useState(null);
       const [apiKey,      setApiKey]      = useState(null);
       const [offlineMode, setOfflineMode] = useState(false);
       const [currency,    setCurrency]    = useState("EUR");
@@ -4532,6 +4547,57 @@
 
       // Persist active profile id whenever it changes
       // (profile managed by TrackHub shell)
+
+      // ── Refresh all books from Google Books ──────────────────────────────────
+      // Fetches fresh metadata for every non-manual book, preserving user fields.
+      // User-entered fields (rating, status, dates, notes, purchasePrice, ownership,
+      // lists, pageCount if manually set) are never overwritten with null/0.
+      const PT_API_FIELDS = ["title","subtitle","authors","publisher","publishedDate","year",
+        "pageCount","language","categories","description","image","avgRating","ratingsCount",
+        "infoLink","isbn13","isbn10","googleBooksId"];
+
+      const refreshAllFromGB = async () => {
+        if (!apiKey && offlineMode) return;
+        const toFetch = library.filter(b => b.googleBooksId && !b.isManual);
+        if (!toFetch.length) return;
+        setPtRefreshing(true); setPtRefreshProg(0);
+        let done = 0;
+        for (const book of toFetch) {
+          try {
+            const fresh = await gbGetVolume(book.googleBooksId, apiKey);
+            if (fresh) {
+              setLibrary(cur => cur.map(b => {
+                if (b.id !== book.id) return b;
+                // Merge: for each API field, only overwrite if fresh value is non-null/non-empty
+                // AND (existing value is null/undefined, OR the field is image/cover)
+                const merged = { ...b };
+                for (const field of PT_API_FIELDS) {
+                  const freshVal = fresh[field];
+                  const existVal = b[field];
+                  if (field === "image") {
+                    // Always update image from API if we got one
+                    if (freshVal) merged[field] = upgradeCoverUrl(freshVal);
+                  } else if (field === "pageCount") {
+                    // Only overwrite pageCount if existing is null/0 (user may have set it manually)
+                    if (!existVal && freshVal) merged[field] = freshVal;
+                  } else {
+                    // For other API fields: overwrite only if fresh has a value
+                    if (freshVal !== null && freshVal !== undefined &&
+                        !(Array.isArray(freshVal) && freshVal.length === 0)) {
+                      merged[field] = freshVal;
+                    }
+                  }
+                }
+                return merged;
+              }));
+            }
+          } catch(e) { console.warn("PT refresh error:", book.title, e); }
+          done++;
+          setPtRefreshProg(Math.round((done / toFetch.length) * 100));
+          await new Promise(r => setTimeout(r, 200)); // gentle rate limiting
+        }
+        setPtRefreshing(false); setPtRefreshProg(null);
+      };
 
       const addBook = (book) => setLibrary(cur => {
         const idx = cur.findIndex(b => b.id === book.id);
@@ -4673,6 +4739,19 @@
                 onMouseLeave={(e) => e.currentTarget.style.borderColor = "#c084fc44"}>
                 + Add to Wishlist
               </button>
+
+              {ptRefreshing ? (
+                <span style={{ fontSize: 12, color: "#60a5fa" }}>🔄 Refreshing… {ptRefreshProg}%</span>
+              ) : (
+                <button onClick={refreshAllFromGB}
+                  disabled={!apiKey && !offlineMode}
+                  style={{ background: "transparent", color: "#4a6080", border: "1px solid #1a2535", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, opacity: (!apiKey && !offlineMode) ? 0.4 : 1 }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#60a5fa"; e.currentTarget.style.color = "#60a5fa"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#4a6080"; }}
+                  title="Re-fetch covers and metadata from Google Books for all library books">
+                  ↻ Refresh from Google Books
+                </button>
+              )}
 
               {/* Profile menu */}
               <div style={{ position: "relative", marginLeft: 4 }}>
@@ -5392,6 +5471,7 @@
   </script>
 </body>
 </html>
+
 
 
 
