@@ -1077,7 +1077,7 @@
       const scoreDisplay = entry.score != null
         ? (Number.isInteger(entry.score) ? String(entry.score) : entry.score.toFixed(1))
         : null;
-      const borderColor = inSubcoll === true ? "#60a5fa" : "#1a2535";
+      const borderColor = "#1a2535";
       return (
         <div onClick={(e) => onSelect(e)}
           style={{ cursor: "pointer", borderRadius: 10, overflow: "hidden", background: "#0f1923", border: `1px solid ${borderColor}`, transition: "transform 0.18s, box-shadow 0.18s, border-color 0.18s", width: "100%", position: "relative" }}
@@ -2774,7 +2774,47 @@
                   </div>
                 )}
 
-                {filtered.length > 0 ? (
+                {activeSubcoll === "all" && !filterQ && !statusFilter ? (() => {
+                  // Anilist-style: grouped by status when viewing All
+                  const groups = [
+                    { key: "playing",   label: "Playing",         color: "#4ade80", fn: g => { const s = migrateStatus(g).status; return s.ownership === "owned" && s.playStatus !== "played" && !s.hasPlayed && g.currentlyPlaying; } },
+                    { key: "played",    label: "Completed",       color: "#60a5fa", fn: g => { const s = migrateStatus(g).status; return (s.playStatus === "played" || s.hasPlayed); } },
+                    { key: "unplayed",  label: "Unplayed",        color: "#e2c97e", fn: g => { const s = migrateStatus(g).status; return s.ownership === "owned" && s.playStatus !== "played" && !s.hasPlayed && !g.currentlyPlaying; } },
+                    { key: "expansion", label: "Expansions",      color: "#a78bfa", fn: g => !!g.isExpansion && migrateStatus(g).status.ownership !== "plan_to_buy" },
+                  ];
+                  // Custom lists
+                  const customGroups = customSubcolls.map(sc => ({
+                    key: sc.id, label: sc.name, color: "#94a3b8", isCustom: true,
+                    fn: g => sc.gameIds.includes(g.id),
+                  }));
+                  const allGroups = [...groups, ...customGroups];
+                  const baseGames = filtered; // filtered already excludes wishlist
+                  return (
+                    <div>
+                      {allGroups.map(group => {
+                        const games = baseGames.filter(group.fn);
+                        if (!games.length) return null;
+                        return (
+                          <div key={group.key} style={{ marginBottom: 36 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                              <div style={{ width: 3, height: 18, borderRadius: 2, background: group.color }} />
+                              <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 700, color: group.color }}>{group.label}</span>
+                              <span style={{ fontSize: 12, color: "#2d3f55" }}>{games.length}</span>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+                              {games.map(entry => (
+                                <div key={entry.id}>
+                                  <GameCard entry={entry} onSelect={() => setSelectedEntry(entry)} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })() : (
+                filtered.length > 0 ? (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
                     {filtered.map((entry) => {
                       return (
@@ -2801,7 +2841,7 @@
                     )}
                   </div>
                 )}
-              </main>
+                )
             </div>
           )}
 
@@ -3421,7 +3461,7 @@
       const ratingDisplay = entry.rating != null
         ? (Number.isInteger(entry.rating) ? String(entry.rating) : entry.rating.toFixed(1))
         : null;
-      const borderColor = inList === true ? "#60a5fa" : "#1a2535";
+      const borderColor = "#1a2535";
       const statusInfo = (() => {
         const bucket = effectiveBucket(entry);
         if (bucket === "reading")  return { label: "Reading",  color: "#fb923c" };
@@ -5166,13 +5206,63 @@
                     </div>
                   </div>
                 ) : (
+                {activeList === "all" && !filterQ ? (() => {
+                  const bucketGroups = [
+                    { key: "reading",  label: "Reading",     color: "#4ade80" },
+                    { key: "onhold",   label: "On Hold",     color: "#f59e0b" },
+                    { key: "read",     label: "Completed",   color: "#60a5fa" },
+                    { key: "sleeping", label: "Unread",      color: "#e2c97e" },
+                    { key: "wishlist", label: "Wishlist",    color: "#a78bfa" },
+                  ];
+                  const customGroups = lists.map(l => ({
+                    key: l.id, label: l.name, color: "#94a3b8", isCustom: true,
+                    ids: new Set(l.bookIds),
+                  }));
+                  return (
+                    <div>
+                      {bucketGroups.map(group => {
+                        const books = library.filter(b => effectiveBucket(b) === group.key);
+                        if (!books.length) return null;
+                        return (
+                          <div key={group.key} style={{ marginBottom: 36 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                              <div style={{ width: 3, height: 18, borderRadius: 2, background: group.color }} />
+                              <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 700, color: group.color }}>{group.label}</span>
+                              <span style={{ fontSize: 12, color: "#2d3f55" }}>{books.length}</span>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))", gap: 18 }}>
+                              {books.map(b => <BookCard key={b.id} entry={b} onSelect={() => setSelected(b)} />)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {customGroups.map(group => {
+                        const books = library.filter(b => group.ids.has(b.id));
+                        if (!books.length) return null;
+                        return (
+                          <div key={group.key} style={{ marginBottom: 36 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                              <div style={{ width: 3, height: 18, borderRadius: 2, background: group.color }} />
+                              <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 700, color: group.color }}>{group.label}</span>
+                              <span style={{ fontSize: 12, color: "#2d3f55" }}>{books.length}</span>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))", gap: 18 }}>
+                              {books.map(b => <BookCard key={b.id} entry={b} onSelect={() => setSelected(b)} />)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })() : (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))", gap: 18 }}>
                     {filtered.map(b => (
                       <BookCard key={b.id} entry={b}
                         onSelect={() => setSelected(b)}
-                        inList={activeCustom ? activeCustom.bookIds.includes(b.id) : undefined} />
+                        />
                     ))}
                   </div>
+                )}
                 )}
               </main>
             </div>
@@ -5754,5 +5844,6 @@
   </script>
 </body>
 </html>
+
 
 
