@@ -2813,8 +2813,7 @@
                       })}
                     </div>
                   );
-                })() : (
-                filtered.length > 0 ? (
+                })() : filtered.length > 0 ? (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
                     {filtered.map((entry) => {
                       return (
@@ -2841,7 +2840,6 @@
                     )}
                   </div>
                 )}
-                )
             </div>
           )}
 
@@ -5205,8 +5203,7 @@
                         : "No books match this view."}
                     </div>
                   </div>
-                ) : (
-                {activeList === "all" && !filterQ ? (() => {
+                ) : activeList === "all" && !filterQ ? (() => {
                   const bucketGroups = [
                     { key: "reading",  label: "Reading",     color: "#4ade80" },
                     { key: "onhold",   label: "On Hold",     color: "#f59e0b" },
@@ -5262,7 +5259,6 @@
                         />
                     ))}
                   </div>
-                )}
                 )}
               </main>
             </div>
@@ -5844,6 +5840,7 @@
   </script>
 </body>
 </html>
+
 
 
 
