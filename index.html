@@ -1077,15 +1077,11 @@
       const scoreDisplay = entry.score != null
         ? (Number.isInteger(entry.score) ? String(entry.score) : entry.score.toFixed(1))
         : null;
-      const borderColor = inSubcoll === true ? "#60a5fa" : "#1a2535";
       return (
         <div onClick={(e) => onSelect(e)}
-          style={{ cursor: "pointer", borderRadius: 10, overflow: "hidden", background: "#0f1923", border: `1px solid ${borderColor}`, transition: "transform 0.18s, box-shadow 0.18s, border-color 0.18s", width: "100%", position: "relative" }}
-          onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-5px)"; e.currentTarget.style.boxShadow = "0 16px 40px rgba(0,0,0,0.6)"; if (inSubcoll === null || inSubcoll === undefined) e.currentTarget.style.borderColor = "#2d3f55"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = borderColor; }}>
-          {inSubcoll === true && (
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: "#60a5fa", zIndex: 2 }} />
-          )}
+          style={{ cursor: "pointer", borderRadius: 10, overflow: "hidden", background: "#0f1923", border: "1px solid #1a2535", transition: "transform 0.18s, box-shadow 0.18s, border-color 0.18s", width: "100%", position: "relative" }}
+          onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-5px)"; e.currentTarget.style.boxShadow = "0 16px 40px rgba(0,0,0,0.6)"; e.currentTarget.style.borderColor = "#2d3f55"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "#1a2535"; }}>
           {/* Square image: padding-top 100% = same as width */}
           <div style={{ position: "relative", width: "100%", paddingTop: "100%", background: "#080f18", overflow: "hidden" }}>
             <div style={{ position: "absolute", inset: 0 }}>
@@ -2774,17 +2770,80 @@
                   </div>
                 )}
 
-                {filtered.length > 0 ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
-                    {filtered.map((entry) => {
-                      return (
-                        <div key={entry.id}>
-                          <GameCard entry={entry} onSelect={(e) => setSelectedEntry(entry)} />
+                {filtered.length > 0 ? (() => {
+                  const useGrouped = activeSubcoll === "all" && !filterQ;
+                  if (!useGrouped) {
+                    return (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+                        {filtered.map((entry) => (
+                          <div key={entry.id}>
+                            <GameCard entry={entry} onSelect={() => setSelectedEntry(entry)} />
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+                  // Grouped view
+                  const getGameBucket = (g) => {
+                    const s = migrateStatus(g).status;
+                    if (s.ownership === "plan_to_buy") return "wishlist";
+                    if (g.isExpansion) return "expansion";
+                    if (s.playStatus === "played" || s.hasPlayed) return "played";
+                    if (s.ownership === "owned") return "owned";
+                    return "other";
+                  };
+                  const STATUS_GROUPS = [
+                    { id: "played",    label: "Played",     color: "#4ade80" },
+                    { id: "owned",     label: "Unplayed",   color: "#fb923c" },
+                    { id: "expansion", label: "Expansions", color: "#60a5fa" },
+                    { id: "wishlist",  label: "Wishlist",   color: "#c084fc" },
+                    { id: "other",     label: "Other",      color: "#8899aa" },
+                  ];
+                  const bucketMap = {};
+                  filtered.forEach(g => {
+                    const b = getGameBucket(g);
+                    if (!bucketMap[b]) bucketMap[b] = [];
+                    bucketMap[b].push(g);
+                  });
+                  // Custom subcollections at the bottom
+                  const customBuckets = customSubcolls.map(sc => ({
+                    id: sc.id,
+                    label: sc.name,
+                    color: "#e2c97e",
+                    games: filtered.filter(g => sc.gameIds.includes(g.id)),
+                  })).filter(sc => sc.games.length > 0);
+                  const renderedIds = new Set();
+                  const sections = [];
+                  STATUS_GROUPS.forEach(({ id, label, color }) => {
+                    const games = bucketMap[id] || [];
+                    if (!games.length) return;
+                    games.forEach(g => renderedIds.add(g.id));
+                    sections.push({ label, color, games });
+                  });
+                  customBuckets.forEach(({ label, color, games }) => {
+                    sections.push({ label, color, games });
+                  });
+                  return (
+                    <div>
+                      {sections.map(({ label, color, games }) => (
+                        <div key={label} style={{ marginBottom: 36 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                            <div style={{ width: 3, height: 18, borderRadius: 2, background: color, flexShrink: 0 }} />
+                            <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, color: "#c8d8e8", fontWeight: 600 }}>{label}</span>
+                            <span style={{ fontSize: 12, color: "#3d526a" }}>{games.length}</span>
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+                            {games.map(entry => (
+                              <div key={entry.id}>
+                                <GameCard entry={entry} onSelect={() => setSelectedEntry(entry)} />
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                ) : (
+                      ))}
+                    </div>
+                  );
+                })() : (
                   <div style={{ textAlign: "center", padding: "80px 20px" }}>
                     <div style={{ fontSize: 64, marginBottom: 18 }}>🎲</div>
                     {collection.length === 0 ? (
@@ -3421,7 +3480,6 @@
       const ratingDisplay = entry.rating != null
         ? (Number.isInteger(entry.rating) ? String(entry.rating) : entry.rating.toFixed(1))
         : null;
-      const borderColor = inList === true ? "#60a5fa" : "#1a2535";
       const statusInfo = (() => {
         const bucket = effectiveBucket(entry);
         if (bucket === "reading")  return { label: "Reading",  color: "#fb923c" };
@@ -3433,12 +3491,9 @@
       })();
       return (
         <div onClick={onSelect}
-          style={{ cursor: "pointer", borderRadius: 10, overflow: "hidden", background: "#0f1923", border: `1px solid ${borderColor}`, transition: "transform 0.18s, box-shadow 0.18s, border-color 0.18s", width: "100%", position: "relative" }}
-          onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-5px)"; e.currentTarget.style.boxShadow = "0 16px 40px rgba(0,0,0,0.6)"; if (inList === null || inList === undefined) e.currentTarget.style.borderColor = "#2d3f55"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = borderColor; }}>
-          {inList === true && (
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: "#60a5fa", zIndex: 2 }} />
-          )}
+          style={{ cursor: "pointer", borderRadius: 10, overflow: "hidden", background: "#0f1923", border: "1px solid #1a2535", transition: "transform 0.18s, box-shadow 0.18s, border-color 0.18s", width: "100%", position: "relative" }}
+          onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-5px)"; e.currentTarget.style.boxShadow = "0 16px 40px rgba(0,0,0,0.6)"; e.currentTarget.style.borderColor = "#2d3f55"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "#1a2535"; }}>
           {/* Book cover — 2:3 aspect ratio (tall, book-shape) */}
           <div style={{ position: "relative", width: "100%", paddingTop: "150%", background: "#080f18", overflow: "hidden" }}>
             <div style={{ position: "absolute", inset: 0 }}>
@@ -5165,15 +5220,68 @@
                         : "No books match this view."}
                     </div>
                   </div>
-                ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))", gap: 18 }}>
-                    {filtered.map(b => (
-                      <BookCard key={b.id} entry={b}
-                        onSelect={() => setSelected(b)}
-                        inList={activeCustom ? activeCustom.bookIds.includes(b.id) : undefined} />
-                    ))}
-                  </div>
-                )}
+                ) : (() => {
+                  const useGrouped = activeList === "all" && !filterQ;
+                  if (!useGrouped) {
+                    return (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))", gap: 18 }}>
+                        {filtered.map(b => (
+                          <BookCard key={b.id} entry={b}
+                            onSelect={() => setSelected(b)}
+                            inList={activeCustom ? activeCustom.bookIds.includes(b.id) : undefined} />
+                        ))}
+                      </div>
+                    );
+                  }
+                  // Grouped view
+                  const BOOK_GROUPS = [
+                    { id: "reading",  label: "Reading",       color: "#fb923c" },
+                    { id: "onhold",   label: "On Hold",       color: "#f59e0b" },
+                    { id: "read",     label: "Read",          color: "#4ade80" },
+                    { id: "sleeping", label: "Sleeping Shelf", color: "#f87171" },
+                    { id: "wishlist", label: "Wishlist",      color: "#c084fc" },
+                  ];
+                  const bucketMap = {};
+                  filtered.forEach(b => {
+                    const bucket = effectiveBucket(b);
+                    if (!bucketMap[bucket]) bucketMap[bucket] = [];
+                    bucketMap[bucket].push(b);
+                  });
+                  const customBuckets = lists.map(l => ({
+                    id: l.id,
+                    label: l.name,
+                    color: "#e2c97e",
+                    books: filtered.filter(b => l.bookIds.includes(b.id)),
+                  })).filter(l => l.books.length > 0);
+                  const sections = [];
+                  BOOK_GROUPS.forEach(({ id, label, color }) => {
+                    const books = bucketMap[id] || [];
+                    if (!books.length) return;
+                    sections.push({ label, color, books });
+                  });
+                  customBuckets.forEach(({ label, color, books }) => {
+                    sections.push({ label, color, books });
+                  });
+                  return (
+                    <div>
+                      {sections.map(({ label, color, books }) => (
+                        <div key={label} style={{ marginBottom: 36 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                            <div style={{ width: 3, height: 18, borderRadius: 2, background: color, flexShrink: 0 }} />
+                            <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, color: "#c8d8e8", fontWeight: 600 }}>{label}</span>
+                            <span style={{ fontSize: 12, color: "#3d526a" }}>{books.length}</span>
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(175px, 1fr))", gap: 18 }}>
+                            {books.map(b => (
+                              <BookCard key={b.id} entry={b}
+                                onSelect={() => setSelected(b)} />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </main>
             </div>
           )}
@@ -5754,6 +5862,8 @@
   </script>
 </body>
 </html>
+
+
 
 
 
