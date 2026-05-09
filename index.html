@@ -365,9 +365,35 @@
       const [newName,    setNewName]    = React.useState("");
       const [colorId,    setColorId]    = React.useState("blue");
       const [confirmDel, setConfirmDel] = React.useState(null);
+      const [stats,      setStats]      = React.useState(null); // { games: { total, played, wishlist }, books: { total, reading, read } }
       const canEnter = !!activeProfileId && profiles.some(p => p.id === activeProfileId);
       const hour = new Date().getHours();
       const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+
+      // Fetch stats for the active profile whenever it changes
+      React.useEffect(() => {
+        if (!activeProfileId || !_sbUser) { setStats(null); return; }
+        setStats(null);
+        const pid = activeProfileId;
+        Promise.all([
+          _sb.from("ml_collection").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid),
+          _sb.from("pt_library").select("data").eq("user_id", _sbUser.id).eq("profile_id", pid).single(),
+        ]).then(([mlRes, ptRes]) => {
+          // Games
+          const games = (mlRes.data || []).map(r => r.data);
+          const gTotal    = games.length;
+          const gPlayed   = games.filter(g => { const s = (g.status || {}); return s.playStatus === "played" || s.hasPlayed; }).length;
+          const gOwned    = games.filter(g => (g.status || {}).ownership === "owned").length;
+          const gWishlist = games.filter(g => (g.status || {}).ownership === "plan_to_buy").length;
+          // Books
+          const books = Array.isArray(ptRes.data?.data) ? ptRes.data.data : (Array.isArray(ptRes.data) ? ptRes.data : []);
+          const bTotal   = books.length;
+          const bReading = books.filter(b => (b.status || {}).reading === "reading").length;
+          const bRead    = books.filter(b => (b.status || {}).reading === "read").length;
+          const bWishlist= books.filter(b => { const s = b.status || {}; return s.reading !== "reading" && s.reading !== "read" && s.reading !== "onhold" && s.ownership !== "owned"; }).length;
+          setStats({ games: { total: gTotal, played: gPlayed, owned: gOwned, wishlist: gWishlist }, books: { total: bTotal, reading: bReading, read: bRead, wishlist: bWishlist } });
+        }).catch(() => setStats(null));
+      }, [activeProfileId]);
       const doCreate = () => {
         const name = newName.trim(); if (!name) return;
         onProfileCreate({ id: "profile_" + Date.now(), name, color: colorId });
@@ -468,6 +494,67 @@
 
             <div style={{ flex: 1 }} />
 
+            {/* ── Collection stats ── */}
+            {stats && canEnter && (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 9, color: "#2d3f55", textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: 700, marginBottom: 12 }}>Collection</div>
+
+                {/* Games */}
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7 }}>
+                    <span style={{ fontSize: 13 }}>🎲</span>
+                    <span style={{ fontSize: 11, color: "#5a7080", fontWeight: 600 }}>MeepleLog</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 10px" }}>
+                    {[
+                      { label: "games",   value: stats.games.total   },
+                      { label: "played",  value: stats.games.played  },
+                      { label: "owned",   value: stats.games.owned   },
+                      { label: "wishlist",value: stats.games.wishlist },
+                    ].map(({ label, value }) => (
+                      <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                        <span style={{ fontSize: 11, color: "#2d3f55" }}>{label}</span>
+                        <span style={{ fontSize: 13, color: "#5a7080", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ height: 1, background: "#0d1825", marginBottom: 14 }} />
+
+                {/* Books */}
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7 }}>
+                    <span style={{ fontSize: 13 }}>📖</span>
+                    <span style={{ fontSize: 11, color: "#5a7080", fontWeight: 600 }}>PlotTwist</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 10px" }}>
+                    {[
+                      { label: "books",   value: stats.books.total   },
+                      { label: "reading", value: stats.books.reading  },
+                      { label: "read",    value: stats.books.read     },
+                      { label: "wishlist",value: stats.books.wishlist },
+                    ].map(({ label, value }) => (
+                      <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                        <span style={{ fontSize: 11, color: "#2d3f55" }}>{label}</span>
+                        <span style={{ fontSize: 13, color: "#5a7080", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Stats loading shimmer */}
+            {!stats && canEnter && (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 9, color: "#2d3f55", textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: 700, marginBottom: 12 }}>Collection</div>
+                {[70, 50, 60, 45].map((w, i) => (
+                  <div key={i} style={{ height: 10, background: "#0d1825", borderRadius: 4, marginBottom: 7, width: `${w}%` }} />
+                ))}
+              </div>
+            )}
+
             {/* Sign out */}
             <button onClick={onSignOut} style={{ background: "none", border: "none", color: "#1e2d3d", cursor: "pointer", fontSize: 12, textAlign: "left", padding: 0 }}
               onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
@@ -477,7 +564,7 @@
           </aside>
 
           {/* ── Main ── */}
-          <main style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "60px 56px" }}>
+          <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 56px", textAlign: "center" }}>
             <div style={{ fontSize: 13, color: "#3d526a", marginBottom: 6 }}>
               {greeting}, <span style={{ color: "#8899aa", fontWeight: 600 }}>{username}</span>
             </div>
@@ -491,7 +578,7 @@
               </div>
             )}
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 480, opacity: canEnter ? 1 : 0.25, pointerEvents: canEnter ? "auto" : "none", transition: "opacity 0.2s" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 440, opacity: canEnter ? 1 : 0.25, pointerEvents: canEnter ? "auto" : "none", transition: "opacity 0.2s" }}>
               {cards.map(card => (
                 <button key={card.id} onClick={() => onSelect(card.id)}
                   style={{ display: "flex", alignItems: "center", gap: 20, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, padding: "22px 24px", cursor: "pointer", textAlign: "left", transition: "border-color 0.15s, transform 0.15s" }}
@@ -5971,6 +6058,8 @@
   </script>
 </body>
 </html>
+
+
 
 
 
