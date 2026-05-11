@@ -70,6 +70,7 @@
     const MODULE_REGISTRY = [
       { id: "meeplelog", label: "MeepleLog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa" },
       { id: "plottwist", label: "PlotTwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa" },
+      { id: "spendlog",  label: "SpendLog",  icon: "💰", accentA: "#4ade80", accentB: "#22d3ee" },
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
@@ -360,6 +361,7 @@
       const cards = [
         { id: "meeplelog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa", label: "MeepleLog", labelSplit: 6, desc: "Board game collection & wishlist" },
         { id: "plottwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa", label: "PlotTwist", labelSplit: 4, desc: "Book library & reading list" },
+        { id: "spendlog",  icon: "💰", accentA: "#4ade80", accentB: "#22d3ee", label: "SpendLog",  labelSplit: 5, desc: "Expenses & subscriptions" },
       ];
       const [creating,   setCreating]   = React.useState(profiles.length === 0);
       const [newName,    setNewName]    = React.useState("");
@@ -581,12 +583,17 @@
             <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 440, opacity: canEnter ? 1 : 0.25, pointerEvents: canEnter ? "auto" : "none", transition: "opacity 0.2s" }}>
               {cards.map(card => (
                 <button key={card.id} onClick={() => onSelect(card.id)}
-                  style={{ display: "flex", alignItems: "center", gap: 20, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, padding: "22px 24px", cursor: "pointer", textAlign: "left", transition: "border-color 0.15s, transform 0.15s" }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = "#e2c97e44"; e.currentTarget.style.transform = "translateX(4px)"; }}
+                  style={{ display: "flex", alignItems: "center", gap: 20, background: "#0d1825", border: `1px solid ${card.wip ? "#1a2535" : "#1a2535"}`, borderRadius: 14, padding: "22px 24px", cursor: "pointer", textAlign: "left", transition: "border-color 0.15s, transform 0.15s", position: "relative", overflow: "hidden" }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = card.accentA + "44"; e.currentTarget.style.transform = "translateX(4px)"; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.transform = "none"; }}>
-                  <span style={{ fontSize: 30, flexShrink: 0 }}>{card.icon}</span>
+                  {card.wip && (
+                    <div style={{ position: "absolute", top: 10, right: 12, fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#f59e0b", background: "#f59e0b15", border: "1px solid #f59e0b33", borderRadius: 20, padding: "2px 8px" }}>
+                      Under construction
+                    </div>
+                  )}
+                  <span style={{ fontSize: 30, flexShrink: 0, opacity: card.wip ? 0.5 : 1 }}>{card.icon}</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 18, letterSpacing: "-0.01em", marginBottom: 4 }}>
+                    <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 18, letterSpacing: "-0.01em", marginBottom: 4, opacity: card.wip ? 0.5 : 1 }}>
                       <span style={{ color: card.accentA }}>{card.label.slice(0, card.labelSplit)}</span>
                       <span style={{ color: card.accentB }}>{card.label.slice(card.labelSplit)}</span>
                     </div>
@@ -5922,6 +5929,713 @@
       );
     }
 
+    // ─── SpendLog module ──────────────────────────────────────────────────────
+    const SpendLogApp = (() => {
+
+    // ─── SL constants ─────────────────────────────────────────────────────────
+    const SL_DEFAULT_CATEGORIES = [
+      { id: "housing",     label: "Housing",       emoji: "🏠", color: "#60a5fa" },
+      { id: "transport",   label: "Transport",     emoji: "🚗", color: "#f59e0b" },
+      { id: "groceries",   label: "Groceries",     emoji: "🛒", color: "#4ade80" },
+      { id: "eating_out",  label: "Eating out",    emoji: "🍽️", color: "#fb923c" },
+      { id: "entertainment",label:"Entertainment", emoji: "🎬", color: "#a78bfa" },
+      { id: "sport",       label: "Sport",         emoji: "🏋️", color: "#22d3ee" },
+      { id: "clothing",    label: "Clothing",      emoji: "👕", color: "#f472b6" },
+      { id: "health",      label: "Health",        emoji: "💊", color: "#34d399" },
+      { id: "education",   label: "Education",     emoji: "📚", color: "#fbbf24" },
+      { id: "travel",      label: "Travel",        emoji: "✈️", color: "#38bdf8" },
+      { id: "home",        label: "Home",          emoji: "🛠️", color: "#94a3b8" },
+      { id: "tech",        label: "Tech",          emoji: "💻", color: "#818cf8" },
+      { id: "gifts",       label: "Gifts",         emoji: "🎁", color: "#f87171" },
+      { id: "finance",     label: "Finance",       emoji: "💰", color: "#4ade80" },
+      { id: "pets",        label: "Pets",          emoji: "🐾", color: "#fbbf24" },
+      { id: "personal",    label: "Personal care", emoji: "🧴", color: "#e879f9" },
+      { id: "other",       label: "Other",         emoji: "📦", color: "#64748b" },
+    ];
+
+    // ─── SL Supabase helpers ──────────────────────────────────────────────────
+    async function slLoadConfig(profileId) {
+      const { data } = await _sb.from("sl_config")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").single();
+      return data?.data || { currency: "EUR", budget: null, customCategories: [] };
+    }
+    async function slSaveConfig(cfg, profileId) {
+      await _sb.from("sl_config").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: cfg },
+        { onConflict: "user_id,profile_id" }
+      );
+    }
+    async function slLoadTransactions(profileId) {
+      const { data } = await _sb.from("sl_transactions")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").single();
+      return Array.isArray(data?.data) ? data.data : [];
+    }
+    async function slSaveTransactions(txs, profileId) {
+      await _sb.from("sl_transactions").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: txs },
+        { onConflict: "user_id,profile_id" }
+      );
+    }
+    async function slLoadSubscriptions(profileId) {
+      const { data } = await _sb.from("sl_subscriptions")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").single();
+      return Array.isArray(data?.data) ? data.data : [];
+    }
+    async function slSaveSubscriptions(subs, profileId) {
+      await _sb.from("sl_subscriptions").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: subs },
+        { onConflict: "user_id,profile_id" }
+      );
+    }
+
+    // ─── SL helpers ───────────────────────────────────────────────────────────
+    const SL_ACCENT_A = "#4ade80";
+    const SL_ACCENT_B = "#22d3ee";
+    const slUuid = () => "sl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    const slFmtAmount = (n, currency) => {
+      try { return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n); }
+      catch { return (currency || "EUR") + " " + Number(n).toFixed(2); }
+    };
+    const slMonthKey  = (date) => date.slice(0, 7); // "YYYY-MM"
+    const slMonthLabel = (key) => {
+      const [y, m] = key.split("-");
+      return new Date(Number(y), Number(m) - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
+    };
+    const slTodayKey  = () => new Date().toISOString().slice(0, 7);
+    const slMonthlyCost = (sub) => {
+      const a = Number(sub.amount) || 0;
+      if (sub.cycle === "annual") return a / 12;
+      if (sub.cycle === "weekly") return a * 4.33;
+      return a; // monthly
+    };
+    // Returns ISO dates (YYYY-MM-DD) when a subscription bills in a given month
+    const slSubBilledInMonth = (sub, monthKey) => {
+      if (!sub.active) return false;
+      if (!sub.nextBilling) return false;
+      return slMonthKey(sub.nextBilling) === monthKey ||
+        (sub.cycle === "monthly" && sub.nextBilling <= monthKey + "-31") ||
+        sub.nextBilling.startsWith(monthKey);
+    };
+
+    // ─── SL sub-components ────────────────────────────────────────────────────
+
+    function SlCategoryPicker({ value, onChange, allCategories, style }) {
+      const [open, setOpen] = React.useState(false);
+      const cat = allCategories.find(c => c.id === value);
+      return (
+        <div style={{ position: "relative", ...style }}>
+          <button onClick={() => setOpen(o => !o)}
+            style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", cursor: "pointer", color: "#e2e8f0" }}
+            onFocus={e => e.currentTarget.style.borderColor = "#4ade8066"}
+            onBlur={e => e.currentTarget.style.borderColor = "#1e2d3d"}>
+            <span style={{ fontSize: 16 }}>{cat ? cat.emoji : "❓"}</span>
+            <span style={{ flex: 1, textAlign: "left", fontSize: 14, color: cat ? "#e2e8f0" : "#3d526a" }}>{cat ? cat.label : "Select category"}</span>
+            <span style={{ fontSize: 10, color: "#3d526a" }}>▾</span>
+          </button>
+          {open && (
+            <>
+              <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 198 }} />
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, zIndex: 199, maxHeight: 240, overflowY: "auto", boxShadow: "0 16px 40px rgba(0,0,0,0.6)" }}>
+                {allCategories.map(c => (
+                  <button key={c.id} onClick={() => { onChange(c.id); setOpen(false); }}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", background: value === c.id ? "#4ade8011" : "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#0f1923"}
+                    onMouseLeave={e => e.currentTarget.style.background = value === c.id ? "#4ade8011" : "transparent"}>
+                    <span style={{ fontSize: 16 }}>{c.emoji}</span>
+                    <span style={{ fontSize: 13, color: "#c8d8e8" }}>{c.label}</span>
+                    {value === c.id && <span style={{ marginLeft: "auto", color: "#4ade80", fontSize: 12 }}>✓</span>}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    function SlTransactionForm({ allCategories, currency, onSave, onCancel, initial }) {
+      const today = new Date().toISOString().slice(0, 10);
+      const [amount,   setAmount]   = React.useState(initial ? String(initial.amount) : "");
+      const [category, setCategory] = React.useState(initial ? initial.category : "");
+      const [date,     setDate]     = React.useState(initial ? initial.date : today);
+      const [notes,    setNotes]    = React.useState(initial ? (initial.notes || "") : "");
+      const [payMethod,setPayMethod]= React.useState(initial ? (initial.paymentMethod || "") : "");
+      const valid = amount && Number(amount) > 0 && category && date;
+      const inp = { background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, width: "100%", boxSizing: "border-box" };
+      const focusStyle = e => e.target.style.borderColor = "#4ade8066";
+      const blurStyle  = e => e.target.style.borderColor = "#1e2d3d";
+      return (
+        <div style={{ background: "#0b1520", border: "1px solid #1a2535", borderRadius: 14, padding: "22px 24px" }}>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16, color: "#e2e8f0", marginBottom: 18 }}>
+            {initial ? "Edit transaction" : "Add transaction"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Amount ({currency})</div>
+              <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}
+                placeholder="0.00" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Date</div>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Category</div>
+            <SlCategoryPicker value={category} onChange={setCategory} allCategories={allCategories} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</div>
+              <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Payment method</div>
+              <input value={payMethod} onChange={e => setPayMethod(e.target.value)} placeholder="Card, cash…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => onSave({ amount: Number(amount), category, date, notes: notes || null, paymentMethod: payMethod || null })}
+              disabled={!valid}
+              style={{ flex: 1, background: valid ? SL_ACCENT_A : "#1a2535", color: valid ? "#0f172a" : "#3d526a", border: "none", borderRadius: 9, padding: "10px", fontWeight: 700, fontSize: 14, cursor: valid ? "pointer" : "default" }}>
+              {initial ? "Save changes" : "Add transaction"}
+            </button>
+            <button onClick={onCancel} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 9, padding: "10px 16px", cursor: "pointer", fontSize: 14 }}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+
+    function SlSubscriptionForm({ allCategories, currency, onSave, onCancel, initial }) {
+      const today = new Date().toISOString().slice(0, 10);
+      const [name,     setName]     = React.useState(initial ? initial.name : "");
+      const [amount,   setAmount]   = React.useState(initial ? String(initial.amount) : "");
+      const [cycle,    setCycle]    = React.useState(initial ? initial.cycle : "monthly");
+      const [category, setCategory] = React.useState(initial ? initial.category : "");
+      const [nextBill, setNextBill] = React.useState(initial ? initial.nextBilling : today);
+      const [notes,    setNotes]    = React.useState(initial ? (initial.notes || "") : "");
+      const valid = name.trim() && amount && Number(amount) > 0 && category && nextBill;
+      const inp = { background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, width: "100%", boxSizing: "border-box" };
+      const focusStyle = e => e.target.style.borderColor = "#4ade8066";
+      const blurStyle  = e => e.target.style.borderColor = "#1e2d3d";
+      return (
+        <div style={{ background: "#0b1520", border: "1px solid #1a2535", borderRadius: 14, padding: "22px 24px" }}>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16, color: "#e2e8f0", marginBottom: 18 }}>
+            {initial ? "Edit subscription" : "Add subscription"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Name</div>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Netflix, Gym…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Amount ({currency})</div>
+              <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Billing cycle</div>
+              <select value={cycle} onChange={e => setCycle(e.target.value)} style={{ ...inp, cursor: "pointer" }}>
+                <option value="monthly">Monthly</option>
+                <option value="annual">Annual</option>
+                <option value="weekly">Weekly</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Next billing date</div>
+              <input type="date" value={nextBill} onChange={e => setNextBill(e.target.value)} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Category</div>
+            <SlCategoryPicker value={category} onChange={setCategory} allCategories={allCategories} />
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</div>
+            <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => onSave({ name: name.trim(), amount: Number(amount), cycle, category, nextBilling: nextBill, notes: notes || null, active: initial ? initial.active : true })}
+              disabled={!valid}
+              style={{ flex: 1, background: valid ? SL_ACCENT_A : "#1a2535", color: valid ? "#0f172a" : "#3d526a", border: "none", borderRadius: 9, padding: "10px", fontWeight: 700, fontSize: 14, cursor: valid ? "pointer" : "default" }}>
+              {initial ? "Save changes" : "Add subscription"}
+            </button>
+            <button onClick={onCancel} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #1e2d3d", borderRadius: 9, padding: "10px 16px", cursor: "pointer", fontSize: 14 }}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── SL Dashboard tab ─────────────────────────────────────────────────────
+    function SlDashboard({ transactions, subscriptions, allCategories, currency, monthKey, budget }) {
+      // Transactions for this month
+      const monthTxs = transactions.filter(t => slMonthKey(t.date) === monthKey);
+      // Subscriptions that bill this month
+      const monthSubs = subscriptions.filter(s => s.active && s.nextBilling && s.nextBilling.startsWith(monthKey));
+      const txTotal  = monthTxs.reduce((s, t) => s + Number(t.amount), 0);
+      const subTotal = monthSubs.reduce((s, sub) => s + Number(sub.amount), 0);
+      const total    = txTotal + subTotal;
+      const budgetPct = budget ? Math.min(100, (total / budget) * 100) : null;
+
+      // Category breakdown (transactions + subs combined)
+      const catMap = {};
+      monthTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
+      monthSubs.forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
+      const catRows = Object.entries(catMap)
+        .map(([id, amt]) => ({ id, amt, cat: allCategories.find(c => c.id === id) }))
+        .sort((a, b) => b.amt - a.amt);
+      const maxAmt = catRows[0]?.amt || 1;
+
+      return (
+        <div style={{ padding: "28px 28px 60px" }}>
+          {/* Totals row */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 14, marginBottom: 32 }}>
+            {[
+              { label: "Total spent",   value: slFmtAmount(total,    currency), color: total > 0 ? "#e2e8f0" : "#3d526a", sub: null },
+              { label: "Transactions",  value: slFmtAmount(txTotal,  currency), color: "#c8d8e8", sub: `${monthTxs.length} item${monthTxs.length !== 1 ? "s" : ""}` },
+              { label: "Subscriptions", value: slFmtAmount(subTotal, currency), color: "#c8d8e8", sub: `${monthSubs.length} billing` },
+              ...(budget ? [{ label: "Budget left", value: slFmtAmount(budget - total, currency), color: total > budget ? "#f87171" : "#4ade80", sub: `of ${slFmtAmount(budget, currency)}` }] : []),
+            ].map(({ label, value, color, sub }) => (
+              <div key={label} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px" }}>
+                <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>{label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{value}</div>
+                {sub && <div style={{ fontSize: 11, color: "#3d526a", marginTop: 4 }}>{sub}</div>}
+              </div>
+            ))}
+          </div>
+
+          {/* Budget progress bar */}
+          {budget && (
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#3d526a", marginBottom: 6 }}>
+                <span>Budget usage</span><span>{budgetPct.toFixed(0)}%</span>
+              </div>
+              <div style={{ height: 6, background: "#0d1825", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: budgetPct + "%", background: budgetPct > 90 ? "#f87171" : budgetPct > 70 ? "#f59e0b" : "#4ade80", borderRadius: 4, transition: "width 0.4s" }} />
+              </div>
+            </div>
+          )}
+
+          {/* Category breakdown */}
+          {catRows.length > 0 ? (
+            <div>
+              <div style={{ fontSize: 12, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, marginBottom: 16 }}>By category</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {catRows.map(({ id, amt, cat }) => (
+                  <div key={id}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 15 }}>{cat ? cat.emoji : "❓"}</span>
+                        <span style={{ fontSize: 13, color: "#c8d8e8" }}>{cat ? cat.label : id}</span>
+                      </div>
+                      <span style={{ fontSize: 13, color: "#8899aa", fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(amt, currency)}</span>
+                    </div>
+                    <div style={{ height: 4, background: "#0d1825", borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: (amt / maxAmt * 100) + "%", background: cat ? cat.color : "#3d526a", borderRadius: 3, transition: "width 0.4s" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#2d3f55" }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>📊</div>
+              <div style={{ fontSize: 14 }}>No spending recorded for this month yet.</div>
+            </div>
+          )}
+
+          {/* Subscriptions billing this month */}
+          {monthSubs.length > 0 && (
+            <div style={{ marginTop: 36 }}>
+              <div style={{ fontSize: 12, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, marginBottom: 16 }}>Subscriptions this month</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {monthSubs.map(s => {
+                  const cat = allCategories.find(c => c.id === s.category);
+                  return (
+                    <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "12px 16px" }}>
+                      <span style={{ fontSize: 18 }}>{cat ? cat.emoji : "📦"}</span>
+                      <span style={{ flex: 1, fontSize: 14, color: "#c8d8e8" }}>{s.name}</span>
+                      <span style={{ fontSize: 13, color: "#8899aa", fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(s.amount, currency)}</span>
+                      <span style={{ fontSize: 10, color: "#2d3f55", background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "2px 8px", textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.cycle}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── SL Transactions tab ──────────────────────────────────────────────────
+    function SlTransactions({ transactions, allCategories, currency, monthKey, onAdd, onEdit, onDelete }) {
+      const [showForm,  setShowForm]  = React.useState(false);
+      const [editEntry, setEditEntry] = React.useState(null);
+      const [confirmDel, setConfirmDel] = React.useState(null);
+      const monthTxs = transactions
+        .filter(t => slMonthKey(t.date) === monthKey)
+        .sort((a, b) => b.date.localeCompare(a.date));
+
+      const handleSave = (data) => {
+        if (editEntry) { onEdit({ ...editEntry, ...data }); setEditEntry(null); }
+        else { onAdd({ id: slUuid(), ...data }); setShowForm(false); }
+      };
+
+      return (
+        <div style={{ padding: "28px 28px 60px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div style={{ fontSize: 13, color: "#3d526a" }}>{monthTxs.length} transaction{monthTxs.length !== 1 ? "s" : ""}</div>
+            <button onClick={() => { setShowForm(true); setEditEntry(null); }}
+              style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+              + Add
+            </button>
+          </div>
+
+          {(showForm && !editEntry) && (
+            <div style={{ marginBottom: 20 }}>
+              <SlTransactionForm allCategories={allCategories} currency={currency} onSave={handleSave} onCancel={() => setShowForm(false)} />
+            </div>
+          )}
+
+          {editEntry && (
+            <div style={{ marginBottom: 20 }}>
+              <SlTransactionForm allCategories={allCategories} currency={currency} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
+            </div>
+          )}
+
+          {monthTxs.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#2d3f55" }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>🧾</div>
+              <div style={{ fontSize: 14 }}>No transactions this month.</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {monthTxs.map(t => {
+                const cat = allCategories.find(c => c.id === t.category);
+                return confirmDel === t.id ? (
+                  <div key={t.id} style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
+                    Delete this transaction?
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button onClick={() => { onDelete(t.id); setConfirmDel(null); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Delete</button>
+                      <button onClick={() => setConfirmDel(null)} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #2d3f55", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "12px 16px", transition: "border-color 0.15s" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = "#2d3f55"}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+                    <span style={{ fontSize: 20, flexShrink: 0 }}>{cat ? cat.emoji : "❓"}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{cat ? cat.label : t.category}</div>
+                      <div style={{ fontSize: 11, color: "#3d526a", marginTop: 2 }}>{t.date}{t.notes ? " · " + t.notes : ""}{t.paymentMethod ? " · " + t.paymentMethod : ""}</div>
+                    </div>
+                    <span style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 700, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{slFmtAmount(t.amount, currency)}</span>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <button onClick={() => { setEditEntry(t); setShowForm(false); }} style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#8899aa"} onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>✏️</button>
+                      <button onClick={() => setConfirmDel(t.id)} style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>🗑</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── SL Subscriptions tab ─────────────────────────────────────────────────
+    function SlSubscriptions({ subscriptions, allCategories, currency, onAdd, onEdit, onDelete, onToggle }) {
+      const [showForm,   setShowForm]   = React.useState(false);
+      const [editEntry,  setEditEntry]  = React.useState(null);
+      const [confirmDel, setConfirmDel] = React.useState(null);
+      const active   = subscriptions.filter(s => s.active).sort((a, b) => (a.nextBilling || "").localeCompare(b.nextBilling || ""));
+      const inactive = subscriptions.filter(s => !s.active);
+      const mrr = active.reduce((s, sub) => s + slMonthlyCost(sub), 0);
+
+      const handleSave = (data) => {
+        if (editEntry) { onEdit({ ...editEntry, ...data }); setEditEntry(null); }
+        else { onAdd({ id: slUuid(), ...data }); setShowForm(false); }
+      };
+
+      const SubCard = ({ s }) => {
+        const cat = allCategories.find(c => c.id === s.category);
+        const daysUntil = s.nextBilling ? Math.round((new Date(s.nextBilling) - new Date()) / 86400000) : null;
+        return confirmDel === s.id ? (
+          <div style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
+            Delete "{s.name}"?
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button onClick={() => { onDelete(s.id); setConfirmDel(null); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Delete</button>
+              <button onClick={() => setConfirmDel(null)} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #2d3f55", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "14px 16px", opacity: s.active ? 1 : 0.45, transition: "border-color 0.15s" }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = "#2d3f55"}
+            onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+            <span style={{ fontSize: 22, flexShrink: 0 }}>{cat ? cat.emoji : "📦"}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, color: "#e2e8f0", fontWeight: 600, marginBottom: 2 }}>{s.name}</div>
+              <div style={{ fontSize: 11, color: "#3d526a" }}>
+                {cat ? cat.label : s.category}
+                {s.nextBilling && daysUntil !== null && <span style={{ color: daysUntil <= 7 ? "#f59e0b" : "#3d526a" }}> · {daysUntil <= 0 ? "due today" : `in ${daysUntil}d`}</span>}
+                {s.notes && " · " + s.notes}
+              </div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(s.amount, currency)}</div>
+              <div style={{ fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                {s.cycle}{s.cycle === "annual" ? <span style={{ color: "#5a7080" }}> ({slFmtAmount(slMonthlyCost(s), currency)}/mo)</span> : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+              <button onClick={() => onToggle(s.id)} title={s.active ? "Pause" : "Activate"}
+                style={{ background: s.active ? "#4ade8022" : "#1a2535", border: `1px solid ${s.active ? "#4ade8044" : "#1a2535"}`, color: s.active ? "#4ade80" : "#3d526a", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 11 }}>
+                {s.active ? "Active" : "Paused"}
+              </button>
+              <div style={{ display: "flex", gap: 3 }}>
+                <button onClick={() => { setEditEntry(s); setShowForm(false); }} style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 12, padding: "2px 5px" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#8899aa"} onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>✏️</button>
+                <button onClick={() => setConfirmDel(s.id)} style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 12, padding: "2px 5px" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>🗑</button>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      return (
+        <div style={{ padding: "28px 28px 60px" }}>
+          {/* MRR header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Monthly recurring</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{slFmtAmount(mrr, currency)}<span style={{ fontSize: 12, color: "#3d526a", fontWeight: 400 }}>/mo</span></div>
+            </div>
+            <button onClick={() => { setShowForm(true); setEditEntry(null); }}
+              style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+              + Add
+            </button>
+          </div>
+
+          {(showForm && !editEntry) && (
+            <div style={{ marginBottom: 20 }}>
+              <SlSubscriptionForm allCategories={allCategories} currency={currency} onSave={handleSave} onCancel={() => setShowForm(false)} />
+            </div>
+          )}
+          {editEntry && (
+            <div style={{ marginBottom: 20 }}>
+              <SlSubscriptionForm allCategories={allCategories} currency={currency} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
+            </div>
+          )}
+
+          {subscriptions.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#2d3f55" }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>🔁</div>
+              <div style={{ fontSize: 14 }}>No subscriptions yet.</div>
+            </div>
+          ) : (
+            <>
+              {active.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 9, color: "#2d3f55", textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: 700, marginBottom: 10 }}>Active · {active.length}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {active.map(s => <SubCard key={s.id} s={s} />)}
+                  </div>
+                </div>
+              )}
+              {inactive.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 9, color: "#2d3f55", textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: 700, marginBottom: 10 }}>Paused · {inactive.length}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {inactive.map(s => <SubCard key={s.id} s={s} />)}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ─── SL Settings tab ──────────────────────────────────────────────────────
+    function SlSettings({ config, onSave, allCategories }) {
+      const [currency,   setCurrency]   = React.useState(config.currency || "EUR");
+      const [budget,     setBudget]     = React.useState(config.budget ? String(config.budget) : "");
+      const [customCats, setCustomCats] = React.useState(config.customCategories || []);
+      const [newEmoji,   setNewEmoji]   = React.useState("");
+      const [newLabel,   setNewLabel]   = React.useState("");
+      const [newColor,   setNewColor]   = React.useState("#94a3b8");
+      const [saved,      setSaved]      = React.useState(false);
+      const inp = { background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, boxSizing: "border-box" };
+      const save = async () => {
+        await onSave({ currency, budget: budget ? Number(budget) : null, customCategories: customCats });
+        setSaved(true); setTimeout(() => setSaved(false), 2000);
+      };
+      const addCat = () => {
+        if (!newLabel.trim()) return;
+        setCustomCats(prev => [...prev, { id: "custom_" + Date.now(), label: newLabel.trim(), emoji: newEmoji || "📦", color: newColor }]);
+        setNewLabel(""); setNewEmoji("");
+      };
+      return (
+        <div style={{ padding: "28px 28px 60px", maxWidth: 520 }}>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24, letterSpacing: "-0.02em" }}>Settings</div>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
+            <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" style={{ ...inp, width: 100 }} />
+            <div style={{ fontSize: 11, color: "#2d3f55", marginTop: 5 }}>3-letter ISO code, e.g. EUR, USD, GBP</div>
+          </div>
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Monthly budget (optional)</div>
+            <input type="number" min="0" value={budget} onChange={e => setBudget(e.target.value)} placeholder="Leave blank for no budget" style={{ ...inp, width: 200 }} />
+          </div>
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Custom categories</div>
+            {customCats.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                {customCats.map(c => (
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 20, padding: "4px 10px 4px 8px" }}>
+                    <span>{c.emoji}</span>
+                    <span style={{ fontSize: 12, color: "#c8d8e8" }}>{c.label}</span>
+                    <button onClick={() => setCustomCats(prev => prev.filter(x => x.id !== c.id))} style={{ background: "none", border: "none", color: "#2d3f55", cursor: "pointer", fontSize: 11, padding: 0 }}
+                      onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input value={newEmoji} onChange={e => setNewEmoji(e.target.value)} placeholder="🏷️" style={{ ...inp, width: 52, textAlign: "center" }} />
+              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCat()} placeholder="Category name" style={{ ...inp, flex: 1 }} />
+              <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)} style={{ width: 36, height: 36, borderRadius: 6, border: "1px solid #1e2d3d", background: "#080f18", cursor: "pointer", padding: 2 }} />
+              <button onClick={addCat} style={{ background: "#1a2535", color: "#8899aa", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 13 }}>Add</button>
+            </div>
+          </div>
+          <button onClick={save} style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 28px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+            {saved ? "Saved ✓" : "Save settings"}
+          </button>
+        </div>
+      );
+    }
+
+    // ─── SL App component ─────────────────────────────────────────────────────
+    function App({ logoSlot, profileId, profileChip }) {
+      const [tab,           setTab]           = React.useState("dashboard");
+      const [monthKey,      setMonthKey]       = React.useState(slTodayKey());
+      const [transactions,  setTransactions]   = React.useState([]);
+      const [subscriptions, setSubscriptions]  = React.useState([]);
+      const [config,        setConfig]         = React.useState({ currency: "EUR", budget: null, customCategories: [] });
+      const [loading,       setLoading]        = React.useState(true);
+
+      const allCategories = React.useMemo(() =>
+        [...SL_DEFAULT_CATEGORIES, ...(config.customCategories || [])],
+        [config.customCategories]
+      );
+
+      React.useEffect(() => {
+        if (!profileId) return;
+        setLoading(true);
+        Promise.all([slLoadTransactions(profileId), slLoadSubscriptions(profileId), slLoadConfig(profileId)])
+          .then(([txs, subs, cfg]) => { setTransactions(txs); setSubscriptions(subs); setConfig(cfg); setLoading(false); })
+          .catch(() => setLoading(false));
+      }, [profileId]);
+
+      const saveTxs  = async (txs)  => { setTransactions(txs);  await slSaveTransactions(txs, profileId); };
+      const saveSubs = async (subs) => { setSubscriptions(subs); await slSaveSubscriptions(subs, profileId); };
+
+      const addTx    = (tx)   => saveTxs([...transactions, tx]);
+      const editTx   = (tx)   => saveTxs(transactions.map(t => t.id === tx.id ? tx : t));
+      const deleteTx = (id)   => saveTxs(transactions.filter(t => t.id !== id));
+
+      const addSub    = (s)   => saveSubs([...subscriptions, s]);
+      const editSub   = (s)   => saveSubs(subscriptions.map(x => x.id === s.id ? s : x));
+      const deleteSub = (id)  => saveSubs(subscriptions.filter(s => s.id !== id));
+      const toggleSub = (id)  => saveSubs(subscriptions.map(s => s.id === id ? { ...s, active: !s.active } : s));
+
+      const saveConfig = async (cfg) => { setConfig(cfg); await slSaveConfig(cfg, profileId); };
+
+      // Month navigation
+      const prevMonth = () => {
+        const [y, m] = monthKey.split("-").map(Number);
+        const d = new Date(y, m - 2, 1);
+        setMonthKey(d.toISOString().slice(0, 7));
+      };
+      const nextMonth = () => {
+        const [y, m] = monthKey.split("-").map(Number);
+        const d = new Date(y, m, 1);
+        const next = d.toISOString().slice(0, 7);
+        if (next <= slTodayKey()) setMonthKey(next);
+      };
+      const isCurrentMonth = monthKey === slTodayKey();
+
+      const TABS = [
+        { id: "dashboard",     label: "Dashboard" },
+        { id: "transactions",  label: "Transactions" },
+        { id: "subscriptions", label: "Subscriptions" },
+        { id: "settings",      label: "Settings" },
+      ];
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column" }}>
+
+          {/* Top bar */}
+          <div style={{ height: 56, borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {logoSlot}
+              <div style={{ width: 1, height: 18, background: "#1a2535" }} />
+              <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em" }}>
+                <span style={{ color: SL_ACCENT_A }}>Spend</span><span style={{ color: SL_ACCENT_B }}>Log</span>
+              </span>
+            </div>
+            {profileChip}
+          </div>
+
+          {/* Tab bar + month nav */}
+          <div style={{ borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", flexShrink: 0, background: "#080f18" }}>
+            <div style={{ display: "flex", gap: 0 }}>
+              {TABS.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)}
+                  style={{ background: "none", border: "none", borderBottom: tab === t.id ? `2px solid ${SL_ACCENT_A}` : "2px solid transparent", color: tab === t.id ? SL_ACCENT_A : "#3d526a", cursor: "pointer", padding: "14px 16px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, transition: "color 0.15s" }}
+                  onMouseEnter={e => { if (tab !== t.id) e.currentTarget.style.color = "#8899aa"; }}
+                  onMouseLeave={e => { if (tab !== t.id) e.currentTarget.style.color = "#3d526a"; }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {tab !== "settings" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <button onClick={prevMonth} style={{ background: "none", border: "none", color: "#3d526a", cursor: "pointer", fontSize: 16, padding: "4px 8px" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#8899aa"} onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>‹</button>
+                <span style={{ fontSize: 13, color: "#8899aa", minWidth: 130, textAlign: "center" }}>{slMonthLabel(monthKey)}</span>
+                <button onClick={nextMonth} disabled={isCurrentMonth}
+                  style={{ background: "none", border: "none", color: isCurrentMonth ? "#1e2d3d" : "#3d526a", cursor: isCurrentMonth ? "default" : "pointer", fontSize: 16, padding: "4px 8px" }}
+                  onMouseEnter={e => { if (!isCurrentMonth) e.currentTarget.style.color = "#8899aa"; }}
+                  onMouseLeave={e => { if (!isCurrentMonth) e.currentTarget.style.color = "#3d526a"; }}>›</button>
+              </div>
+            )}
+          </div>
+
+          {/* Content */}
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {loading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#3d526a", fontSize: 14 }}>Loading…</div>
+            ) : (
+              <>
+                {tab === "dashboard"     && <SlDashboard     transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} />}
+                {tab === "transactions"  && <SlTransactions  transactions={transactions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
+                {tab === "settings"      && <SlSettings      config={config} onSave={saveConfig} allCategories={allCategories} />}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    return { App };
+    })(); // end SpendLogApp
+
     function TrackHub() {
       const [user,            setUser]            = useState(null);
       const [username,        setUsername]        = useState(null);
@@ -5978,6 +6692,9 @@
           _sb.from("ml_subcollections").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("pt_library").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("pt_lists").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("sl_transactions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("sl_subscriptions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("sl_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
         if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
@@ -6050,6 +6767,7 @@
         <div style={{ minHeight: "100vh", background: "#060d14" }}>
           {activeId === "meeplelog" && <MeepleLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "plottwist" && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "spendlog"  && <SpendLogApp.App logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
         </div>
       )
     }
