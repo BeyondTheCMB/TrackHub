@@ -6239,32 +6239,149 @@
 
     // ── Individual widgets ────────────────────────────────────────────────────
 
-    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, currency, budget }) {
+    const SL_SUMMARY_METRICS = [
+      { id: "total_spent",       label: "Total spent",         always: true },
+      { id: "transactions",      label: "Transactions",        always: false },
+      { id: "subscriptions",     label: "Subscriptions",       always: false },
+      { id: "budget_left",       label: "Budget left",         always: false },
+      { id: "largest_expense",   label: "Largest expense",     always: false },
+      { id: "top_category",      label: "Top category",        always: false },
+      { id: "days_with_spending",label: "Days with spending",  always: false },
+      { id: "daily_average",     label: "Daily average",       always: false },
+      { id: "vs_last_month",     label: "vs Last month",       always: false },
+      { id: "sub_share",         label: "Subscription share",  always: false },
+      { id: "categories_used",   label: "Categories used",     always: false },
+    ];
+    const SL_DEFAULT_SUMMARY_LAYOUT = SL_SUMMARY_METRICS.map((m, i) => ({
+      id: m.id, order: i, visible: ["total_spent","transactions","subscriptions","budget_left"].includes(m.id),
+    }));
+
+    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, currency, budget, transactions, monthKey, settings, onSettingsChange }) {
+      const [editing, setEditing] = React.useState(false);
+      const [draggingM, setDraggingM] = React.useState(null);
+      const [dragOverM, setDragOverM] = React.useState(null);
+
+      const metricLayout = settings?.summaryMetrics || SL_DEFAULT_SUMMARY_LAYOUT;
+      const sorted = [...metricLayout].sort((a, b) => a.order - b.order);
+
+      const saveMetrics = (next) => onSettingsChange({ ...settings, summaryMetrics: next });
+      const toggleMetric = (id) => saveMetrics(metricLayout.map(m => m.id === id ? { ...m, visible: !m.visible } : m));
+      const onMDragStart = (id) => { setDraggingM(id); setDragOverM(id); };
+      const onMDragEnter = (id) => { if (draggingM && id !== draggingM) setDragOverM(id); };
+      const onMDragEnd   = () => {
+        if (draggingM && dragOverM && draggingM !== dragOverM) {
+          const next = [...metricLayout];
+          const from = next.find(m => m.id === draggingM).order;
+          const to   = next.find(m => m.id === dragOverM).order;
+          next.forEach(m => {
+            if (m.id === draggingM) m.order = to;
+            else if (from < to && m.order > from && m.order <= to) m.order--;
+            else if (from > to && m.order < from && m.order >= to) m.order++;
+          });
+          saveMetrics(next);
+        }
+        setDraggingM(null); setDragOverM(null);
+      };
+
+      // Compute all metric values
       const budgetPct = budget ? Math.min(100, (total / budget) * 100) : null;
-      const cards = [
-        { label: "Total spent",   value: slFmtAmount(total,    currency), color: total > 0 ? "#e2e8f0" : "#3d526a", sub: null },
-        { label: "Transactions",  value: slFmtAmount(txTotal,  currency), color: "#c8d8e8", sub: `${monthTxs.length} item${monthTxs.length !== 1 ? "s" : ""}` },
-        { label: "Subscriptions", value: slFmtAmount(subTotal, currency), color: "#c8d8e8", sub: `${monthSubs.length} billing` },
-        ...(budget ? [{ label: "Budget left", value: slFmtAmount(budget - total, currency), color: total > budget ? "#f87171" : "#4ade80", sub: `of ${slFmtAmount(budget, currency)}` }] : []),
-      ];
+      const largest   = monthTxs.length ? monthTxs.reduce((a, b) => Number(a.amount) > Number(b.amount) ? a : b) : null;
+      const catMap    = {};
+      monthTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
+      monthSubs.forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
+      const topCat    = Object.entries(catMap).sort((a,b) => b[1]-a[1])[0];
+      const today     = new Date(); const [y, mo] = monthKey.split("-").map(Number);
+      const isCurrentMonth = y === today.getFullYear() && mo === today.getMonth() + 1;
+      const daysElapsed = isCurrentMonth ? today.getDate() : new Date(y, mo, 0).getDate();
+      const daysInMonth = new Date(y, mo, 0).getDate();
+      const datesWithSpend = new Set(monthTxs.map(t => t.date)).size;
+      const dailyAvg  = daysElapsed > 0 ? total / daysElapsed : 0;
+      const [prevY, prevMo] = (() => { const d = new Date(y, mo-2, 1); return [d.getFullYear(), d.getMonth()+1]; })();
+      const prevKey   = prevY + "-" + String(prevMo).padStart(2, "0");
+      const prevTotal = transactions.filter(t => slMonthKey(t.date) === prevKey).reduce((s,t) => s+Number(t.amount), 0);
+      const vsDelta   = total - prevTotal;
+      const subShare  = total > 0 ? (subTotal / total) * 100 : 0;
+      const catsUsed  = Object.keys(catMap).length;
+
+      const METRIC_DATA = {
+        total_spent:       { label: "Total spent",        value: slFmtAmount(total, currency),       color: total > 0 ? "#e2e8f0" : "#3d526a", sub: null },
+        transactions:      { label: "Transactions",       value: slFmtAmount(txTotal, currency),     color: "#c8d8e8", sub: `${monthTxs.length} item${monthTxs.length !== 1 ? "s" : ""}` },
+        subscriptions:     { label: "Subscriptions",      value: slFmtAmount(subTotal, currency),    color: "#c8d8e8", sub: `${monthSubs.length} billing` },
+        budget_left:       { label: "Budget left",        value: budget ? slFmtAmount(budget - total, currency) : "—", color: !budget ? "#3d526a" : total > budget ? "#f87171" : "#4ade80", sub: budget ? `of ${slFmtAmount(budget, currency)}` : "no budget set" },
+        largest_expense:   { label: "Largest expense",    value: largest ? slFmtAmount(largest.amount, currency) : "—", color: "#c8d8e8", sub: largest ? (largest.notes || largest.category) : null },
+        top_category:      { label: "Top category",       value: topCat ? topCat[0] : "—",           color: "#c8d8e8", sub: topCat ? slFmtAmount(topCat[1], currency) : null },
+        days_with_spending:{ label: "Days with spending", value: `${datesWithSpend}`,                color: "#c8d8e8", sub: `of ${daysInMonth} days` },
+        daily_average:     { label: "Daily average",      value: slFmtAmount(dailyAvg, currency),    color: "#c8d8e8", sub: `over ${daysElapsed} days` },
+        vs_last_month:     { label: "vs Last month",      value: (vsDelta >= 0 ? "+" : "") + slFmtAmount(vsDelta, currency), color: vsDelta > 0 ? "#f87171" : vsDelta < 0 ? "#4ade80" : "#3d526a", sub: prevTotal > 0 ? `prev: ${slFmtAmount(prevTotal, currency)}` : "no data last month" },
+        sub_share:         { label: "Recurring share",    value: subShare.toFixed(0) + "%",          color: "#c8d8e8", sub: "of total spending" },
+        categories_used:   { label: "Categories used",   value: `${catsUsed}`,                      color: "#c8d8e8", sub: catsUsed === 1 ? "category" : "categories" },
+      };
+
+      const visibleMetrics = sorted.filter(m => m.visible);
+
       return (
         <div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginBottom: budget ? 14 : 0 }}>
-            {cards.map(({ label, value, color, sub }) => (
-              <div key={label} style={{ background: "#080f18", borderRadius: 10, padding: "14px 16px" }}>
-                <div style={{ fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{label}</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{value}</div>
-                {sub && <div style={{ fontSize: 11, color: "#3d526a", marginTop: 3 }}>{sub}</div>}
-              </div>
-            ))}
+          {/* Metric cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))", gap: 10, marginBottom: !!budget ? 14 : 0 }}>
+            {visibleMetrics.map(m => {
+              const d = METRIC_DATA[m.id];
+              if (!d) return null;
+              return (
+                <div key={m.id} style={{ background: "#080f18", borderRadius: 10, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 10, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{d.label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: d.color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em", wordBreak: "break-word" }}>{d.value}</div>
+                  {d.sub && <div style={{ fontSize: 11, color: "#3d526a", marginTop: 3 }}>{d.sub}</div>}
+                </div>
+              );
+            })}
           </div>
-          {budget && (
-            <div>
+
+          {/* Budget bar */}
+          {!!budget && (
+            <div style={{ marginBottom: editing ? 14 : 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#3d526a", marginBottom: 5 }}>
                 <span>Budget usage</span><span>{budgetPct.toFixed(0)}%</span>
               </div>
               <div style={{ height: 5, background: "#080f18", borderRadius: 4, overflow: "hidden" }}>
                 <div style={{ height: "100%", width: budgetPct + "%", background: budgetPct > 90 ? "#f87171" : budgetPct > 70 ? "#f59e0b" : "#4ade80", borderRadius: 4, transition: "width 0.4s" }} />
+              </div>
+            </div>
+          )}
+
+          {/* Configure button */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+            <button onClick={() => setEditing(e => !e)}
+              style={{ background: editing ? "#4ade8011" : "transparent", border: `1px solid ${editing ? "#4ade8033" : "#1a2535"}`, color: editing ? SL_ACCENT_A : "#2d3f55", borderRadius: 6, padding: "3px 12px", cursor: "pointer", fontSize: 11 }}>
+              {editing ? "Done" : "⚙ Configure"}
+            </button>
+          </div>
+
+          {/* Metric editor */}
+          {editing && (
+            <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "12px 14px", marginTop: 8 }}>
+              <div style={{ fontSize: 10, color: "#2d3f55", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>Drag to reorder · click to show/hide</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {sorted.map(m => {
+                  const def = SL_SUMMARY_METRICS.find(x => x.id === m.id);
+                  const on  = m.visible;
+                  const isOver = dragOverM === m.id && draggingM !== m.id;
+                  return (
+                    <div key={m.id}
+                      draggable
+                      onDragStart={() => onMDragStart(m.id)}
+                      onDragEnter={() => onMDragEnter(m.id)}
+                      onDragEnd={onMDragEnd}
+                      onDragOver={e => e.preventDefault()}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: 7, background: isOver ? "#4ade8011" : "transparent", border: `1px solid ${isOver ? "#4ade8033" : "transparent"}`, opacity: draggingM === m.id ? 0.4 : 1, cursor: "grab" }}>
+                      <span style={{ color: "#2d3f55", fontSize: 13, userSelect: "none" }}>⠿</span>
+                      <span style={{ flex: 1, fontSize: 12, color: on ? "#c8d8e8" : "#3d526a" }}>{def?.label}</span>
+                      <button onClick={() => !def?.always && toggleMetric(m.id)}
+                        style={{ background: on ? "#4ade8022" : "transparent", border: `1px solid ${on ? "#4ade8044" : "#1a2535"}`, color: on ? SL_ACCENT_A : "#3d526a", borderRadius: 4, padding: "2px 8px", cursor: def?.always ? "default" : "pointer", fontSize: 10, opacity: def?.always ? 0.4 : 1 }}>
+                        {on ? "Visible" : "Hidden"}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -6300,49 +6417,39 @@
     }
 
     function WCategoryBreakdown({ catRows, maxAmt, currency, total }) {
-      const [mode, setMode] = React.useState("bars");
       if (!catRows.length) return <div style={{ fontSize: 13, color: "#2d3f55", textAlign: "center", padding: "20px 0" }}>No data this month.</div>;
       return (
-        <div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-            {["bars", "donut"].map(m => (
-              <button key={m} onClick={() => setMode(m)}
-                style={{ background: mode === m ? "#4ade8022" : "transparent", border: `1px solid ${mode === m ? "#4ade8044" : "#1a2535"}`, color: mode === m ? SL_ACCENT_A : "#3d526a", borderRadius: 6, padding: "3px 12px", cursor: "pointer", fontSize: 11, fontWeight: mode === m ? 600 : 400 }}>
-                {m === "bars" ? "Bars" : "Donut"}
-              </button>
-            ))}
-          </div>
-          {mode === "bars" ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {catRows.map(({ id, amt, cat }) => (
-                <div key={id}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 14 }}>{cat ? cat.emoji : "❓"}</span>
-                      <span style={{ fontSize: 13, color: "#c8d8e8" }}>{cat ? cat.label : id}</span>
-                    </div>
-                    <span style={{ fontSize: 12, color: "#8899aa", fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(amt, currency)}</span>
-                  </div>
-                  <div style={{ height: 4, background: "#080f18", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: (amt / maxAmt * 100) + "%", background: cat ? cat.color : "#3d526a", borderRadius: 3, transition: "width 0.4s" }} />
-                  </div>
+        <div style={{ display: "flex", gap: 32, alignItems: "flex-start", flexWrap: "wrap" }}>
+          {/* Donut */}
+          <div style={{ display: "flex", alignItems: "center", gap: 18, flexShrink: 0 }}>
+            <SlDonut data={catRows.map(r => ({ value: r.amt, color: r.cat ? r.cat.color : "#3d526a" }))} size={160} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {catRows.slice(0, 8).map(({ id, amt, cat }) => (
+                <div key={id} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <div style={{ width: 9, height: 9, borderRadius: 2, background: cat ? cat.color : "#3d526a", flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: "#8899aa", minWidth: 80 }}>{cat ? cat.label : id}</span>
+                  <span style={{ fontSize: 11, color: "#5a7080", fontVariantNumeric: "tabular-nums" }}>{total > 0 ? ((amt / total) * 100).toFixed(0) + "%" : "0%"}</span>
                 </div>
               ))}
             </div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
-              <SlDonut data={catRows.map(r => ({ value: r.amt, color: r.cat ? r.cat.color : "#3d526a" }))} size={160} />
-              <div style={{ display: "flex", flexDirection: "column", gap: 7, flex: 1, minWidth: 140 }}>
-                {catRows.slice(0, 8).map(({ id, amt, cat }) => (
-                  <div key={id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: 2, background: cat ? cat.color : "#3d526a", flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, color: "#8899aa", flex: 1 }}>{cat ? cat.label : id}</span>
-                    <span style={{ fontSize: 11, color: "#5a7080", fontVariantNumeric: "tabular-nums" }}>{total > 0 ? ((amt / total) * 100).toFixed(0) : 0}%</span>
+          </div>
+          {/* Bars */}
+          <div style={{ flex: 1, minWidth: 200, display: "flex", flexDirection: "column", gap: 10 }}>
+            {catRows.map(({ id, amt, cat }) => (
+              <div key={id}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <span style={{ fontSize: 14 }}>{cat ? cat.emoji : "❓"}</span>
+                    <span style={{ fontSize: 12, color: "#c8d8e8" }}>{cat ? cat.label : id}</span>
                   </div>
-                ))}
+                  <span style={{ fontSize: 12, color: "#8899aa", fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(amt, currency)}</span>
+                </div>
+                <div style={{ height: 4, background: "#080f18", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: (amt / maxAmt * 100) + "%", background: cat ? cat.color : "#3d526a", borderRadius: 3, transition: "width 0.4s" }} />
+                </div>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       );
     }
@@ -6583,6 +6690,10 @@
         onLayoutChange(layout.map(w => w.id === id ? { ...w, visible: !w.visible } : w));
       };
 
+      const updateWidgetSettings = (id, settings) => {
+        onLayoutChange(layout.map(w => w.id === id ? { ...w, settings } : w));
+      };
+
       const renderWidget = (w) => {
         const def = SL_WIDGET_DEFS.find(d => d.id === w.id);
         if (!def) return null;
@@ -6592,7 +6703,7 @@
           <div key={w.id} {...dragProps}
             style={{ opacity: dragging === w.id ? 0.4 : 1, outline: isOver ? `2px solid ${SL_ACCENT_A}` : "none", borderRadius: 14, transition: "opacity 0.15s" }}>
             <SlWidgetCard title={def.label} editMode={editMode} dragHandleProps={{ draggable: false }}>
-              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} budget={budget} />}
+              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} budget={budget} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
               {w.id === "budget_status"      && <WBudgetStatus total={total} budget={budget} currency={currency} />}
               {w.id === "category_breakdown" && <WCategoryBreakdown catRows={catRows} maxAmt={maxAmt} currency={currency} total={total} />}
               {w.id === "top_categories"     && <WTopCategories catRows={catRows} currency={currency} />}
