@@ -5955,37 +5955,43 @@
 
     // ─── SL Supabase helpers ──────────────────────────────────────────────────
     async function slLoadConfig(profileId) {
-      const { data } = await _sb.from("sl_config")
-        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").single();
-      return data?.data || { currency: "EUR", budget: null, customCategories: [] };
+      const { data, error } = await _sb.from("sl_config")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[SpendLog] slLoadConfig error:", error.message, error.code);
+      return data?.data || { currency: "EUR", budget: null, customCategories: [], deletedDefaultCategories: [] };
     }
     async function slSaveConfig(cfg, profileId) {
-      await _sb.from("sl_config").upsert(
+      const { error } = await _sb.from("sl_config").upsert(
         { user_id: _sbUser.id, profile_id: profileId || "default", data: cfg },
         { onConflict: "user_id,profile_id" }
       );
+      if (error) console.error("[SpendLog] slSaveConfig error:", error.message, error.code);
     }
     async function slLoadTransactions(profileId) {
-      const { data } = await _sb.from("sl_transactions")
-        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").single();
+      const { data, error } = await _sb.from("sl_transactions")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[SpendLog] slLoadTransactions error:", error.message, error.code);
       return Array.isArray(data?.data) ? data.data : [];
     }
     async function slSaveTransactions(txs, profileId) {
-      await _sb.from("sl_transactions").upsert(
+      const { error } = await _sb.from("sl_transactions").upsert(
         { user_id: _sbUser.id, profile_id: profileId || "default", data: txs },
         { onConflict: "user_id,profile_id" }
       );
+      if (error) console.error("[SpendLog] slSaveTransactions error:", error.message, error.code);
     }
     async function slLoadSubscriptions(profileId) {
-      const { data } = await _sb.from("sl_subscriptions")
-        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").single();
+      const { data, error } = await _sb.from("sl_subscriptions")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[SpendLog] slLoadSubscriptions error:", error.message, error.code);
       return Array.isArray(data?.data) ? data.data : [];
     }
     async function slSaveSubscriptions(subs, profileId) {
-      await _sb.from("sl_subscriptions").upsert(
+      const { error } = await _sb.from("sl_subscriptions").upsert(
         { user_id: _sbUser.id, profile_id: profileId || "default", data: subs },
         { onConflict: "user_id,profile_id" }
       );
+      if (error) console.error("[SpendLog] slSaveSubscriptions error:", error.message, error.code);
     }
 
     // ─── SL helpers ───────────────────────────────────────────────────────────
@@ -6539,8 +6545,8 @@
       const removeDefault = (id) => autoSave({ deletedDefaultCategories: [...deletedDefs, id] });
       const restoreDefault = (id) => autoSave({ deletedDefaultCategories: deletedDefs.filter(x => x !== id) });
 
-      const visibleDefaults = SL_DEFAULT_CATEGORIES.filter(c => !deletedDefs.includes(c.id));
-      const hiddenDefaults  = SL_DEFAULT_CATEGORIES.filter(c =>  deletedDefs.includes(c.id));
+      const visibleDefaults = SL_DEFAULT_CATEGORIES.filter(c => !deletedDefs.includes(c.id)).sort((a, b) => a.label.localeCompare(b.label));
+      const hiddenDefaults  = SL_DEFAULT_CATEGORIES.filter(c =>  deletedDefs.includes(c.id)).sort((a, b) => a.label.localeCompare(b.label));
 
       return (
         <div style={{ padding: "28px 28px 60px", maxWidth: 560 }}>
@@ -6633,7 +6639,8 @@
       const [loading,       setLoading]        = React.useState(true);
 
       const allCategories = React.useMemo(() =>
-        [...SL_DEFAULT_CATEGORIES.filter(c => !(config.deletedDefaultCategories || []).includes(c.id)), ...(config.customCategories || [])],
+        [...SL_DEFAULT_CATEGORIES.filter(c => !(config.deletedDefaultCategories || []).includes(c.id)), ...(config.customCategories || [])]
+          .sort((a, b) => a.label.localeCompare(b.label)),
         [config.customCategories, config.deletedDefaultCategories]
       );
 
@@ -6880,3 +6887,4 @@
   </script>
 </body>
 </html>
+
