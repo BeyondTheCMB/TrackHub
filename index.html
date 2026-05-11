@@ -6467,61 +6467,158 @@
       );
     }
 
+    // ─── SL Emoji picker ──────────────────────────────────────────────────────
+    const SL_EMOJI_GRID = [
+      "🏠","🚗","🛒","🍽️","🎬","🏋️","👕","💊","📚","✈️","🛠️","💻","🎁","💰","🐾","🧴","📦",
+      "🎮","🍕","🍺","☕","🎵","🎨","📷","🚀","⚽","🏖️","🌿","🐶","🐱","💅","🧹","🏥","🚿",
+      "💈","🎓","🔧","💡","📱","🖥️","🚂","⛽","🅿️","🏦","🛍️","🎪","🎭","🎤","🎸","🥗","🍣",
+    ];
+    function SlEmojiPicker({ value, onChange }) {
+      const [open, setOpen] = React.useState(false);
+      const inp = { background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, color: "#e2e8f0", fontSize: 18, textAlign: "center", boxSizing: "border-box" };
+      return (
+        <div style={{ position: "relative" }}>
+          <div style={{ display: "flex", gap: 0 }}>
+            <input value={value} onChange={e => onChange(e.target.value)} placeholder="🏷️"
+              style={{ ...inp, width: 44, padding: "7px 4px", borderRadius: "8px 0 0 8px" }} />
+            <button onClick={() => setOpen(o => !o)}
+              style={{ background: "#0d1825", border: "1px solid #1e2d3d", borderLeft: "none", borderRadius: "0 8px 8px 0", padding: "0 8px", cursor: "pointer", color: "#3d526a", fontSize: 11 }}
+              onMouseEnter={e => e.currentTarget.style.color = "#8899aa"}
+              onMouseLeave={e => e.currentTarget.style.color = "#3d526a"}>▾</button>
+          </div>
+          {open && (
+            <>
+              <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 298 }} />
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 299, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 10, boxShadow: "0 16px 40px rgba(0,0,0,0.6)", width: 260 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 2 }}>
+                  {SL_EMOJI_GRID.map(em => (
+                    <button key={em} onClick={() => { onChange(em); setOpen(false); }}
+                      style={{ background: value === em ? "#4ade8022" : "transparent", border: "none", borderRadius: 6, padding: "5px 2px", cursor: "pointer", fontSize: 18, lineHeight: 1 }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#1a2535"}
+                      onMouseLeave={e => e.currentTarget.style.background = value === em ? "#4ade8022" : "transparent"}>
+                      {em}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
     // ─── SL Settings tab ──────────────────────────────────────────────────────
-    function SlSettings({ config, onSave, allCategories }) {
-      const [currency,   setCurrency]   = React.useState(config.currency || "EUR");
-      const [budget,     setBudget]     = React.useState(config.budget ? String(config.budget) : "");
-      const [customCats, setCustomCats] = React.useState(config.customCategories || []);
-      const [newEmoji,   setNewEmoji]   = React.useState("");
-      const [newLabel,   setNewLabel]   = React.useState("");
-      const [newColor,   setNewColor]   = React.useState("#94a3b8");
-      const [saved,      setSaved]      = React.useState(false);
+    function SlSettings({ config, onSave }) {
+      const [currency,    setCurrency]   = React.useState(config.currency || "EUR");
+      const [budget,      setBudget]     = React.useState(config.budget ? String(config.budget) : "");
+      const [newEmoji,    setNewEmoji]   = React.useState("");
+      const [newLabel,    setNewLabel]   = React.useState("");
+      const [newColor,    setNewColor]   = React.useState("#94a3b8");
+      const [saved,       setSaved]      = React.useState(false);
       const inp = { background: "#080f18", border: "1px solid #1e2d3d", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, boxSizing: "border-box" };
-      const save = async () => {
-        await onSave({ currency, budget: budget ? Number(budget) : null, customCategories: customCats });
-        setSaved(true); setTimeout(() => setSaved(false), 2000);
+
+      // Read categories directly from config prop — no local copy
+      const customCats  = config.customCategories || [];
+      const deletedDefs = config.deletedDefaultCategories || [];
+
+      const autoSave = (patch) => onSave({ currency, budget: budget ? Number(budget) : null, customCategories: customCats, deletedDefaultCategories: deletedDefs, ...patch });
+
+      const save = () => {
+        onSave({ currency, budget: budget ? Number(budget) : null, customCategories: customCats, deletedDefaultCategories: deletedDefs });
+        setSaved(true); setTimeout(() => setSaved(false), 1500);
       };
+
       const addCat = () => {
         if (!newLabel.trim()) return;
-        setCustomCats(prev => [...prev, { id: "custom_" + Date.now(), label: newLabel.trim(), emoji: newEmoji || "📦", color: newColor }]);
+        const next = [...customCats, { id: "custom_" + Date.now(), label: newLabel.trim(), emoji: newEmoji || "📦", color: newColor }];
         setNewLabel(""); setNewEmoji("");
+        autoSave({ customCategories: next });
       };
+
+      const removeCustom = (id) => autoSave({ customCategories: customCats.filter(x => x.id !== id) });
+      const removeDefault = (id) => autoSave({ deletedDefaultCategories: [...deletedDefs, id] });
+      const restoreDefault = (id) => autoSave({ deletedDefaultCategories: deletedDefs.filter(x => x !== id) });
+
+      const visibleDefaults = SL_DEFAULT_CATEGORIES.filter(c => !deletedDefs.includes(c.id));
+      const hiddenDefaults  = SL_DEFAULT_CATEGORIES.filter(c =>  deletedDefs.includes(c.id));
+
       return (
-        <div style={{ padding: "28px 28px 60px", maxWidth: 520 }}>
+        <div style={{ padding: "28px 28px 60px", maxWidth: 560 }}>
           <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24, letterSpacing: "-0.02em" }}>Settings</div>
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
-            <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" style={{ ...inp, width: 100 }} />
-            <div style={{ fontSize: 11, color: "#2d3f55", marginTop: 5 }}>3-letter ISO code, e.g. EUR, USD, GBP</div>
-          </div>
-          <div style={{ marginBottom: 28 }}>
-            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Monthly budget (optional)</div>
-            <input type="number" min="0" value={budget} onChange={e => setBudget(e.target.value)} placeholder="Leave blank for no budget" style={{ ...inp, width: 200 }} />
-          </div>
-          <div style={{ marginBottom: 28 }}>
-            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Custom categories</div>
-            {customCats.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-                {customCats.map(c => (
-                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 20, padding: "4px 10px 4px 8px" }}>
-                    <span>{c.emoji}</span>
-                    <span style={{ fontSize: 12, color: "#c8d8e8" }}>{c.label}</span>
-                    <button onClick={() => setCustomCats(prev => prev.filter(x => x.id !== c.id))} style={{ background: "none", border: "none", color: "#2d3f55", cursor: "pointer", fontSize: 11, padding: 0 }}
-                      onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>×</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input value={newEmoji} onChange={e => setNewEmoji(e.target.value)} placeholder="🏷️" style={{ ...inp, width: 52, textAlign: "center" }} />
-              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCat()} placeholder="Category name" style={{ ...inp, flex: 1 }} />
-              <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)} style={{ width: 36, height: 36, borderRadius: 6, border: "1px solid #1e2d3d", background: "#080f18", cursor: "pointer", padding: 2 }} />
-              <button onClick={addCat} style={{ background: "#1a2535", color: "#8899aa", border: "none", borderRadius: 8, padding: "9px 14px", cursor: "pointer", fontSize: 13 }}>Add</button>
+
+          {/* Currency + Budget */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 32 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
+              <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" style={{ ...inp, width: "100%" }} />
+              <div style={{ fontSize: 11, color: "#2d3f55", marginTop: 5 }}>ISO code, e.g. EUR, USD, GBP</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Monthly budget <span style={{ color: "#2d3f55", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
+              <input type="number" min="0" value={budget} onChange={e => setBudget(e.target.value)} placeholder="No budget" style={{ ...inp, width: "100%" }} />
             </div>
           </div>
-          <button onClick={save} style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 28px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
-            {saved ? "Saved ✓" : "Save settings"}
-          </button>
+
+          {/* Categories */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#3d526a", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }}>Categories</div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+              {visibleDefaults.map(c => (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 20, padding: "5px 10px" }}>
+                  <span style={{ fontSize: 14 }}>{c.emoji}</span>
+                  <span style={{ fontSize: 12, color: "#8899aa" }}>{c.label}</span>
+                  <button onClick={() => removeDefault(c.id)} style={{ background: "none", border: "none", color: "#2d3f55", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
+                    onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
+                    onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>×</button>
+                </div>
+              ))}
+              {customCats.map(c => (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: `1px solid ${c.color}44`, borderRadius: 20, padding: "5px 10px" }}>
+                  <span style={{ fontSize: 14 }}>{c.emoji}</span>
+                  <span style={{ fontSize: 12, color: "#c8d8e8" }}>{c.label}</span>
+                  <button onClick={() => removeCustom(c.id)} style={{ background: "none", border: "none", color: "#2d3f55", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
+                    onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
+                    onMouseLeave={e => e.currentTarget.style.color = "#2d3f55"}>×</button>
+                </div>
+              ))}
+            </div>
+
+            {hiddenDefaults.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 10, color: "#2d3f55", marginBottom: 7 }}>Hidden — click to restore</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {hiddenDefaults.map(c => (
+                    <button key={c.id} onClick={() => restoreDefault(c.id)}
+                      style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "1px dashed #1a2535", borderRadius: 20, padding: "4px 10px", cursor: "pointer", color: "#2d3f55", fontSize: 12 }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = "#3d526a"; e.currentTarget.style.color = "#5a7080"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#2d3f55"; }}>
+                      <span>{c.emoji}</span> {c.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px" }}>
+              <SlEmojiPicker value={newEmoji} onChange={setNewEmoji} />
+              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCat()}
+                placeholder="New category name" style={{ ...inp, flex: 1, padding: "8px 12px" }} />
+              <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)}
+                style={{ width: 34, height: 34, borderRadius: 6, border: "1px solid #1e2d3d", background: "#080f18", cursor: "pointer", padding: 2, flexShrink: 0 }} />
+              <button onClick={addCat} disabled={!newLabel.trim()}
+                style={{ background: newLabel.trim() ? SL_ACCENT_A : "#1a2535", color: newLabel.trim() ? "#0f172a" : "#3d526a", border: "none", borderRadius: 8, padding: "8px 14px", cursor: newLabel.trim() ? "pointer" : "default", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>
+                Add
+              </button>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 28 }}>
+            <button onClick={save} style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 28px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+              {saved ? "Saved ✓" : "Save settings"}
+            </button>
+            <div style={{ fontSize: 11, color: "#2d3f55", marginTop: 8 }}>Currency and budget require saving manually. Categories are saved instantly.</div>
+          </div>
         </div>
       );
     }
@@ -6536,8 +6633,8 @@
       const [loading,       setLoading]        = React.useState(true);
 
       const allCategories = React.useMemo(() =>
-        [...SL_DEFAULT_CATEGORIES, ...(config.customCategories || [])],
-        [config.customCategories]
+        [...SL_DEFAULT_CATEGORIES.filter(c => !(config.deletedDefaultCategories || []).includes(c.id)), ...(config.customCategories || [])],
+        [config.customCategories, config.deletedDefaultCategories]
       );
 
       React.useEffect(() => {
@@ -6783,19 +6880,3 @@
   </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
