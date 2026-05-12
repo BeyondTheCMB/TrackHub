@@ -6229,7 +6229,8 @@
       { id: "upcoming_billings",  label: "Upcoming Billings",        icon: "📆" },
       { id: "subscriptions_month",label: "Subscriptions This Month", icon: "🔁" },
     ];
-    const SL_DEFAULT_LAYOUT = SL_WIDGET_DEFS.map((w, i) => ({ id: w.id, order: i, visible: true }));
+    const SL_DEFAULT_COLS = { monthly_summary: 1, year_heatmap: 1, category_breakdown: 1 };
+    const SL_DEFAULT_LAYOUT = SL_WIDGET_DEFS.map((w, i) => ({ id: w.id, order: i, visible: true, cols: SL_DEFAULT_COLS[w.id] || 1 }));
 
     // Donut chart component
     function SlDonut({ data, size = 160 }) {
@@ -6261,14 +6262,14 @@
     // Widget card wrapper
     function SlWidgetCard({ children, title, editMode, dragHandleProps }) {
       return (
-        <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px 10px", borderBottom: "1px solid #080f18" }}>
+        <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px 10px", borderBottom: "1px solid #080f18", flexShrink: 0 }}>
             {editMode && (
               <span {...dragHandleProps} style={{ cursor: "grab", color: "#8baabf", fontSize: 16, userSelect: "none", touchAction: "none" }}>⠿</span>
             )}
             <span style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700, flex: 1 }}>{title}</span>
           </div>
-          <div style={{ padding: "16px 18px 18px" }}>{children}</div>
+          <div style={{ padding: "16px 18px 18px", flex: 1, display: "flex", flexDirection: "column" }}>{children}</div>
         </div>
       );
     }
@@ -6425,7 +6426,6 @@
     function WYearHeatmap({ transactions, subscriptions, monthKey }) {
       const currentYear = parseInt(monthKey.split("-")[0]);
       const [heatYear, setHeatYear] = React.useState(currentYear);
-      const [hovered, setHovered] = React.useState(null);
       React.useEffect(() => setHeatYear(parseInt(monthKey.split("-")[0])), [monthKey]);
 
       const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -6449,22 +6449,24 @@
 
       const maxMonth = Math.max(...Object.values(monthlyTotals), 1);
 
-      const heatColor = (amt) => {
-        if (!amt) return "#0d1825";
+      // Returns [bgColor, textColor] — text is always high-contrast against bg
+      const heatColors = (amt, future) => {
+        if (future || !amt) return ["#080f18", "#3d526a"];
         const pct = Math.min(amt / maxMonth, 1);
-        if (pct < 0.2) return "#162d1e";
-        if (pct < 0.4) return "#1a5c34";
-        if (pct < 0.6) return "#1f8c4e";
-        if (pct < 0.8) return "#25b866";
-        return "#4ade80";
+        if (pct < 0.2) return ["#162d1e", "#4ade80"];
+        if (pct < 0.4) return ["#1a5c34", "#7dffc0"];
+        if (pct < 0.6) return ["#1f8c4e", "#d4fff0"];
+        if (pct < 0.8) return ["#25b866", "#0a2918"];
+        return ["#4ade80", "#052010"];
       };
 
       const today = new Date();
       const isFuture = (i) => heatYear > today.getFullYear() || (heatYear === today.getFullYear() && i > today.getMonth());
 
       return (
-        <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          {/* Year nav */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, flexShrink: 0 }}>
             <button onClick={() => setHeatYear(y => y - 1)}
               style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 16, padding: "0 4px" }}
               onMouseEnter={e => e.currentTarget.style.color = "#c8d8e8"}
@@ -6476,39 +6478,31 @@
               onMouseLeave={e => { if (heatYear < currentYear) e.currentTarget.style.color = "#7a90a8"; }}>›</button>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, flex: 1 }}>
+          {/* 4×3 grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gridTemplateRows: "repeat(3, 1fr)", gap: 8, flex: 1 }}>
             {MONTHS.map((label, i) => {
               const mk     = heatYear + "-" + String(i + 1).padStart(2, "0");
               const amt    = monthlyTotals[mk] || 0;
               const future = isFuture(i);
               const isActive = mk === monthKey;
+              const [bg, fg] = heatColors(amt, future);
               return (
-                <div key={mk}
-                  onMouseEnter={() => !future && setHovered(mk)}
-                  onMouseLeave={() => setHovered(null)}
-                  style={{
-                    borderRadius: 8, background: future ? "#080f18" : heatColor(amt),
-                    border: isActive ? "2px solid #4ade80" : hovered === mk ? "2px solid #7a90a8" : "2px solid transparent",
-                    padding: "10px 8px", display: "flex", flexDirection: "column", justifyContent: "space-between",
-                    minHeight: 54, opacity: future ? 0.3 : 1, transition: "border-color 0.15s",
-                  }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: amt && !future ? "#9aaabb" : "#5a7080", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
-                  {!future && <div style={{ fontSize: 13, fontWeight: 700, color: amt ? "#e2e8f0" : "#3d526a", fontVariantNumeric: "tabular-nums", marginTop: 4 }}>
-                    {amt ? "€" + amt.toFixed(0) : "—"}
-                  </div>}
+                <div key={mk} style={{
+                  borderRadius: 8, background: bg,
+                  border: isActive ? "2px solid #4ade80" : "2px solid transparent",
+                  padding: "10px 10px",
+                  display: "flex", flexDirection: "column", justifyContent: "space-between",
+                  opacity: future ? 0.35 : 1,
+                  transition: "border-color 0.15s",
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: fg, textTransform: "uppercase", letterSpacing: "0.07em", opacity: 0.85 }}>{label}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: fg, fontVariantNumeric: "tabular-nums", marginTop: 6 }}>
+                    {!future && (amt ? "€" + amt.toFixed(0) : "—")}
+                  </div>
                 </div>
               );
             })}
           </div>
-
-          {hovered && (
-            <div style={{ marginTop: 10, fontSize: 12, color: "#c8d8e8" }}>
-              <span style={{ color: "#7a90a8" }}>{hovered}</span>
-              <span style={{ marginLeft: 8, color: "#4ade80", fontWeight: 600 }}>
-                {monthlyTotals[hovered] ? "€" + monthlyTotals[hovered].toFixed(2) : "no data"}
-              </span>
-            </div>
-          )}
         </div>
       );
     }
@@ -6870,25 +6864,30 @@
             </div>
           )}
 
-          {/* Widgets — top trio renders as a row, rest stack below */}
+          {/* Widgets — CSS grid, each widget has cols 1-3 */}
           {(() => {
             const visible = sorted.filter(w => w.visible !== false);
-            const TOP_ROW = ["monthly_summary", "year_heatmap", "category_breakdown"];
-            const topRow  = visible.filter(w => TOP_ROW.includes(w.id));
-            const rest    = visible.filter(w => !TOP_ROW.includes(w.id));
             return (
-              <>
-                {topRow.length > 0 && (
-                  <div style={{ display: "flex", gap: 14, alignItems: "stretch", marginBottom: 0 }}>
-                    {topRow.map(w => (
-                      <div key={w.id} style={{ flex: 1, minWidth: 0 }}>
-                        {renderWidget(w)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {rest.map(w => renderWidget(w))}
-              </>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, alignItems: "stretch" }}>
+                {visible.map(w => {
+                  const cols = w.cols || 1;
+                  return (
+                    <div key={w.id} style={{ gridColumn: `span ${Math.min(cols, 3)}`, minWidth: 0 }}>
+                      {editMode && (
+                        <div style={{ display: "flex", gap: 4, marginBottom: 4, justifyContent: "flex-end" }}>
+                          {[1,2,3].map(c => (
+                            <button key={c} onClick={() => onLayoutChange(layout.map(x => x.id === w.id ? { ...x, cols: c } : x))}
+                              style={{ background: cols === c ? "#4ade8022" : "transparent", border: `1px solid ${cols === c ? "#4ade8044" : "#1a2535"}`, color: cols === c ? SL_ACCENT_A : "#5a7080", borderRadius: 5, padding: "1px 8px", cursor: "pointer", fontSize: 11 }}>
+                              {c}col
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {renderWidget(w)}
+                    </div>
+                  );
+                })}
+              </div>
             );
           })()}
         </div>
@@ -7308,7 +7307,7 @@
             const merged = [...savedLayout];
             SL_WIDGET_DEFS.forEach((def, i) => {
               if (!merged.find(w => w.id === def.id)) {
-                merged.push({ id: def.id, order: maxOrder + 1 + i, visible: true });
+                merged.push({ id: def.id, order: maxOrder + 1 + i, visible: true, cols: SL_DEFAULT_COLS[def.id] || 1 });
               }
             });
             setDashLayout(merged.length ? merged : SL_DEFAULT_LAYOUT);
@@ -7556,4 +7555,3 @@
   </script>
 </body>
 </html>
-
