@@ -6019,9 +6019,26 @@
       if (!sub.active) return false;
       if (!sub.nextBilling) return false;
       if (sub.startDate && slMonthKey(sub.startDate) > monthKey) return false;
-      return slMonthKey(sub.nextBilling) === monthKey ||
-        (sub.cycle === "monthly" && sub.nextBilling <= monthKey + "-31") ||
-        sub.nextBilling.startsWith(monthKey);
+      const [ty, tm] = monthKey.split("-").map(Number);
+      const [ny, nm, nd] = sub.nextBilling.split("-").map(Number);
+      if (sub.cycle === "monthly") {
+        return true; // bills every month; startDate already checked above
+      }
+      if (sub.cycle === "annual") {
+        return nm === tm; // same calendar month each year
+      }
+      if (sub.cycle === "weekly") {
+        const nextDate   = new Date(ny, nm - 1, nd);
+        const monthStart = new Date(ty, tm - 1, 1);
+        const monthEnd   = new Date(ty, tm, 0);
+        let d = new Date(nextDate);
+        while (d > monthEnd) d.setDate(d.getDate() - 7);
+        if (d >= monthStart) return true;
+        d = new Date(nextDate);
+        while (d < monthStart) d.setDate(d.getDate() + 7);
+        return d <= monthEnd;
+      }
+      return slMonthKey(sub.nextBilling) === monthKey;
     };
 
     // ─── SL sub-components ────────────────────────────────────────────────────
@@ -6482,7 +6499,7 @@
       }
       const data = keys.map(k => {
         const txs  = transactions.filter(t => slMonthKey(t.date) === k).reduce((s, t) => s + Number(t.amount), 0);
-        const subs = subscriptions.filter(s => s.active && s.nextBilling && s.nextBilling.startsWith(k)).reduce((s, sub) => s + Number(sub.amount), 0);
+        const subs = subscriptions.filter(s => slSubBilledInMonth(s, k)).reduce((s, sub) => s + Number(sub.amount), 0);
         return { key: k, total: txs + subs, label: slMonthLabel(k).split(" ")[0] };
       });
       const max = Math.max(...data.map(d => d.total), 1);
@@ -6525,7 +6542,7 @@
       const getMap = (mk) => {
         const map = {};
         transactions.filter(t => slMonthKey(t.date) === mk).forEach(t => { map[t.category] = (map[t.category] || 0) + Number(t.amount); });
-        subscriptions.filter(s => s.active && s.nextBilling && s.nextBilling.startsWith(mk)).forEach(s => { map[s.category] = (map[s.category] || 0) + Number(s.amount); });
+        subscriptions.filter(s => slSubBilledInMonth(s, mk)).forEach(s => { map[s.category] = (map[s.category] || 0) + Number(s.amount); });
         return map;
       };
       const cur  = getMap(currentMonthKey);
@@ -6653,7 +6670,7 @@
 
       // Shared data computations
       const monthTxs  = transactions.filter(t => slMonthKey(t.date) === monthKey);
-      const monthSubs = subscriptions.filter(s => s.active && s.nextBilling && s.nextBilling.startsWith(monthKey));
+      const monthSubs = subscriptions.filter(s => slSubBilledInMonth(s, monthKey));
       const txTotal   = monthTxs.reduce((s, t) => s + Number(t.amount), 0);
       const subTotal  = monthSubs.reduce((s, sub) => s + Number(sub.amount), 0);
       const total     = txTotal + subTotal;
@@ -7403,3 +7420,4 @@
   </script>
 </body>
 </html>
+
