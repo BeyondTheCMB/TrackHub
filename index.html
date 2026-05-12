@@ -6422,155 +6422,96 @@
     }
 
     // ─── Year Heatmap widget ──────────────────────────────────────────────────
-    function WYearHeatmap({ transactions, monthKey }) {
+    function WYearHeatmap({ transactions, subscriptions, monthKey }) {
       const currentYear = parseInt(monthKey.split("-")[0]);
       const [heatYear, setHeatYear] = React.useState(currentYear);
-      const [tooltip,  setTooltip]  = React.useState(null);
+      const [hovered, setHovered] = React.useState(null);
       React.useEffect(() => setHeatYear(parseInt(monthKey.split("-")[0])), [monthKey]);
 
-      // Local-time ISO date string (avoids UTC timezone shift)
-      const localIso = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-      const dailyTotals = React.useMemo(() => {
+      const monthlyTotals = React.useMemo(() => {
         const map = {};
         transactions.forEach(t => {
           if (t.date && t.date.startsWith(String(heatYear))) {
-            map[t.date] = (map[t.date] || 0) + Number(t.amount);
+            const mk = t.date.slice(0, 7);
+            map[mk] = (map[mk] || 0) + Number(t.amount);
           }
         });
-        return map;
-      }, [transactions, heatYear]);
-
-      const maxDay = Math.max(...Object.values(dailyTotals), 1);
-
-      const heatCells = React.useMemo(() => {
-        const weeks = [];
-        const jan1 = new Date(heatYear, 0, 1);
-        const startOffset = (jan1.getDay() + 6) % 7; // Monday = 0
-        const cur = new Date(heatYear, 0, 1 - startOffset);
-        for (let w = 0; w < 54; w++) {
-          const week = [];
-          for (let d = 0; d < 7; d++) {
-            const iso    = localIso(cur);
-            const inYear = cur.getFullYear() === heatYear;
-            week.push({ iso, inYear, amt: inYear ? (dailyTotals[iso] || 0) : null, month: cur.getMonth(), day: cur.getDate() });
-            cur.setDate(cur.getDate() + 1);
-          }
-          weeks.push(week);
-          if (w > 4 && week.every(c => !c.inYear)) break;
+        for (let m = 1; m <= 12; m++) {
+          const mk = heatYear + "-" + String(m).padStart(2, "0");
+          subscriptions.forEach(s => {
+            if (slSubBilledInMonth(s, mk)) map[mk] = (map[mk] || 0) + Number(s.amount);
+          });
         }
-        return weeks;
-      }, [heatYear, dailyTotals]);
+        return map;
+      }, [transactions, subscriptions, heatYear]);
+
+      const maxMonth = Math.max(...Object.values(monthlyTotals), 1);
 
       const heatColor = (amt) => {
         if (!amt) return "#0d1825";
-        const pct = Math.min(amt / maxDay, 1);
-        if (pct < 0.15) return "#162d1e";
-        if (pct < 0.35) return "#1a5c34";
-        if (pct < 0.55) return "#1f8c4e";
-        if (pct < 0.75) return "#25b866";
+        const pct = Math.min(amt / maxMonth, 1);
+        if (pct < 0.2) return "#162d1e";
+        if (pct < 0.4) return "#1a5c34";
+        if (pct < 0.6) return "#1f8c4e";
+        if (pct < 0.8) return "#25b866";
         return "#4ade80";
       };
 
-      const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      const monthLabelWeeks = {};
-      heatCells.forEach((week, wi) => {
-        week.forEach(c => {
-          if (c.inYear && c.day === 1 && !(c.month in monthLabelWeeks)) monthLabelWeeks[c.month] = wi;
-        });
-      });
-
-      const totalDays  = Object.keys(dailyTotals).length;
-      const totalSpend = Object.values(dailyTotals).reduce((s, v) => s + v, 0);
+      const today = new Date();
+      const isFuture = (i) => heatYear > today.getFullYear() || (heatYear === today.getFullYear() && i > today.getMonth());
 
       return (
-        <div>
-          {/* Header stats */}
-          <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
-            <div style={{ background: "#080f18", borderRadius: 8, padding: "10px 14px", flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Spending days</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0" }}>{totalDays}<span style={{ fontSize: 12, color: "#7a90a8", fontWeight: 400 }}> / {heatYear % 4 === 0 ? 366 : 365}</span></div>
-            </div>
-            <div style={{ background: "#080f18", borderRadius: 8, padding: "10px 14px", flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Peak day</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#4ade80" }}>
-                {Object.keys(dailyTotals).length ? Object.entries(dailyTotals).sort((a,b)=>b[1]-a[1])[0][0] : "—"}
-              </div>
-            </div>
-          </div>
-
-          {/* Year nav */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}>
             <button onClick={() => setHeatYear(y => y - 1)}
               style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 16, padding: "0 4px" }}
               onMouseEnter={e => e.currentTarget.style.color = "#c8d8e8"}
               onMouseLeave={e => e.currentTarget.style.color = "#7a90a8"}>‹</button>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "#c8d8e8", minWidth: 36, textAlign: "center" }}>{heatYear}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#c8d8e8", minWidth: 34, textAlign: "center" }}>{heatYear}</span>
             <button onClick={() => setHeatYear(y => y + 1)} disabled={heatYear >= currentYear}
               style={{ background: "none", border: "none", color: heatYear >= currentYear ? "#3d526a" : "#7a90a8", cursor: heatYear >= currentYear ? "default" : "pointer", fontSize: 16, padding: "0 4px" }}
               onMouseEnter={e => { if (heatYear < currentYear) e.currentTarget.style.color = "#c8d8e8"; }}
               onMouseLeave={e => { if (heatYear < currentYear) e.currentTarget.style.color = "#7a90a8"; }}>›</button>
           </div>
 
-          {/* Month labels */}
-          <div style={{ display: "flex", marginBottom: 3, paddingLeft: 20 }}>
-            {heatCells.map((_, wi) => {
-              const entry = Object.entries(monthLabelWeeks).find(([, w]) => w === wi);
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, flex: 1 }}>
+            {MONTHS.map((label, i) => {
+              const mk     = heatYear + "-" + String(i + 1).padStart(2, "0");
+              const amt    = monthlyTotals[mk] || 0;
+              const future = isFuture(i);
+              const isActive = mk === monthKey;
               return (
-                <div key={wi} style={{ width: 13, marginRight: 2, flexShrink: 0, fontSize: 10, color: "#5a7080", overflow: "hidden", whiteSpace: "nowrap" }}>
-                  {entry ? MONTH_LABELS[entry[0]] : ""}
+                <div key={mk}
+                  onMouseEnter={() => !future && setHovered(mk)}
+                  onMouseLeave={() => setHovered(null)}
+                  style={{
+                    borderRadius: 8, background: future ? "#080f18" : heatColor(amt),
+                    border: isActive ? "2px solid #4ade80" : hovered === mk ? "2px solid #7a90a8" : "2px solid transparent",
+                    padding: "10px 8px", display: "flex", flexDirection: "column", justifyContent: "space-between",
+                    minHeight: 54, opacity: future ? 0.3 : 1, transition: "border-color 0.15s",
+                  }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: amt && !future ? "#9aaabb" : "#5a7080", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+                  {!future && <div style={{ fontSize: 13, fontWeight: 700, color: amt ? "#e2e8f0" : "#3d526a", fontVariantNumeric: "tabular-nums", marginTop: 4 }}>
+                    {amt ? "€" + amt.toFixed(0) : "—"}
+                  </div>}
                 </div>
               );
             })}
           </div>
 
-          {/* Grid */}
-          <div style={{ display: "flex", gap: 2 }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginRight: 4, flexShrink: 0, paddingTop: 1 }}>
-              {["M","","W","","F","",""].map((d, i) => (
-                <div key={i} style={{ height: 13, fontSize: 10, color: "#5a7080", lineHeight: "13px" }}>{d}</div>
-              ))}
-            </div>
-            {heatCells.map((week, wi) => (
-              <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {week.map((cell, di) => (
-                  <div key={di}
-                    onMouseEnter={() => cell.inYear && setTooltip(cell)}
-                    onMouseLeave={() => setTooltip(null)}
-                    style={{
-                      width: 13, height: 13, borderRadius: 3,
-                      background: cell.inYear ? heatColor(cell.amt) : "transparent",
-                      border: tooltip?.iso === cell.iso ? "1px solid #4ade80" : "1px solid transparent",
-                      cursor: cell.inYear ? "default" : "default",
-                      flexShrink: 0,
-                    }} />
-                ))}
-              </div>
-            ))}
-          </div>
-
-          {/* Tooltip */}
-          {tooltip && tooltip.inYear && (
-            <div style={{ marginTop: 10, fontSize: 12, color: "#c8d8e8", background: "#080f18", borderRadius: 8, padding: "8px 12px", display: "inline-block" }}>
-              <span style={{ color: "#7a90a8" }}>{tooltip.iso}</span>
-              {tooltip.amt > 0
-                ? <span style={{ marginLeft: 8, color: "#4ade80", fontWeight: 600 }}>€{tooltip.amt.toFixed(2)}</span>
-                : <span style={{ marginLeft: 8, color: "#5a7080" }}>no spending</span>}
+          {hovered && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "#c8d8e8" }}>
+              <span style={{ color: "#7a90a8" }}>{hovered}</span>
+              <span style={{ marginLeft: 8, color: "#4ade80", fontWeight: 600 }}>
+                {monthlyTotals[hovered] ? "€" + monthlyTotals[hovered].toFixed(2) : "no data"}
+              </span>
             </div>
           )}
-
-          {/* Legend */}
-          <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 10, justifyContent: "flex-end" }}>
-            <span style={{ fontSize: 11, color: "#5a7080" }}>Less</span>
-            {["#0d1825","#162d1e","#1a5c34","#1f8c4e","#25b866","#4ade80"].map(c => (
-              <div key={c} style={{ width: 13, height: 13, borderRadius: 3, background: c }} />
-            ))}
-            <span style={{ fontSize: 11, color: "#5a7080" }}>More</span>
-          </div>
         </div>
       );
     }
-
     function WBudgetStatus({ total, budget, currency }) {
       if (!budget) return <div style={{ fontSize: 13, color: "#8baabf", textAlign: "center", padding: "20px 0" }}>No budget set. Configure one in Settings.</div>;
       const pct = Math.min(100, (total / budget) * 100);
@@ -6886,7 +6827,7 @@
             style={{ opacity: dragging === w.id ? 0.4 : 1, outline: isOver ? `2px solid ${SL_ACCENT_A}` : "none", borderRadius: 14, transition: "opacity 0.15s" }}>
             <SlWidgetCard title={def.label} editMode={editMode} dragHandleProps={{ draggable: false }}>
               {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} budget={budget} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
-              {w.id === "year_heatmap"       && <WYearHeatmap transactions={transactions} monthKey={monthKey} />}
+              {w.id === "year_heatmap"       && <WYearHeatmap transactions={transactions} subscriptions={subscriptions} monthKey={monthKey} />}
               {w.id === "budget_status"      && <WBudgetStatus total={total} budget={budget} currency={currency} />}
               {w.id === "category_breakdown" && <WCategoryBreakdown catRows={catRows} maxAmt={maxAmt} currency={currency} total={total} />}
               {w.id === "top_categories"     && <WTopCategories catRows={catRows} currency={currency} />}
@@ -7615,3 +7556,4 @@
   </script>
 </body>
 </html>
+
