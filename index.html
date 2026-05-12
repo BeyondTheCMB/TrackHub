@@ -6041,7 +6041,25 @@
       return slMonthKey(sub.nextBilling) === monthKey;
     };
 
-    // ─── SL sub-components ────────────────────────────────────────────────────
+    const slNextBillingDate = (sub) => {
+      if (!sub.nextBilling) return null;
+      const [ny, nm, nd] = sub.nextBilling.split("-").map(Number);
+      const today = new Date(); today.setHours(0,0,0,0);
+      let d = new Date(ny, nm - 1, nd);
+      if (d >= today) return d;
+      if (sub.cycle === "monthly") {
+        // Advance month by month until >= today
+        while (d < today) d.setMonth(d.getMonth() + 1);
+      } else if (sub.cycle === "annual") {
+        while (d < today) d.setFullYear(d.getFullYear() + 1);
+      } else if (sub.cycle === "weekly") {
+        while (d < today) d.setDate(d.getDate() + 7);
+      } else {
+        return d; // unknown cycle, return as-is
+      }
+      return d;
+    };
+    const slFmtDate = (d) => d.toISOString().slice(0, 10);
 
     function SlCategoryPicker({ value, onChange, allCategories, style }) {
       const [open, setOpen] = React.useState(false);
@@ -6615,21 +6633,21 @@
       const in30  = new Date(today); in30.setDate(in30.getDate() + 30);
       const upcoming = subscriptions
         .filter(s => s.active && s.nextBilling)
-        .map(s => ({ ...s, date: new Date(s.nextBilling) }))
-        .filter(s => s.date >= today && s.date <= in30)
-        .sort((a, b) => a.date - b.date);
+        .map(s => ({ ...s, projectedDate: slNextBillingDate(s) }))
+        .filter(s => s.projectedDate && s.projectedDate >= today && s.projectedDate <= in30)
+        .sort((a, b) => a.projectedDate - b.projectedDate);
       if (!upcoming.length) return <div style={{ fontSize: 13, color: "#2d3f55", textAlign: "center", padding: "20px 0" }}>No billings in the next 30 days.</div>;
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {upcoming.map(s => {
-            const cat = allCategories.find(c => c.id === s.category);
-            const days = Math.round((s.date - today) / 86400000);
+            const cat  = allCategories.find(c => c.id === s.category);
+            const days = Math.round((s.projectedDate - today) / 86400000);
             return (
               <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ fontSize: 18, flexShrink: 0 }}>{cat ? cat.emoji : "📦"}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#c8d8e8" }}>{s.name}</div>
-                  <div style={{ fontSize: 10, color: days <= 3 ? "#f59e0b" : "#3d526a" }}>{days === 0 ? "Today" : days === 1 ? "Tomorrow" : `In ${days} days`} · {s.nextBilling}</div>
+                  <div style={{ fontSize: 10, color: days <= 3 ? "#f59e0b" : "#3d526a" }}>{days === 0 ? "Today" : days === 1 ? "Tomorrow" : `In ${days} days`} · {slFmtDate(s.projectedDate)}</div>
                 </div>
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{slFmtAmount(s.amount, currency)}</span>
               </div>
@@ -6863,7 +6881,9 @@
 
       const SubCard = ({ s }) => {
         const cat = allCategories.find(c => c.id === s.category);
-        const daysUntil = s.nextBilling ? Math.round((new Date(s.nextBilling) - new Date()) / 86400000) : null;
+        const projDate  = slNextBillingDate(s);
+        const today     = new Date(); today.setHours(0,0,0,0);
+        const daysUntil = projDate ? Math.round((projDate - today) / 86400000) : null;
         return confirmDel === s.id ? (
           <div style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
             Delete "{s.name}"?
@@ -6882,7 +6902,7 @@
               <div style={{ fontSize: 11, color: "#3d526a" }}>
                 {cat ? cat.label : s.category}
                 {s.startDate && <span> · since {s.startDate}</span>}
-                {s.nextBilling && daysUntil !== null && <span style={{ color: daysUntil <= 7 ? "#f59e0b" : "#3d526a" }}> · {daysUntil <= 0 ? "due today" : `in ${daysUntil}d`}</span>}
+                {projDate && daysUntil !== null && <span style={{ color: daysUntil <= 7 ? "#f59e0b" : "#3d526a" }}> · {daysUntil === 0 ? "due today" : daysUntil < 0 ? `overdue ${Math.abs(daysUntil)}d` : `in ${daysUntil}d`} ({slFmtDate(projDate)})</span>}
                 {s.notes && " · " + s.notes}
               </div>
             </div>
@@ -7420,4 +7440,5 @@
   </script>
 </body>
 </html>
+
 
