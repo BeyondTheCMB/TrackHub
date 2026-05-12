@@ -6929,8 +6929,27 @@
             </div>
           )}
 
-          {/* Widgets */}
-          {sorted.filter(w => w.visible !== false).map(w => renderWidget(w))}
+          {/* Widgets — top trio renders as a row, rest stack below */}
+          {(() => {
+            const visible = sorted.filter(w => w.visible !== false);
+            const TOP_ROW = ["monthly_summary", "year_heatmap", "category_breakdown"];
+            const topRow  = visible.filter(w => TOP_ROW.includes(w.id));
+            const rest    = visible.filter(w => !TOP_ROW.includes(w.id));
+            return (
+              <>
+                {topRow.length > 0 && (
+                  <div style={{ display: "flex", gap: 14, alignItems: "stretch", marginBottom: 0 }}>
+                    {topRow.map(w => (
+                      <div key={w.id} style={{ flex: 1, minWidth: 0 }}>
+                        {renderWidget(w)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {rest.map(w => renderWidget(w))}
+              </>
+            );
+          })()}
         </div>
       );
     }
