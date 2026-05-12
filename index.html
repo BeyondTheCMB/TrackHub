@@ -7343,7 +7343,15 @@
         Promise.all([slLoadTransactions(profileId), slLoadSubscriptions(profileId), slLoadConfig(profileId)])
           .then(([txs, subs, cfg]) => {
             setTransactions(txs); setSubscriptions(subs); setConfig(cfg);
-            setDashLayout(cfg.dashboardLayout || SL_DEFAULT_LAYOUT);
+            const savedLayout = cfg.dashboardLayout || [];
+            const maxOrder = savedLayout.reduce((m, w) => Math.max(m, w.order), -1);
+            const merged = [...savedLayout];
+            SL_WIDGET_DEFS.forEach((def, i) => {
+              if (!merged.find(w => w.id === def.id)) {
+                merged.push({ id: def.id, order: maxOrder + 1 + i, visible: true });
+              }
+            });
+            setDashLayout(merged.length ? merged : SL_DEFAULT_LAYOUT);
             setLoading(false);
           })
           .catch(() => setLoading(false));
