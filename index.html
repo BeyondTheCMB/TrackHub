@@ -5993,6 +5993,19 @@
       );
       if (error) console.error("[SpendLog] slSaveSubscriptions error:", error.message, error.code);
     }
+    async function slLoadIncome(profileId) {
+      const { data, error } = await _sb.from("sl_income")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[SpendLog] slLoadIncome error:", error.message, error.code);
+      return Array.isArray(data?.data) ? data.data : [];
+    }
+    async function slSaveIncome(entries, profileId) {
+      const { error } = await _sb.from("sl_income").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: entries },
+        { onConflict: "user_id,profile_id" }
+      );
+      if (error) console.error("[SpendLog] slSaveIncome error:", error.message, error.code);
+    }
 
     // ─── SL helpers ───────────────────────────────────────────────────────────
     const SL_ACCENT_A = "#4ade80";
@@ -6214,13 +6227,199 @@
       );
     }
 
+    // ─── SL Income tab ────────────────────────────────────────────────────────
+    const SL_INCOME_SOURCES = [
+      { id: "salary",    label: "Salary",       emoji: "💼" },
+      { id: "freelance", label: "Freelance",    emoji: "🖥️" },
+      { id: "friend",    label: "Friend/share", emoji: "🤝" },
+      { id: "refund",    label: "Refund",       emoji: "↩️" },
+      { id: "gift",      label: "Gift",         emoji: "🎁" },
+      { id: "invest",    label: "Investment",   emoji: "📈" },
+      { id: "rental",    label: "Rental",       emoji: "🏠" },
+      { id: "other",     label: "Other",        emoji: "📦" },
+    ];
+
+    function SlIncomeSourcePicker({ value, onChange }) {
+      const [open, setOpen] = React.useState(false);
+      const src = SL_INCOME_SOURCES.find(s => s.id === value);
+      const inp = { background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, width: "100%", boxSizing: "border-box" };
+      return (
+        <div style={{ position: "relative" }}>
+          <button onClick={() => setOpen(o => !o)}
+            style={{ ...inp, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+            onFocus={e => e.currentTarget.style.borderColor = "#22d3ee66"}
+            onBlur={e => e.currentTarget.style.borderColor = "#7a90a8"}>
+            <span style={{ fontSize: 16 }}>{src ? src.emoji : "❓"}</span>
+            <span style={{ flex: 1, textAlign: "left", color: src ? "#e2e8f0" : "#7a90a8" }}>{src ? src.label : "Select source"}</span>
+            <span style={{ fontSize: 12, color: "#7a90a8" }}>▾</span>
+          </button>
+          {open && (
+            <>
+              <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 198 }} />
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, zIndex: 199, maxHeight: 220, overflowY: "auto", boxShadow: "0 16px 40px rgba(0,0,0,0.6)" }}>
+                {SL_INCOME_SOURCES.map(s => (
+                  <button key={s.id} onClick={() => { onChange(s.id); setOpen(false); }}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", background: value === s.id ? "#22d3ee11" : "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#0f1923"}
+                    onMouseLeave={e => e.currentTarget.style.background = value === s.id ? "#22d3ee11" : "transparent"}>
+                    <span style={{ fontSize: 16 }}>{s.emoji}</span>
+                    <span style={{ fontSize: 13, color: "#c8d8e8" }}>{s.label}</span>
+                    {value === s.id && <span style={{ marginLeft: "auto", color: "#22d3ee", fontSize: 12 }}>✓</span>}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    function SlIncomeForm({ currency, onSave, onCancel, initial }) {
+      const today = new Date().toISOString().slice(0, 10);
+      const [amount, setAmount] = React.useState(initial ? String(initial.amount) : "");
+      const [source, setSource] = React.useState(initial ? (initial.source || "") : "");
+      const [label,  setLabel]  = React.useState(initial ? (initial.label || "") : "");
+      const [date,   setDate]   = React.useState(initial ? initial.date : today);
+      const [notes,  setNotes]  = React.useState(initial ? (initial.notes || "") : "");
+      const valid = amount && Number(amount) > 0 && source && date;
+      const inp = { background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, width: "100%", boxSizing: "border-box" };
+      const focusStyle = e => e.target.style.borderColor = "#22d3ee66";
+      const blurStyle  = e => e.target.style.borderColor = "#7a90a8";
+      return (
+        <div style={{ background: "#0b1520", border: "1px solid #1a2535", borderRadius: 14, padding: "22px 24px" }}>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16, color: "#e2e8f0", marginBottom: 18 }}>
+            {initial ? "Edit income" : "Add income"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Amount ({currency})</div>
+              <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}
+                placeholder="0.00" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Date</div>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Source</div>
+            <SlIncomeSourcePicker value={source} onChange={setSource} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+            <div>
+              <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Label <span style={{ textTransform: "none", color: "#8baabf" }}>(optional)</span></div>
+              <input value={label} onChange={e => setLabel(e.target.value)} placeholder="From Alex, June salary…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes <span style={{ textTransform: "none", color: "#8baabf" }}>(optional)</span></div>
+              <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => onSave({ amount: Number(amount), source, label: label || null, date, notes: notes || null })}
+              disabled={!valid}
+              style={{ flex: 1, background: valid ? SL_ACCENT_B : "#1a2535", color: valid ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 9, padding: "10px", fontWeight: 700, fontSize: 14, cursor: valid ? "pointer" : "default" }}>
+              {initial ? "Save changes" : "Add income"}
+            </button>
+            <button onClick={onCancel} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #7a90a8", borderRadius: 9, padding: "10px 16px", cursor: "pointer", fontSize: 14 }}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+
+    function SlIncome({ income, currency, monthKey, onAdd, onEdit, onDelete }) {
+      const [showForm,   setShowForm]   = React.useState(false);
+      const [editEntry,  setEditEntry]  = React.useState(null);
+      const [confirmDel, setConfirmDel] = React.useState(null);
+
+      const monthEntries = (income || [])
+        .filter(e => slMonthKey(e.date) === monthKey)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      const monthTotal = monthEntries.reduce((s, e) => s + Number(e.amount), 0);
+
+      const handleSave = (data) => {
+        if (editEntry) { onEdit({ ...editEntry, ...data }); setEditEntry(null); }
+        else { onAdd({ id: slUuid(), ...data }); setShowForm(false); }
+      };
+
+      return (
+        <div style={{ padding: "28px 28px 60px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              <div style={{ fontSize: 13, color: "#7a90a8" }}>{monthEntries.length} entr{monthEntries.length !== 1 ? "ies" : "y"}</div>
+              {monthTotal > 0 && (
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#22d3ee", fontVariantNumeric: "tabular-nums" }}>
+                  +{slFmtAmount(monthTotal, currency)}
+                </div>
+              )}
+            </div>
+            <button onClick={() => { setShowForm(true); setEditEntry(null); }}
+              style={{ background: SL_ACCENT_B, color: "#0f172a", border: "none", borderRadius: 9, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+              + Add
+            </button>
+          </div>
+
+          {(showForm && !editEntry) && (
+            <div style={{ marginBottom: 20 }}>
+              <SlIncomeForm currency={currency} onSave={handleSave} onCancel={() => setShowForm(false)} />
+            </div>
+          )}
+          {editEntry && (
+            <div style={{ marginBottom: 20 }}>
+              <SlIncomeForm currency={currency} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
+            </div>
+          )}
+
+          {monthEntries.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#8baabf" }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>💚</div>
+              <div style={{ fontSize: 14 }}>No income logged this month.</div>
+              <div style={{ fontSize: 13, color: "#7a90a8", marginTop: 6 }}>Add salary, friend payments, refunds — anything coming in.</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {monthEntries.map(e => {
+                const src = SL_INCOME_SOURCES.find(s => s.id === e.source);
+                return confirmDel === e.id ? (
+                  <div key={e.id} style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
+                    Delete this income entry?
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button onClick={() => { onDelete(e.id); setConfirmDel(null); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Delete</button>
+                      <button onClick={() => setConfirmDel(null)} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #8baabf", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "12px 16px", transition: "border-color 0.15s" }}
+                    onMouseEnter={ev => ev.currentTarget.style.borderColor = "#8baabf"}
+                    onMouseLeave={ev => ev.currentTarget.style.borderColor = "#1a2535"}>
+                    <span style={{ fontSize: 20, flexShrink: 0 }}>{src ? src.emoji : "💚"}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{e.label || (src ? src.label : e.source)}</div>
+                      <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>{e.date}{e.notes ? " · " + e.notes : ""}{src && e.label ? " · " + src.label : ""}</div>
+                    </div>
+                    <span style={{ fontSize: 15, color: "#22d3ee", fontWeight: 700, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>+{slFmtAmount(e.amount, currency)}</span>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <button onClick={() => { setEditEntry(e); setShowForm(false); }} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                        onMouseEnter={ev => ev.currentTarget.style.color = "#9aaabb"} onMouseLeave={ev => ev.currentTarget.style.color = "#7a90a8"}>✏️</button>
+                      <button onClick={() => setConfirmDel(e.id)} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                        onMouseEnter={ev => ev.currentTarget.style.color = "#f87171"} onMouseLeave={ev => ev.currentTarget.style.color = "#7a90a8"}>🗑</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // ─── SL Dashboard tab ─────────────────────────────────────────────────────
     // ─── SL Dashboard widgets ─────────────────────────────────────────────────
 
     const SL_WIDGET_DEFS = [
       { id: "monthly_summary",    label: "Monthly Summary",          icon: "💳" },
       { id: "year_heatmap",       label: "Year Heatmap",             icon: "📅" },
-      { id: "budget_status",      label: "Budget Status",            icon: "🎯" },
+      { id: "balance_status",     label: "Balance",                  icon: "⚖️" },
       { id: "category_breakdown", label: "Category Breakdown",       icon: "📊" },
       { id: "top_categories",     label: "Top Categories",           icon: "🏆" },
       { id: "monthly_trend",      label: "Monthly Trend",            icon: "📈" },
@@ -6283,8 +6482,7 @@
       { id: "total_spent",       label: "Total spent",         always: true },
       { id: "transactions",      label: "Transactions",        always: false },
       { id: "subscriptions",     label: "Subscriptions",       always: false },
-      { id: "budget_left",       label: "Budget left",         always: false },
-      { id: "largest_expense",   label: "Largest expense",     always: false },
+      { id: "net_balance",       label: "Net balance",         always: false },
       { id: "top_category",      label: "Top category",        always: false },
       { id: "days_with_spending",label: "Days with spending",  always: false },
       { id: "daily_average",     label: "Daily average",       always: false },
@@ -6293,10 +6491,10 @@
       { id: "categories_used",   label: "Categories used",     always: false },
     ];
     const SL_DEFAULT_SUMMARY_LAYOUT = SL_SUMMARY_METRICS.map((m, i) => ({
-      id: m.id, order: i, visible: ["total_spent","transactions","subscriptions","budget_left"].includes(m.id),
+      id: m.id, order: i, visible: ["total_spent","transactions","subscriptions","net_balance"].includes(m.id),
     }));
 
-    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, currency, budget, transactions, monthKey, settings, onSettingsChange }) {
+    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, currency, income, transactions, monthKey, settings, onSettingsChange }) {
       const [editing, setEditing] = React.useState(false);
       const [draggingM, setDraggingM] = React.useState(null);
       const [dragOverM, setDragOverM] = React.useState(null);
@@ -6324,7 +6522,9 @@
       };
 
       // Compute all metric values
-      const budgetPct = budget ? Math.min(100, (total / budget) * 100) : null;
+      const budgetPct = null; // budget removed — kept for compat
+      const incomeTotal = (income || []).filter(e => slMonthKey(e.date) === monthKey).reduce((s, e) => s + Number(e.amount), 0);
+      const netBalance = incomeTotal - total;
       const largest   = monthTxs.length ? monthTxs.reduce((a, b) => Number(a.amount) > Number(b.amount) ? a : b) : null;
       const catMap    = {};
       monthTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
@@ -6347,7 +6547,8 @@
         total_spent:       { label: "Total spent",        value: slFmtAmount(total, currency),       color: total > 0 ? "#e2e8f0" : "#7a90a8", sub: null },
         transactions:      { label: "Transactions",       value: slFmtAmount(txTotal, currency),     color: "#c8d8e8", sub: `${monthTxs.length} item${monthTxs.length !== 1 ? "s" : ""}` },
         subscriptions:     { label: "Subscriptions",      value: slFmtAmount(subTotal, currency),    color: "#c8d8e8", sub: `${monthSubs.length} billing` },
-        budget_left:       { label: "Budget left",        value: budget ? slFmtAmount(budget - total, currency) : "—", color: !budget ? "#7a90a8" : total > budget ? "#f87171" : "#4ade80", sub: budget ? `of ${slFmtAmount(budget, currency)}` : "no budget set" },
+        budget_left:       { label: "Budget left",        value: "—", color: "#7a90a8", sub: "removed — use Income tab" },
+        net_balance:       { label: "Net balance",        value: slFmtAmount(netBalance, currency), color: netBalance >= 0 ? "#4ade80" : "#f87171", sub: `${slFmtAmount(incomeTotal, currency)} income` },
         largest_expense:   { label: "Largest expense",    value: largest ? slFmtAmount(largest.amount, currency) : "—", color: "#c8d8e8", sub: largest ? (largest.notes || largest.category) : null },
         top_category:      { label: "Top category",       value: topCat ? topCat[0] : "—",           color: "#c8d8e8", sub: topCat ? slFmtAmount(topCat[1], currency) : null },
         days_with_spending:{ label: "Days with spending", value: `${datesWithSpend}`,                color: "#c8d8e8", sub: `of ${daysInMonth} days` },
@@ -6361,7 +6562,7 @@
 
       return (
         <div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))", gap: 10, marginBottom: !!budget ? 14 : 0 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))", gap: 10, marginBottom: 0 }}>
             {visibleMetrics.map(m => {
               const d = METRIC_DATA[m.id];
               if (!d) return null;
@@ -6374,17 +6575,6 @@
               );
             })}
           </div>
-
-          {!!budget && (
-            <div style={{ marginBottom: editing ? 14 : 0 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#7a90a8", marginBottom: 5 }}>
-                <span>Budget usage</span><span>{budgetPct.toFixed(0)}%</span>
-              </div>
-              <div style={{ height: 5, background: "#080f18", borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: budgetPct + "%", background: budgetPct > 90 ? "#f87171" : budgetPct > 70 ? "#f59e0b" : "#4ade80", borderRadius: 4, transition: "width 0.4s" }} />
-              </div>
-            </div>
-          )}
 
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
             <button onClick={() => setEditing(e => !e)}
@@ -6509,28 +6699,29 @@
         </div>
       );
     }
-    function WBudgetStatus({ total, budget, currency }) {
-      if (!budget) return <div style={{ fontSize: 13, color: "#8baabf", textAlign: "center", padding: "20px 0" }}>No budget set. Configure one in Settings.</div>;
-      const pct = Math.min(100, (total / budget) * 100);
-      const left = budget - total;
-      const color = pct > 90 ? "#f87171" : pct > 70 ? "#f59e0b" : "#4ade80";
+    function WBalanceStatus({ total, income, currency, monthKey }) {
+      const incomeTotal = (income || []).filter(e => slMonthKey(e.date) === monthKey).reduce((s, e) => s + Number(e.amount), 0);
+      const balance = incomeTotal - total;
+      const pct = incomeTotal > 0 ? Math.min(100, (total / incomeTotal) * 100) : (total > 0 ? 100 : 0);
+      const color = balance >= 0 ? "#4ade80" : "#f87171";
       const r = 52; const circ = 2 * Math.PI * r; const dash = (pct / 100) * circ;
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
           <svg width={130} height={130} viewBox="0 0 130 130">
             <circle cx={65} cy={65} r={r} fill="none" stroke="#080f18" strokeWidth={18} />
-            <circle cx={65} cy={65} r={r} fill="none" stroke={color} strokeWidth={18}
+            <circle cx={65} cy={65} r={r} fill="none" stroke={pct >= 100 ? "#f87171" : "#4ade80"} strokeWidth={18}
               strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={circ * 0.25}
               strokeLinecap="round" style={{ transition: "stroke-dasharray 0.5s" }} />
-            <text x={65} y={60} textAnchor="middle" fill={color} fontSize={22} fontWeight={700} fontFamily="sans-serif">{pct.toFixed(0)}%</text>
-            <text x={65} y={78} textAnchor="middle" fill="#7a90a8" fontSize={11} fontFamily="sans-serif">used</text>
+            <text x={65} y={60} textAnchor="middle" fill={color} fontSize={20} fontWeight={700} fontFamily="sans-serif">{balance >= 0 ? "+" : ""}{balance.toFixed(0)}</text>
+            <text x={65} y={78} textAnchor="middle" fill="#7a90a8" fontSize={10} fontFamily="sans-serif">balance</text>
           </svg>
           <div>
+            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Income</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums", marginBottom: 12 }}>{slFmtAmount(incomeTotal, currency)}</div>
             <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Spent</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", marginBottom: 12 }}>{slFmtAmount(total, currency)}</div>
-            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Remaining</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(left, currency)}</div>
-            <div style={{ fontSize: 12, color: "#8baabf", marginTop: 4 }}>of {slFmtAmount(budget, currency)} budget</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", marginBottom: 6 }}>{slFmtAmount(total, currency)}</div>
+            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Net</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{balance >= 0 ? "+" : ""}{slFmtAmount(balance, currency)}</div>
           </div>
         </div>
       );
@@ -6762,7 +6953,7 @@
     }
 
     // ─── SlDashboard ──────────────────────────────────────────────────────────
-    function SlDashboard({ transactions, subscriptions, allCategories, currency, monthKey, budget, layout, onLayoutChange }) {
+    function SlDashboard({ transactions, subscriptions, allCategories, currency, monthKey, income, layout, onLayoutChange }) {
       const [editMode, setEditMode] = React.useState(false);
       const [dragging, setDragging] = React.useState(null); // { id, startY, currentOrder }
       const [dragOver, setDragOver] = React.useState(null);
@@ -6830,9 +7021,9 @@
           <div key={w.id} {...dragProps}
             style={{ opacity: dragging === w.id ? 0.4 : 1, outline: isOver ? `2px solid ${SL_ACCENT_A}` : "none", borderRadius: 14, transition: "opacity 0.15s", height: "100%" }}>
             <SlWidgetCard title={def.label} editMode={editMode} dragHandleProps={{ draggable: false }} colButtons={colButtons}>
-              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} budget={budget} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
+              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} income={income} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
               {w.id === "year_heatmap"       && <WYearHeatmap transactions={transactions} subscriptions={subscriptions} monthKey={monthKey} />}
-              {w.id === "budget_status"      && <WBudgetStatus total={total} budget={budget} currency={currency} />}
+              {w.id === "balance_status"     && <WBalanceStatus total={total} income={income} currency={currency} monthKey={monthKey} />}
               {w.id === "category_breakdown" && <WCategoryBreakdown catRows={catRows} maxAmt={maxAmt} currency={currency} total={total} />}
               {w.id === "top_categories"     && <WTopCategories catRows={catRows} currency={currency} />}
               {w.id === "monthly_trend"      && <WMonthlyTrend transactions={transactions} subscriptions={subscriptions} currency={currency} currentMonthKey={monthKey} />}
@@ -7157,7 +7348,6 @@
     // ─── SL Settings tab ──────────────────────────────────────────────────────
     function SlSettings({ config, onSave }) {
       const [currency,    setCurrency]   = React.useState(config.currency || "EUR");
-      const [budget,      setBudget]     = React.useState(config.budget ? String(config.budget) : "");
       const [newEmoji,    setNewEmoji]   = React.useState("");
       const [newLabel,    setNewLabel]   = React.useState("");
       const [newColor,    setNewColor]   = React.useState("#94a3b8");
@@ -7169,10 +7359,10 @@
       const deletedDefs     = config.deletedDefaultCategories || [];
       const colorOverrides  = config.defaultColorOverrides || {};
 
-      const autoSave = (patch) => onSave({ currency, budget: budget ? Number(budget) : null, customCategories: customCats, deletedDefaultCategories: deletedDefs, defaultColorOverrides: colorOverrides, ...patch });
+      const autoSave = (patch) => onSave({ currency, customCategories: customCats, deletedDefaultCategories: deletedDefs, defaultColorOverrides: colorOverrides, ...patch });
 
       const save = () => {
-        onSave({ currency, budget: budget ? Number(budget) : null, customCategories: customCats, deletedDefaultCategories: deletedDefs, defaultColorOverrides: colorOverrides });
+        onSave({ currency, customCategories: customCats, deletedDefaultCategories: deletedDefs, defaultColorOverrides: colorOverrides });
         setSaved(true); setTimeout(() => setSaved(false), 1500);
       };
 
@@ -7195,17 +7385,11 @@
         <div style={{ padding: "28px 28px 60px", maxWidth: 560 }}>
           <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24, letterSpacing: "-0.02em" }}>Settings</div>
 
-          {/* Currency + Budget */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 32 }}>
-            <div>
-              <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
-              <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" style={{ ...inp, width: "100%" }} />
-              <div style={{ fontSize: 12, color: "#8baabf", marginTop: 5 }}>ISO code, e.g. EUR, USD, GBP</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Monthly budget <span style={{ color: "#8baabf", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
-              <input type="number" min="0" value={budget} onChange={e => setBudget(e.target.value)} placeholder="No budget" style={{ ...inp, width: "100%" }} />
-            </div>
+          {/* Currency */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
+            <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" style={{ ...inp, width: 120 }} />
+            <div style={{ fontSize: 12, color: "#8baabf", marginTop: 5 }}>ISO code, e.g. EUR, USD, GBP</div>
           </div>
 
           {/* Categories */}
@@ -7272,7 +7456,7 @@
             <button onClick={save} style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 28px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
               {saved ? "Saved ✓" : "Save settings"}
             </button>
-            <div style={{ fontSize: 12, color: "#8baabf", marginTop: 8 }}>Currency and budget require saving manually. Categories are saved instantly.</div>
+            <div style={{ fontSize: 12, color: "#8baabf", marginTop: 8 }}>Currency requires saving manually. Categories are saved instantly.</div>
           </div>
         </div>
       );
@@ -7284,7 +7468,8 @@
       const [monthKey,      setMonthKey]       = React.useState(slTodayKey());
       const [transactions,  setTransactions]   = React.useState([]);
       const [subscriptions, setSubscriptions]  = React.useState([]);
-      const [config,        setConfig]         = React.useState({ currency: "EUR", budget: null, customCategories: [], deletedDefaultCategories: [], defaultColorOverrides: {} });
+      const [income,        setIncome]         = React.useState([]);
+      const [config,        setConfig]         = React.useState({ currency: "EUR", customCategories: [], deletedDefaultCategories: [], defaultColorOverrides: {} });
       const [dashLayout,    setDashLayout]     = React.useState(SL_DEFAULT_LAYOUT);
       const [loading,       setLoading]        = React.useState(true);
 
@@ -7299,9 +7484,9 @@
       React.useEffect(() => {
         if (!profileId) return;
         setLoading(true);
-        Promise.all([slLoadTransactions(profileId), slLoadSubscriptions(profileId), slLoadConfig(profileId)])
-          .then(([txs, subs, cfg]) => {
-            setTransactions(txs); setSubscriptions(subs); setConfig(cfg);
+        Promise.all([slLoadTransactions(profileId), slLoadSubscriptions(profileId), slLoadConfig(profileId), slLoadIncome(profileId)])
+          .then(([txs, subs, cfg, inc]) => {
+            setTransactions(txs); setSubscriptions(subs); setConfig(cfg); setIncome(inc);
             const savedLayout = cfg.dashboardLayout || [];
             const maxOrder = savedLayout.reduce((m, w) => Math.max(m, w.order), -1);
             const merged = [...savedLayout];
@@ -7318,6 +7503,7 @@
 
       const saveTxs  = async (txs)  => { setTransactions(txs);  await slSaveTransactions(txs, profileId); };
       const saveSubs = async (subs) => { setSubscriptions(subs); await slSaveSubscriptions(subs, profileId); };
+      const saveInc  = async (inc)  => { setIncome(inc);         await slSaveIncome(inc, profileId); };
 
       const addTx    = (tx)   => saveTxs([...transactions, tx]);
       const editTx   = (tx)   => saveTxs(transactions.map(t => t.id === tx.id ? tx : t));
@@ -7327,6 +7513,10 @@
       const editSub   = (s)   => saveSubs(subscriptions.map(x => x.id === s.id ? s : x));
       const deleteSub = (id)  => saveSubs(subscriptions.filter(s => s.id !== id));
       const toggleSub = (id)  => saveSubs(subscriptions.map(s => s.id === id ? { ...s, active: !s.active } : s));
+
+      const addInc    = (e)   => saveInc([...income, e]);
+      const editInc   = (e)   => saveInc(income.map(x => x.id === e.id ? e : x));
+      const deleteInc = (id)  => saveInc(income.filter(e => e.id !== id));
 
       const saveConfig = async (cfg) => { setConfig(cfg); await slSaveConfig(cfg, profileId); };
       const saveDashLayout = async (newLayout) => {
@@ -7352,6 +7542,7 @@
         { id: "dashboard",     label: "Dashboard" },
         { id: "transactions",  label: "Transactions" },
         { id: "subscriptions", label: "Subscriptions" },
+        { id: "income",        label: "Income" },
         { id: "settings",      label: "Settings" },
       ];
 
@@ -7401,9 +7592,10 @@
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Loading…</div>
             ) : (
               <>
-                {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} />}
+                {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} income={income} layout={dashLayout} onLayoutChange={saveDashLayout} />}
                 {tab === "transactions"  && <SlTransactions  transactions={transactions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
                 {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
+                {tab === "income"        && <SlIncome income={income} currency={config.currency} monthKey={monthKey} onAdd={addInc} onEdit={editInc} onDelete={deleteInc} />}
                 {tab === "settings"      && <SlSettings      config={config} onSave={saveConfig} allCategories={allCategories} />}
               </>
             )}
@@ -7473,6 +7665,7 @@
           _sb.from("pt_lists").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_transactions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_subscriptions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("sl_income").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
