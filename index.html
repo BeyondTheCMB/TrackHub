@@ -6529,7 +6529,7 @@
       // Compute all metric values
       const budgetPct = null; // budget removed — kept for compat
       const incomeTotal = (income || []).filter(e => slMonthKey(e.date) === monthKey).reduce((s, e) => s + Number(e.amount), 0);
-      const netBalance = incomeTotal - total - (investTotal || 0);
+      const netBalance = incomeTotal - total;
       const spendMonthTxs = monthTxs.filter(t => !isInvestment(t.category));
       const largest   = spendMonthTxs.length ? spendMonthTxs.reduce((a, b) => Number(a.amount) > Number(b.amount) ? a : b) : null;
       const catMap    = {};
@@ -6710,32 +6710,50 @@
     function WBalanceStatus({ total, income, investTotal, currency, monthKey }) {
       const incomeTotal = (income || []).filter(e => slMonthKey(e.date) === monthKey).reduce((s, e) => s + Number(e.amount), 0);
       const invested = investTotal || 0;
-      const balance = incomeTotal - total - invested;
+      const netSpent = incomeTotal - total;
+      const netColor = netSpent >= 0 ? "#4ade80" : "#f87171";
       const spendPct = incomeTotal > 0 ? Math.min(100, (total / incomeTotal) * 100) : (total > 0 ? 100 : 0);
-      const color = balance >= 0 ? "#4ade80" : "#f87171";
-      const r = 52; const circ = 2 * Math.PI * r; const dash = (spendPct / 100) * circ;
       const hasInvest = invested > 0;
+      const r = 52; const circ = 2 * Math.PI * r; const dash = (spendPct / 100) * circ;
+      const donutColor = spendPct >= 100 ? "#f87171" : "#4ade80";
+
+      const fmtShort = (n) => {
+        try {
+          const sym = new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "EUR", minimumFractionDigits: 0, maximumFractionDigits: 0 }).formatToParts(0).find(p => p.type === "currency")?.value || currency;
+          const abs = Math.abs(n);
+          const str = abs >= 1000 ? (abs / 1000).toFixed(1).replace(/\.0$/, "") + "k" : abs.toFixed(0);
+          return (n < 0 ? "\u2212" : (n > 0 ? "+" : "")) + str + "\u202f" + sym;
+        } catch { return (n >= 0 ? "+" : "") + n.toFixed(0); }
+      };
+
+      const StatBlock = ({ label, value, color, sub }) => (
+        <div>
+          <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>{label}</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{value}</div>
+          {sub && <div style={{ fontSize: 11, color: "#5a7080", marginTop: 3 }}>{sub}</div>}
+        </div>
+      );
+
       return (
-        <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
-          <svg width={130} height={130} viewBox="0 0 130 130">
-            <circle cx={65} cy={65} r={r} fill="none" stroke="#080f18" strokeWidth={18} />
-            <circle cx={65} cy={65} r={r} fill="none" stroke={spendPct >= 100 ? "#f87171" : "#4ade80"} strokeWidth={18}
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: 20, alignItems: "center" }}>
+          <svg width={120} height={120} viewBox="0 0 130 130">
+            <circle cx={65} cy={65} r={r} fill="none" stroke="#0d1825" strokeWidth={18} />
+            <circle cx={65} cy={65} r={r} fill="none" stroke={donutColor} strokeWidth={18}
               strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={circ * 0.25}
               strokeLinecap="round" style={{ transition: "stroke-dasharray 0.5s" }} />
-            <text x={65} y={60} textAnchor="middle" fill={color} fontSize={20} fontWeight={700} fontFamily="sans-serif">{balance >= 0 ? "+" : ""}{balance.toFixed(0)}</text>
-            <text x={65} y={78} textAnchor="middle" fill="#7a90a8" fontSize={10} fontFamily="sans-serif">balance</text>
+            <text x={65} y={58} textAnchor="middle" fill={netColor} fontSize={17} fontWeight={700} fontFamily="DM Sans, sans-serif">{fmtShort(netSpent)}</text>
+            <text x={65} y={75} textAnchor="middle" fill="#7a90a8" fontSize={10} fontFamily="DM Sans, sans-serif">net spent</text>
           </svg>
-          <div>
-            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Income</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums", marginBottom: 10 }}>{slFmtAmount(incomeTotal, currency)}</div>
-            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Spent</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", marginBottom: hasInvest ? 10 : 10 }}>{slFmtAmount(total, currency)}</div>
-            {hasInvest && (<>
-              <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Invested</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#a78bfa", fontVariantNumeric: "tabular-nums", marginBottom: 10 }}>{slFmtAmount(invested, currency)}</div>
-            </>)}
-            <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Net</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{balance >= 0 ? "+" : ""}{slFmtAmount(balance, currency)}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, borderLeft: "1px solid #1a2535", paddingLeft: 20 }}>
+            <StatBlock label="Spent" value={slFmtAmount(total, currency)} color="#e2e8f0" />
+            <StatBlock label="Net spent" value={(netSpent >= 0 ? "+" : "") + slFmtAmount(netSpent, currency)} color={netColor} sub={incomeTotal > 0 ? spendPct.toFixed(0) + "% of income" : "no income logged"} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, borderLeft: "1px solid #1a2535", paddingLeft: 20 }}>
+            <StatBlock label="Income" value={slFmtAmount(incomeTotal, currency)} color="#4ade80" />
+            {hasInvest
+              ? <StatBlock label="Invested" value={slFmtAmount(invested, currency)} color="#a78bfa" sub="not counted as spent" />
+              : <StatBlock label="Invested" value="--" color="#3d526a" sub="tag a tx as Investment" />
+            }
           </div>
         </div>
       );
