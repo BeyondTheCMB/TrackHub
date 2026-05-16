@@ -5953,6 +5953,10 @@
       { id: "other",       label: "Other",         emoji: "📦", color: "#64748b" },
     ];
 
+    // ─── Investment special category ─────────────────────────────────────────
+    const SL_INVESTMENT_CATEGORY = { id: "investment", label: "Investment", emoji: "📈", color: "#a78bfa", special: true };
+    const isInvestment = (categoryId) => categoryId === SL_INVESTMENT_CATEGORY.id;
+
     // ─── SL Supabase helpers ──────────────────────────────────────────────────
     async function slLoadConfig(profileId) {
       const { data, error } = await _sb.from("sl_config")
@@ -6483,6 +6487,7 @@
       { id: "transactions",      label: "Transactions",        always: false },
       { id: "subscriptions",     label: "Subscriptions",       always: false },
       { id: "net_balance",       label: "Net balance",         always: false },
+      { id: "invested",          label: "Invested",            always: false },
       { id: "top_category",      label: "Top category",        always: false },
       { id: "days_with_spending",label: "Days with spending",  always: false },
       { id: "daily_average",     label: "Daily average",       always: false },
@@ -6494,7 +6499,7 @@
       id: m.id, order: i, visible: ["total_spent","transactions","subscriptions","net_balance"].includes(m.id),
     }));
 
-    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, currency, income, transactions, monthKey, settings, onSettingsChange }) {
+    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, currency, income, investTotal, transactions, monthKey, settings, onSettingsChange }) {
       const [editing, setEditing] = React.useState(false);
       const [draggingM, setDraggingM] = React.useState(null);
       const [dragOverM, setDragOverM] = React.useState(null);
@@ -6524,31 +6529,34 @@
       // Compute all metric values
       const budgetPct = null; // budget removed — kept for compat
       const incomeTotal = (income || []).filter(e => slMonthKey(e.date) === monthKey).reduce((s, e) => s + Number(e.amount), 0);
-      const netBalance = incomeTotal - total;
-      const largest   = monthTxs.length ? monthTxs.reduce((a, b) => Number(a.amount) > Number(b.amount) ? a : b) : null;
+      const netBalance = incomeTotal - total - (investTotal || 0);
+      const spendMonthTxs = monthTxs.filter(t => !isInvestment(t.category));
+      const largest   = spendMonthTxs.length ? spendMonthTxs.reduce((a, b) => Number(a.amount) > Number(b.amount) ? a : b) : null;
       const catMap    = {};
-      monthTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
-      monthSubs.forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
+      spendMonthTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
+      monthSubs.filter(s => !isInvestment(s.category)).forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
       const topCat    = Object.entries(catMap).sort((a,b) => b[1]-a[1])[0];
       const today     = new Date(); const [y, mo] = monthKey.split("-").map(Number);
       const isCurrentMonth = y === today.getFullYear() && mo === today.getMonth() + 1;
       const daysElapsed = isCurrentMonth ? today.getDate() : new Date(y, mo, 0).getDate();
       const daysInMonth = new Date(y, mo, 0).getDate();
-      const datesWithSpend = new Set(monthTxs.map(t => t.date)).size;
+      const datesWithSpend = new Set(spendMonthTxs.map(t => t.date)).size;
       const dailyAvg  = daysElapsed > 0 ? total / daysElapsed : 0;
       const [prevY, prevMo] = (() => { const d = new Date(y, mo-2, 1); return [d.getFullYear(), d.getMonth()+1]; })();
       const prevKey   = prevY + "-" + String(prevMo).padStart(2, "0");
-      const prevTotal = transactions.filter(t => slMonthKey(t.date) === prevKey).reduce((s,t) => s+Number(t.amount), 0);
+      const prevTotal = transactions.filter(t => slMonthKey(t.date) === prevKey && !isInvestment(t.category)).reduce((s,t) => s+Number(t.amount), 0);
       const vsDelta   = total - prevTotal;
       const subShare  = total > 0 ? (subTotal / total) * 100 : 0;
       const catsUsed  = Object.keys(catMap).length;
+      const hasInvestment = (investTotal || 0) > 0;
 
       const METRIC_DATA = {
         total_spent:       { label: "Total spent",        value: slFmtAmount(total, currency),       color: total > 0 ? "#e2e8f0" : "#7a90a8", sub: null },
-        transactions:      { label: "Transactions",       value: slFmtAmount(txTotal, currency),     color: "#c8d8e8", sub: `${monthTxs.length} item${monthTxs.length !== 1 ? "s" : ""}` },
-        subscriptions:     { label: "Subscriptions",      value: slFmtAmount(subTotal, currency),    color: "#c8d8e8", sub: `${monthSubs.length} billing` },
+        transactions:      { label: "Transactions",       value: slFmtAmount(txTotal, currency),     color: "#c8d8e8", sub: `${spendMonthTxs.length} item${spendMonthTxs.length !== 1 ? "s" : ""}` },
+        subscriptions:     { label: "Subscriptions",      value: slFmtAmount(subTotal, currency),    color: "#c8d8e8", sub: `${monthSubs.filter(s => !isInvestment(s.category)).length} billing` },
         budget_left:       { label: "Budget left",        value: "—", color: "#7a90a8", sub: "removed — use Income tab" },
         net_balance:       { label: "Net balance",        value: slFmtAmount(netBalance, currency), color: netBalance >= 0 ? "#4ade80" : "#f87171", sub: `${slFmtAmount(incomeTotal, currency)} income` },
+        invested:          { label: "Invested",           value: hasInvestment ? slFmtAmount(investTotal, currency) : "—", color: hasInvestment ? "#a78bfa" : "#7a90a8", sub: hasInvestment ? "not counted as spent" : "no investments" },
         largest_expense:   { label: "Largest expense",    value: largest ? slFmtAmount(largest.amount, currency) : "—", color: "#c8d8e8", sub: largest ? (largest.notes || largest.category) : null },
         top_category:      { label: "Top category",       value: topCat ? topCat[0] : "—",           color: "#c8d8e8", sub: topCat ? slFmtAmount(topCat[1], currency) : null },
         days_with_spending:{ label: "Days with spending", value: `${datesWithSpend}`,                color: "#c8d8e8", sub: `of ${daysInMonth} days` },
@@ -6626,7 +6634,7 @@
       const monthlyTotals = React.useMemo(() => {
         const map = {};
         transactions.forEach(t => {
-          if (t.date && t.date.startsWith(String(heatYear))) {
+          if (t.date && t.date.startsWith(String(heatYear)) && !isInvestment(t.category)) {
             const mk = t.date.slice(0, 7);
             map[mk] = (map[mk] || 0) + Number(t.amount);
           }
@@ -6634,7 +6642,7 @@
         for (let m = 1; m <= 12; m++) {
           const mk = heatYear + "-" + String(m).padStart(2, "0");
           subscriptions.forEach(s => {
-            if (slSubBilledInMonth(s, mk)) map[mk] = (map[mk] || 0) + Number(s.amount);
+            if (slSubBilledInMonth(s, mk) && !isInvestment(s.category)) map[mk] = (map[mk] || 0) + Number(s.amount);
           });
         }
         return map;
@@ -6699,17 +6707,19 @@
         </div>
       );
     }
-    function WBalanceStatus({ total, income, currency, monthKey }) {
+    function WBalanceStatus({ total, income, investTotal, currency, monthKey }) {
       const incomeTotal = (income || []).filter(e => slMonthKey(e.date) === monthKey).reduce((s, e) => s + Number(e.amount), 0);
-      const balance = incomeTotal - total;
-      const pct = incomeTotal > 0 ? Math.min(100, (total / incomeTotal) * 100) : (total > 0 ? 100 : 0);
+      const invested = investTotal || 0;
+      const balance = incomeTotal - total - invested;
+      const spendPct = incomeTotal > 0 ? Math.min(100, (total / incomeTotal) * 100) : (total > 0 ? 100 : 0);
       const color = balance >= 0 ? "#4ade80" : "#f87171";
-      const r = 52; const circ = 2 * Math.PI * r; const dash = (pct / 100) * circ;
+      const r = 52; const circ = 2 * Math.PI * r; const dash = (spendPct / 100) * circ;
+      const hasInvest = invested > 0;
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
           <svg width={130} height={130} viewBox="0 0 130 130">
             <circle cx={65} cy={65} r={r} fill="none" stroke="#080f18" strokeWidth={18} />
-            <circle cx={65} cy={65} r={r} fill="none" stroke={pct >= 100 ? "#f87171" : "#4ade80"} strokeWidth={18}
+            <circle cx={65} cy={65} r={r} fill="none" stroke={spendPct >= 100 ? "#f87171" : "#4ade80"} strokeWidth={18}
               strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={circ * 0.25}
               strokeLinecap="round" style={{ transition: "stroke-dasharray 0.5s" }} />
             <text x={65} y={60} textAnchor="middle" fill={color} fontSize={20} fontWeight={700} fontFamily="sans-serif">{balance >= 0 ? "+" : ""}{balance.toFixed(0)}</text>
@@ -6717,9 +6727,13 @@
           </svg>
           <div>
             <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Income</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums", marginBottom: 12 }}>{slFmtAmount(incomeTotal, currency)}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums", marginBottom: 10 }}>{slFmtAmount(incomeTotal, currency)}</div>
             <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Spent</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", marginBottom: 6 }}>{slFmtAmount(total, currency)}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", marginBottom: hasInvest ? 10 : 10 }}>{slFmtAmount(total, currency)}</div>
+            {hasInvest && (<>
+              <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Invested</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#a78bfa", fontVariantNumeric: "tabular-nums", marginBottom: 10 }}>{slFmtAmount(invested, currency)}</div>
+            </>)}
             <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>Net</div>
             <div style={{ fontSize: 20, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{balance >= 0 ? "+" : ""}{slFmtAmount(balance, currency)}</div>
           </div>
@@ -6792,8 +6806,8 @@
         keys.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
       }
       const data = keys.map(k => {
-        const txs  = transactions.filter(t => slMonthKey(t.date) === k).reduce((s, t) => s + Number(t.amount), 0);
-        const subs = subscriptions.filter(s => slSubBilledInMonth(s, k)).reduce((s, sub) => s + Number(sub.amount), 0);
+        const txs  = transactions.filter(t => slMonthKey(t.date) === k && !isInvestment(t.category)).reduce((s, t) => s + Number(t.amount), 0);
+        const subs = subscriptions.filter(s => slSubBilledInMonth(s, k) && !isInvestment(s.category)).reduce((s, sub) => s + Number(sub.amount), 0);
         return { key: k, total: txs + subs, label: slMonthLabel(k).split(" ")[0] };
       });
       const max = Math.max(...data.map(d => d.total), 1);
@@ -6835,8 +6849,8 @@
       const lastKey = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
       const getMap = (mk) => {
         const map = {};
-        transactions.filter(t => slMonthKey(t.date) === mk).forEach(t => { map[t.category] = (map[t.category] || 0) + Number(t.amount); });
-        subscriptions.filter(s => slSubBilledInMonth(s, mk)).forEach(s => { map[s.category] = (map[s.category] || 0) + Number(s.amount); });
+        transactions.filter(t => slMonthKey(t.date) === mk && !isInvestment(t.category)).forEach(t => { map[t.category] = (map[t.category] || 0) + Number(t.amount); });
+        subscriptions.filter(s => slSubBilledInMonth(s, mk) && !isInvestment(s.category)).forEach(s => { map[s.category] = (map[s.category] || 0) + Number(s.amount); });
         return map;
       };
       const cur  = getMap(currentMonthKey);
@@ -6965,12 +6979,14 @@
       // Shared data computations
       const monthTxs  = transactions.filter(t => slMonthKey(t.date) === monthKey);
       const monthSubs = subscriptions.filter(s => slSubBilledInMonth(s, monthKey));
-      const txTotal   = monthTxs.reduce((s, t) => s + Number(t.amount), 0);
-      const subTotal  = monthSubs.reduce((s, sub) => s + Number(sub.amount), 0);
+      const txTotal   = monthTxs.filter(t => !isInvestment(t.category)).reduce((s, t) => s + Number(t.amount), 0);
+      const subTotal  = monthSubs.filter(s => !isInvestment(s.category)).reduce((s, sub) => s + Number(sub.amount), 0);
+      const investTotal = monthTxs.filter(t => isInvestment(t.category)).reduce((s, t) => s + Number(t.amount), 0)
+                        + monthSubs.filter(s => isInvestment(s.category)).reduce((s, sub) => s + Number(sub.amount), 0);
       const total     = txTotal + subTotal;
       const catMap    = {};
-      monthTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
-      monthSubs.forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
+      monthTxs.filter(t => !isInvestment(t.category)).forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
+      monthSubs.filter(s => !isInvestment(s.category)).forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
       const catRows   = Object.entries(catMap)
         .map(([id, amt]) => ({ id, amt, cat: allCategories.find(c => c.id === id) }))
         .sort((a, b) => b.amt - a.amt);
@@ -7021,9 +7037,9 @@
           <div key={w.id} {...dragProps}
             style={{ opacity: dragging === w.id ? 0.4 : 1, outline: isOver ? `2px solid ${SL_ACCENT_A}` : "none", borderRadius: 14, transition: "opacity 0.15s", height: "100%" }}>
             <SlWidgetCard title={def.label} editMode={editMode} dragHandleProps={{ draggable: false }} colButtons={colButtons}>
-              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} income={income} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
+              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthTxs} monthSubs={monthSubs} total={total} txTotal={txTotal} subTotal={subTotal} currency={currency} income={income} investTotal={investTotal} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
               {w.id === "year_heatmap"       && <WYearHeatmap transactions={transactions} subscriptions={subscriptions} monthKey={monthKey} />}
-              {w.id === "balance_status"     && <WBalanceStatus total={total} income={income} currency={currency} monthKey={monthKey} />}
+              {w.id === "balance_status"     && <WBalanceStatus total={total} income={income} investTotal={investTotal} currency={currency} monthKey={monthKey} />}
               {w.id === "category_breakdown" && <WCategoryBreakdown catRows={catRows} maxAmt={maxAmt} currency={currency} total={total} />}
               {w.id === "top_categories"     && <WTopCategories catRows={catRows} currency={currency} />}
               {w.id === "monthly_trend"      && <WMonthlyTrend transactions={transactions} subscriptions={subscriptions} currency={currency} currentMonthKey={monthKey} />}
@@ -7396,6 +7412,18 @@
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }}>Categories</div>
 
+            {/* Investment — special locked chip */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#130f20", border: `1px solid ${SL_INVESTMENT_CATEGORY.color}55`, borderRadius: 20, padding: "5px 12px" }}>
+                  <span style={{ fontSize: 14 }}>{SL_INVESTMENT_CATEGORY.emoji}</span>
+                  <span style={{ fontSize: 12, color: SL_INVESTMENT_CATEGORY.color, fontWeight: 600 }}>{SL_INVESTMENT_CATEGORY.label}</span>
+                  <span style={{ fontSize: 10, color: "#a78bfa88", marginLeft: 2, fontStyle: "italic" }}>special</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "#7a90a8", lineHeight: 1.5 }}>Transactions tagged as Investment are counted as <span style={{ color: "#a78bfa" }}>invested</span>, not spent. They appear separately in the balance and are excluded from all spending totals.</div>
+            </div>
+
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
               {visibleDefaults.map(c => {
                 const color = colorOverrides[c.id] || c.color;
@@ -7476,7 +7504,8 @@
       const allCategories = React.useMemo(() =>
         [...SL_DEFAULT_CATEGORIES.filter(c => !(config.deletedDefaultCategories || []).includes(c.id))
           .map(c => ({ ...c, color: (config.defaultColorOverrides || {})[c.id] || c.color })),
-         ...(config.customCategories || [])]
+         ...(config.customCategories || []),
+         SL_INVESTMENT_CATEGORY]
           .sort((a, b) => a.label.localeCompare(b.label)),
         [config.customCategories, config.deletedDefaultCategories]
       );
