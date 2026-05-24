@@ -5967,7 +5967,26 @@
     // Neutral categories: recorded as expenses but excluded from spend totals/budget
     const SL_NEUTRAL_CATEGORY_IDS = new Set(SL_DEFAULT_EXPENSE_CATEGORIES.filter(c => c.neutral).map(c => c.id));
     const slIsNeutral = (t) => SL_NEUTRAL_CATEGORY_IDS.has(t.category);
-    // ─── SL Supabase helpers ──────────────────────────────────────────────────
+    const SL_CURRENCIES = [
+      { code: "EUR", label: "Euro",                symbol: "€" },
+      { code: "USD", label: "US Dollar",           symbol: "$" },
+      { code: "GBP", label: "British Pound",       symbol: "£" },
+      { code: "CHF", label: "Swiss Franc",         symbol: "Fr" },
+      { code: "JPY", label: "Japanese Yen",        symbol: "¥" },
+      { code: "CAD", label: "Canadian Dollar",     symbol: "CA$" },
+      { code: "AUD", label: "Australian Dollar",   symbol: "A$" },
+      { code: "CNY", label: "Chinese Yuan",        symbol: "¥" },
+      { code: "SEK", label: "Swedish Krona",       symbol: "kr" },
+      { code: "NOK", label: "Norwegian Krone",     symbol: "kr" },
+      { code: "DKK", label: "Danish Krone",        symbol: "kr" },
+      { code: "SGD", label: "Singapore Dollar",    symbol: "S$" },
+      { code: "MXN", label: "Mexican Peso",        symbol: "$" },
+      { code: "BRL", label: "Brazilian Real",      symbol: "R$" },
+      { code: "INR", label: "Indian Rupee",        symbol: "₹" },
+    ];
+    const SL_DEFAULT_PAYMENT_METHODS = [
+      "Cash", "Credit card", "Debit card", "Bank transfer", "PayPal", "Bizum",
+    ];
     async function slLoadConfig(profileId) {
       const { data, error } = await _sb.from("sl_config")
         .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
@@ -6109,7 +6128,7 @@
       );
     }
 
-    function SlTransactionForm({ allExpenseCategories, allIncomeCategories, currency, onSave, onCancel, initial }) {
+    function SlTransactionForm({ allExpenseCategories, allIncomeCategories, currency, paymentMethods, onSave, onCancel, initial }) {
       const today = new Date().toISOString().slice(0, 10);
       const [type,     setType]     = React.useState(initial ? (initial.type || "expense") : "expense");
       const [amount,   setAmount]   = React.useState(initial ? String(initial.amount) : "");
@@ -6168,7 +6187,13 @@
             </div>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>{type === "income" ? "Source" : "Payment method"}</div>
-              <input value={payMethod} onChange={e => setPayMethod(e.target.value)} placeholder={type === "income" ? "Bank transfer…" : "Card, cash…"} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+              <select value={payMethod} onChange={e => setPayMethod(e.target.value)} style={{ ...inp, cursor: "pointer" }}
+                onFocus={focusStyle} onBlur={blurStyle}>
+                <option value="">— Optional —</option>
+                {(paymentMethods || [...SL_DEFAULT_PAYMENT_METHODS]).map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
@@ -6936,7 +6961,7 @@
     }
 
     // ─── SL Income tab ────────────────────────────────────────────────────────
-    function SlIncome({ transactions, allIncomeCategories, currency, monthKey, onAdd, onEdit, onDelete }) {
+    function SlIncome({ transactions, allIncomeCategories, paymentMethods, currency, monthKey, onAdd, onEdit, onDelete }) {
       const [showForm,   setShowForm]   = React.useState(false);
       const [editEntry,  setEditEntry]  = React.useState(null);
       const [confirmDel, setConfirmDel] = React.useState(null);
@@ -6968,12 +6993,12 @@
 
           {(showForm && !editEntry) && (
             <div style={{ marginBottom: 20 }}>
-              <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} onSave={handleSave} onCancel={() => setShowForm(false)} initial={{ type: "income" }} />
+              <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} paymentMethods={paymentMethods} onSave={handleSave} onCancel={() => setShowForm(false)} initial={{ type: "income" }} />
             </div>
           )}
           {editEntry && (
             <div style={{ marginBottom: 20 }}>
-              <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
+              <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} paymentMethods={paymentMethods} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
             </div>
           )}
 
@@ -7020,7 +7045,7 @@
     }
 
     // ─── SL Transactions tab ──────────────────────────────────────────────────
-    function SlTransactions({ transactions, allExpenseCategories, allIncomeCategories, allCategories, currency, monthKey, onAdd, onEdit, onDelete }) {
+    function SlTransactions({ transactions, allExpenseCategories, allIncomeCategories, allCategories, paymentMethods, currency, monthKey, onAdd, onEdit, onDelete }) {
       const [showForm,  setShowForm]  = React.useState(false);
       const [editEntry, setEditEntry] = React.useState(null);
       const [confirmDel, setConfirmDel] = React.useState(null);
@@ -7045,13 +7070,13 @@
 
           {(showForm && !editEntry) && (
             <div style={{ marginBottom: 20 }}>
-              <SlTransactionForm allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} currency={currency} onSave={handleSave} onCancel={() => setShowForm(false)} />
+              <SlTransactionForm allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} currency={currency} paymentMethods={paymentMethods} onSave={handleSave} onCancel={() => setShowForm(false)} />
             </div>
           )}
 
           {editEntry && (
             <div style={{ marginBottom: 20 }}>
-              <SlTransactionForm allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} currency={currency} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
+              <SlTransactionForm allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} currency={currency} paymentMethods={paymentMethods} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
             </div>
           )}
 
@@ -7298,12 +7323,12 @@
         if (!newLabel.trim()) return;
         const next = [...customCats, { id: "custom_" + Date.now(), label: newLabel.trim(), emoji: newEmoji || "📦", color: newColor }];
         setNewLabel(""); setNewEmoji("");
-        autoSave({ [customKey]: next });
+        autoSave({ [customKey]: next, customPaymentMethods: config.customPaymentMethods || [] });
       };
-      const removeCustom   = (id) => autoSave({ [customKey]: customCats.filter(x => x.id !== id) });
-      const removeDefault  = (id) => autoSave({ [deletedKey]: [...deletedDefs, id] });
-      const restoreDefault = (id) => autoSave({ [deletedKey]: deletedDefs.filter(x => x !== id) });
-      const overrideColor  = (id, color) => autoSave({ [overrideKey]: { ...colorOverrides, [id]: color } });
+      const removeCustom   = (id) => autoSave({ [customKey]: customCats.filter(x => x.id !== id), customPaymentMethods: config.customPaymentMethods || [] });
+      const removeDefault  = (id) => autoSave({ [deletedKey]: [...deletedDefs, id], customPaymentMethods: config.customPaymentMethods || [] });
+      const restoreDefault = (id) => autoSave({ [deletedKey]: deletedDefs.filter(x => x !== id), customPaymentMethods: config.customPaymentMethods || [] });
+      const overrideColor  = (id, color) => autoSave({ [overrideKey]: { ...colorOverrides, [id]: color }, customPaymentMethods: config.customPaymentMethods || [] });
 
       const visibleDefs = DEFAULT_CATS.filter(c => !deletedDefs.includes(c.id)).sort((a, b) => a.label.localeCompare(b.label));
       const hiddenDefs  = DEFAULT_CATS.filter(c =>  deletedDefs.includes(c.id)).sort((a, b) => a.label.localeCompare(b.label));
@@ -7375,6 +7400,7 @@
       const [newEmoji, setNewEmoji] = React.useState("");
       const [newLabel, setNewLabel] = React.useState("");
       const [newColor, setNewColor] = React.useState("#94a3b8");
+      const [newPM,    setNewPM]    = React.useState("");
       const [saved,    setSaved]    = React.useState(false);
       const inp = { background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, boxSizing: "border-box" };
 
@@ -7386,20 +7412,29 @@
         deletedDefaultIncomeCategories:  config.deletedDefaultIncomeCategories  || [],
         expenseColorOverrides:           config.expenseColorOverrides           || {},
         incomeColorOverrides:            config.incomeColorOverrides            || {},
+        customPaymentMethods:            config.customPaymentMethods            || [],
         dashboardLayout:                 config.dashboardLayout,
         ...patch
       });
       const save = () => { autoSave({}); setSaved(true); setTimeout(() => setSaved(false), 1500); };
 
+      const customPMs = config.customPaymentMethods || [];
+      const addPM    = () => { if (!newPM.trim()) return; autoSave({ customPaymentMethods: [...customPMs, newPM.trim()] }); setNewPM(""); };
+      const removePM = (m) => autoSave({ customPaymentMethods: customPMs.filter(x => x !== m) });
+
       return (
         <div style={{ padding: "28px 28px 60px", maxWidth: 600 }}>
           <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24, letterSpacing: "-0.02em" }}>Settings</div>
 
+          {/* Currency + Budget */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 32 }}>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
-              <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" style={{ ...inp, width: "100%" }} />
-              <div style={{ fontSize: 12, color: "#8baabf", marginTop: 5 }}>ISO code, e.g. EUR, USD, GBP</div>
+              <select value={currency} onChange={e => setCurrency(e.target.value)} style={{ ...inp, width: "100%", cursor: "pointer" }}>
+                {SL_CURRENCIES.map(c => (
+                  <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.label}</option>
+                ))}
+              </select>
             </div>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Monthly budget <span style={{ color: "#8baabf", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
@@ -7407,6 +7442,32 @@
             </div>
           </div>
 
+          {/* Payment methods */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Payment methods</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {SL_DEFAULT_PAYMENT_METHODS.map(m => (
+                <div key={m} style={{ fontSize: 12, color: "#8baabf", background: "#0d1825", border: "1px solid #1a2535", borderRadius: 20, padding: "5px 12px" }}>{m}</div>
+              ))}
+              {customPMs.map(m => (
+                <div key={m} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#c8d8e8", background: "#0d1825", border: "1px solid #4ade8033", borderRadius: 20, padding: "5px 12px" }}>
+                  {m}
+                  <button onClick={() => removePM(m)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}
+                    onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={newPM} onChange={e => setNewPM(e.target.value)} onKeyDown={e => e.key === "Enter" && addPM()}
+                placeholder="Add custom payment method…" style={{ ...inp, flex: 1 }} />
+              <button onClick={addPM} disabled={!newPM.trim()}
+                style={{ background: newPM.trim() ? SL_ACCENT_A : "#1a2535", color: newPM.trim() ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 8, padding: "9px 16px", cursor: newPM.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 13 }}>
+                Add
+              </button>
+            </div>
+          </div>
+
+          {/* Category tabs */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1a2535", marginBottom: 18 }}>
               {[{ id: "expense", label: "📤 Expense categories" }, { id: "income", label: "📥 Income categories" }].map(t => (
@@ -7431,7 +7492,7 @@
             <button onClick={save} style={{ background: SL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 28px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
               {saved ? "Saved ✓" : "Save settings"}
             </button>
-            <div style={{ fontSize: 12, color: "#8baabf", marginTop: 8 }}>Currency and budget require saving manually. Categories are saved instantly.</div>
+            <div style={{ fontSize: 12, color: "#8baabf", marginTop: 8 }}>Currency and budget require saving manually. Payment methods and categories are saved instantly.</div>
           </div>
         </div>
       );
@@ -7442,7 +7503,7 @@
       const [monthKey,      setMonthKey]       = React.useState(slTodayKey());
       const [transactions,  setTransactions]   = React.useState([]);
       const [subscriptions, setSubscriptions]  = React.useState([]);
-      const [config,        setConfig]         = React.useState({ currency: "EUR", budget: null, customExpenseCategories: [], customIncomeCategories: [], deletedDefaultExpenseCategories: [], deletedDefaultIncomeCategories: [], expenseColorOverrides: {}, incomeColorOverrides: {} });
+      const [config,        setConfig]         = React.useState({ currency: "EUR", budget: null, customExpenseCategories: [], customIncomeCategories: [], deletedDefaultExpenseCategories: [], deletedDefaultIncomeCategories: [], expenseColorOverrides: {}, incomeColorOverrides: {}, customPaymentMethods: [] });
       const [dashLayout,    setDashLayout]     = React.useState(SL_DEFAULT_LAYOUT);
       const [loading,       setLoading]        = React.useState(true);
 
@@ -7463,6 +7524,10 @@
       const allCategories = React.useMemo(() =>
         [...allExpenseCategories, ...allIncomeCategories],
         [allExpenseCategories, allIncomeCategories]
+      );
+      const paymentMethods = React.useMemo(() =>
+        [...SL_DEFAULT_PAYMENT_METHODS, ...(config.customPaymentMethods || [])],
+        [config.customPaymentMethods]
       );
 
       React.useEffect(() => {
@@ -7575,8 +7640,8 @@
             ) : (
               <>
                 {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} />}
-                {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
-                {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
                 {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
                 {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} />}
               </>
