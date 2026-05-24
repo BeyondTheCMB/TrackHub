@@ -7284,114 +7284,117 @@
     }
 
     // ─── SL Settings tab ──────────────────────────────────────────────────────
+    // ─── SL Category panel (lifted out to avoid remount on each keystroke) ────
+    function SlCategoryPanel({ isExp, config, autoSave, newEmoji, setNewEmoji, newLabel, setNewLabel, newColor, setNewColor, inp }) {
+      const DEFAULT_CATS   = isExp ? SL_DEFAULT_EXPENSE_CATEGORIES : SL_DEFAULT_INCOME_CATEGORIES;
+      const customKey      = isExp ? "customExpenseCategories"         : "customIncomeCategories";
+      const deletedKey     = isExp ? "deletedDefaultExpenseCategories" : "deletedDefaultIncomeCategories";
+      const overrideKey    = isExp ? "expenseColorOverrides"           : "incomeColorOverrides";
+      const customCats     = config[customKey] || [];
+      const deletedDefs    = config[deletedKey] || [];
+      const colorOverrides = config[overrideKey] || {};
+
+      const addCat = () => {
+        if (!newLabel.trim()) return;
+        const next = [...customCats, { id: "custom_" + Date.now(), label: newLabel.trim(), emoji: newEmoji || "📦", color: newColor }];
+        setNewLabel(""); setNewEmoji("");
+        autoSave({ [customKey]: next });
+      };
+      const removeCustom   = (id) => autoSave({ [customKey]: customCats.filter(x => x.id !== id) });
+      const removeDefault  = (id) => autoSave({ [deletedKey]: [...deletedDefs, id] });
+      const restoreDefault = (id) => autoSave({ [deletedKey]: deletedDefs.filter(x => x !== id) });
+      const overrideColor  = (id, color) => autoSave({ [overrideKey]: { ...colorOverrides, [id]: color } });
+
+      const visibleDefs = DEFAULT_CATS.filter(c => !deletedDefs.includes(c.id)).sort((a, b) => a.label.localeCompare(b.label));
+      const hiddenDefs  = DEFAULT_CATS.filter(c =>  deletedDefs.includes(c.id)).sort((a, b) => a.label.localeCompare(b.label));
+
+      return (
+        <div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+            {visibleDefs.map(c => {
+              const color  = colorOverrides[c.id] || c.color;
+              const pinned = !!c.always;
+              return (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: `1px solid ${color}44`, borderRadius: 20, padding: "5px 10px" }}>
+                  <span style={{ fontSize: 14 }}>{c.emoji}</span>
+                  <span style={{ fontSize: 12, color: "#9aaabb" }}>{c.label}</span>
+                  {pinned && <span style={{ fontSize: 10, color, opacity: 0.7 }}>★</span>}
+                  <input type="color" value={color} onChange={e => overrideColor(c.id, e.target.value)} title="Change color"
+                    style={{ width: 14, height: 14, borderRadius: "50%", border: "none", background: "none", cursor: "pointer", padding: 0, flexShrink: 0, opacity: 0.7 }} />
+                  {!pinned && (
+                    <button onClick={() => removeDefault(c.id)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
+                      onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
+                  )}
+                </div>
+              );
+            })}
+            {customCats.map(c => (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: `1px solid ${c.color}44`, borderRadius: 20, padding: "5px 10px" }}>
+                <span style={{ fontSize: 14 }}>{c.emoji}</span>
+                <span style={{ fontSize: 12, color: "#c8d8e8" }}>{c.label}</span>
+                <button onClick={() => removeCustom(c.id)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
+              </div>
+            ))}
+          </div>
+
+          {hiddenDefs.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: "#8baabf", marginBottom: 7 }}>Hidden — click to restore</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {hiddenDefs.map(c => (
+                  <button key={c.id} onClick={() => restoreDefault(c.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "1px dashed #1a2535", borderRadius: 20, padding: "4px 10px", cursor: "pointer", color: "#8baabf", fontSize: 12 }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = "#7a90a8"} onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+                    <span>{c.emoji}</span> {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px" }}>
+            <SlEmojiPicker value={newEmoji} onChange={setNewEmoji} />
+            <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCat()}
+              placeholder="New category name" style={{ ...inp, flex: 1, padding: "8px 12px" }} />
+            <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)}
+              style={{ width: 34, height: 34, borderRadius: 6, border: "1px solid #7a90a8", background: "#080f18", cursor: "pointer", padding: 2, flexShrink: 0 }} />
+            <button onClick={addCat} disabled={!newLabel.trim()}
+              style={{ background: newLabel.trim() ? SL_ACCENT_A : "#1a2535", color: newLabel.trim() ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 8, padding: "8px 14px", cursor: newLabel.trim() ? "pointer" : "default", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>
+              Add
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     function SlSettings({ config, onSave }) {
-      const [currency,  setCurrency] = React.useState(config.currency || "EUR");
-      const [budget,    setBudget]   = React.useState(config.budget ? String(config.budget) : "");
-      const [catTab,    setCatTab]   = React.useState("expense");
-      const [newEmoji,  setNewEmoji] = React.useState("");
-      const [newLabel,  setNewLabel] = React.useState("");
-      const [newColor,  setNewColor] = React.useState("#94a3b8");
-      const [saved,     setSaved]    = React.useState(false);
+      const [currency, setCurrency] = React.useState(config.currency || "EUR");
+      const [budget,   setBudget]   = React.useState(config.budget ? String(config.budget) : "");
+      const [catTab,   setCatTab]   = React.useState("expense");
+      const [newEmoji, setNewEmoji] = React.useState("");
+      const [newLabel, setNewLabel] = React.useState("");
+      const [newColor, setNewColor] = React.useState("#94a3b8");
+      const [saved,    setSaved]    = React.useState(false);
       const inp = { background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, boxSizing: "border-box" };
 
-      // Read directly from config prop (no local copy — avoids stale state)
-      const cfg = (key) => config[key] || (key.includes("Categories") ? [] : {});
-      const autoSave = (patch) => onSave({ currency, budget: budget ? Number(budget) : null,
-        customExpenseCategories: cfg("customExpenseCategories"), customIncomeCategories: cfg("customIncomeCategories"),
-        deletedDefaultExpenseCategories: cfg("deletedDefaultExpenseCategories"), deletedDefaultIncomeCategories: cfg("deletedDefaultIncomeCategories"),
-        expenseColorOverrides: cfg("expenseColorOverrides"), incomeColorOverrides: cfg("incomeColorOverrides"), ...patch });
+      const autoSave = (patch) => onSave({
+        currency, budget: budget ? Number(budget) : null,
+        customExpenseCategories:         config.customExpenseCategories         || [],
+        customIncomeCategories:          config.customIncomeCategories          || [],
+        deletedDefaultExpenseCategories: config.deletedDefaultExpenseCategories || [],
+        deletedDefaultIncomeCategories:  config.deletedDefaultIncomeCategories  || [],
+        expenseColorOverrides:           config.expenseColorOverrides           || {},
+        incomeColorOverrides:            config.incomeColorOverrides            || {},
+        dashboardLayout:                 config.dashboardLayout,
+        ...patch
+      });
       const save = () => { autoSave({}); setSaved(true); setTimeout(() => setSaved(false), 1500); };
-
-      // Category panel factory — renders the same UI for expense or income
-      const CategoryPanel = ({ type }) => {
-        const isExp = type === "expense";
-        const DEFAULT_CATS  = isExp ? SL_DEFAULT_EXPENSE_CATEGORIES : SL_DEFAULT_INCOME_CATEGORIES;
-        const customKey     = isExp ? "customExpenseCategories"           : "customIncomeCategories";
-        const deletedKey    = isExp ? "deletedDefaultExpenseCategories"   : "deletedDefaultIncomeCategories";
-        const overrideKey   = isExp ? "expenseColorOverrides"             : "incomeColorOverrides";
-        const customCats    = cfg(customKey);
-        const deletedDefs   = cfg(deletedKey);
-        const colorOverrides= cfg(overrideKey);
-
-        const addCat = () => {
-          if (!newLabel.trim()) return;
-          const next = [...customCats, { id: "custom_" + Date.now(), label: newLabel.trim(), emoji: newEmoji || "📦", color: newColor }];
-          setNewLabel(""); setNewEmoji("");
-          autoSave({ [customKey]: next });
-        };
-        const removeCustom   = (id) => autoSave({ [customKey]: customCats.filter(x => x.id !== id) });
-        const removeDefault  = (id) => autoSave({ [deletedKey]: [...deletedDefs, id] });
-        const restoreDefault = (id) => autoSave({ [deletedKey]: deletedDefs.filter(x => x !== id) });
-        const overrideColor  = (id, color) => autoSave({ [overrideKey]: { ...colorOverrides, [id]: color } });
-
-        const visibleDefs = DEFAULT_CATS.filter(c => !deletedDefs.includes(c.id)).sort((a,b) => a.label.localeCompare(b.label));
-        const hiddenDefs  = DEFAULT_CATS.filter(c =>  deletedDefs.includes(c.id)).sort((a,b) => a.label.localeCompare(b.label));
-
-        return (
-          <div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-              {visibleDefs.map(c => {
-                const color = colorOverrides[c.id] || c.color;
-                const pinned = !!c.always;
-                return (
-                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: `1px solid ${color}44`, borderRadius: 20, padding: "5px 10px" }}>
-                    <span style={{ fontSize: 14 }}>{c.emoji}</span>
-                    <span style={{ fontSize: 12, color: "#9aaabb" }}>{c.label}</span>
-                    {pinned && <span style={{ fontSize: 10, color: color, opacity: 0.7 }}>★</span>}
-                    <input type="color" value={color} onChange={e => overrideColor(c.id, e.target.value)} title="Change color"
-                      style={{ width: 14, height: 14, borderRadius: "50%", border: "none", background: "none", cursor: "pointer", padding: 0, flexShrink: 0, opacity: 0.7 }} />
-                    {!pinned && (
-                      <button onClick={() => removeDefault(c.id)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
-                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
-                    )}
-                  </div>
-                );
-              })}
-              {customCats.map(c => (
-                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: `1px solid ${c.color}44`, borderRadius: 20, padding: "5px 10px" }}>
-                  <span style={{ fontSize: 14 }}>{c.emoji}</span>
-                  <span style={{ fontSize: 12, color: "#c8d8e8" }}>{c.label}</span>
-                  <button onClick={() => removeCustom(c.id)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
-                    onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
-                </div>
-              ))}
-            </div>
-
-            {hiddenDefs.length > 0 && (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 12, color: "#8baabf", marginBottom: 7 }}>Hidden — click to restore</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {hiddenDefs.map(c => (
-                    <button key={c.id} onClick={() => restoreDefault(c.id)}
-                      style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "1px dashed #1a2535", borderRadius: 20, padding: "4px 10px", cursor: "pointer", color: "#8baabf", fontSize: 12 }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = "#7a90a8"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; }}>
-                      <span>{c.emoji}</span> {c.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px" }}>
-              <SlEmojiPicker value={newEmoji} onChange={setNewEmoji} />
-              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && addCat()}
-                placeholder="New category name" style={{ ...inp, flex: 1, padding: "8px 12px" }} />
-              <input type="color" value={newColor} onChange={e => setNewColor(e.target.value)}
-                style={{ width: 34, height: 34, borderRadius: 6, border: "1px solid #7a90a8", background: "#080f18", cursor: "pointer", padding: 2, flexShrink: 0 }} />
-              <button onClick={addCat} disabled={!newLabel.trim()}
-                style={{ background: newLabel.trim() ? SL_ACCENT_A : "#1a2535", color: newLabel.trim() ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 8, padding: "8px 14px", cursor: newLabel.trim() ? "pointer" : "default", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>
-                Add
-              </button>
-            </div>
-          </div>
-        );
-      };
 
       return (
         <div style={{ padding: "28px 28px 60px", maxWidth: 600 }}>
           <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24, letterSpacing: "-0.02em" }}>Settings</div>
 
-          {/* Currency + Budget */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 32 }}>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
@@ -7404,7 +7407,6 @@
             </div>
           </div>
 
-          {/* Category tabs */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1a2535", marginBottom: 18 }}>
               {[{ id: "expense", label: "📤 Expense categories" }, { id: "income", label: "📥 Income categories" }].map(t => (
@@ -7414,7 +7416,15 @@
                 </button>
               ))}
             </div>
-            <CategoryPanel type={catTab} />
+            <SlCategoryPanel
+              isExp={catTab === "expense"}
+              config={config}
+              autoSave={autoSave}
+              newEmoji={newEmoji} setNewEmoji={setNewEmoji}
+              newLabel={newLabel} setNewLabel={setNewLabel}
+              newColor={newColor} setNewColor={setNewColor}
+              inp={inp}
+            />
           </div>
 
           <div style={{ marginTop: 24 }}>
@@ -7426,7 +7436,6 @@
         </div>
       );
     }
-
     // ─── SL App component ─────────────────────────────────────────────────────
     function App({ logoSlot, profileId, profileChip }) {
       const [tab,           setTab]           = React.useState("dashboard");
