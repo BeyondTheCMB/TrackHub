@@ -6914,7 +6914,15 @@
       return (
         <div style={{ padding: "20px 24px 60px" }} ref={containerRef}>
           {/* Edit mode toolbar */}
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 16 }}>
+            {editMode && (
+              <button onClick={() => { onLayoutChange(SL_DEFAULT_LAYOUT); }}
+                style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>
+                ↺ Reset layout
+              </button>
+            )}
             <button onClick={() => setEditMode(e => !e)}
               style={{ background: editMode ? "#4ade8022" : "transparent", border: `1px solid ${editMode ? "#4ade8044" : "#1a2535"}`, color: editMode ? SL_ACCENT_A : "#7a90a8", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: editMode ? 600 : 400 }}>
               {editMode ? "Done" : "✦ Edit dashboard"}
