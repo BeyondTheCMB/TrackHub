@@ -5957,7 +5957,7 @@
       { id: "salary",        label: "Salary",        emoji: "💼", color: "#4ade80" },
       { id: "freelance",     label: "Freelance",     emoji: "🧑‍💻", color: "#22d3ee" },
       { id: "rental",        label: "Rental income", emoji: "🏠", color: "#60a5fa" },
-      { id: "investments",   label: "Investments",   emoji: "📈", color: "#a78bfa" },
+      { id: "investments",   label: "Investments",   emoji: "📈", color: "#a78bfa", always: true },
       { id: "gift_in",       label: "Gift received", emoji: "🎁", color: "#f59e0b" },
       { id: "refund",        label: "Refund",        emoji: "↩️", color: "#34d399" },
       { id: "interest",      label: "Interest",      emoji: "🏦", color: "#fbbf24" },
@@ -6116,6 +6116,7 @@
       const [date,     setDate]     = React.useState(initial ? initial.date : today);
       const [notes,    setNotes]    = React.useState(initial ? (initial.notes || "") : "");
       const [payMethod,setPayMethod]= React.useState(initial ? (initial.paymentMethod || "") : "");
+      const locked = allExpenseCategories.length === 0 || allIncomeCategories.length === 0;
       const allCategories = type === "income" ? allIncomeCategories : allExpenseCategories;
       // Reset category when switching type if it doesn't exist in new list
       React.useEffect(() => {
@@ -6132,15 +6133,17 @@
             <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16, color: "#e2e8f0" }}>
               {initial ? "Edit transaction" : "Add transaction"}
             </div>
-            {/* Type toggle */}
-            <div style={{ display: "flex", background: "#080f18", borderRadius: 8, padding: 3, gap: 2 }}>
-              {["expense","income"].map(t => (
-                <button key={t} onClick={() => setType(t)}
-                  style={{ background: type === t ? (t === "income" ? "#4ade8022" : "#22d3ee22") : "transparent", border: `1px solid ${type === t ? (t === "income" ? "#4ade8055" : "#22d3ee55") : "transparent"}`, color: type === t ? (t === "income" ? "#4ade80" : "#22d3ee") : "#7a90a8", borderRadius: 6, padding: "4px 14px", cursor: "pointer", fontSize: 12, fontWeight: type === t ? 700 : 400, textTransform: "capitalize" }}>
-                  {t === "income" ? "📥 Income" : "📤 Expense"}
-                </button>
-              ))}
-            </div>
+            {/* Type toggle — hidden when form is locked to one type */}
+            {!locked && (
+              <div style={{ display: "flex", background: "#080f18", borderRadius: 8, padding: 3, gap: 2 }}>
+                {["expense","income"].map(t => (
+                  <button key={t} onClick={() => setType(t)}
+                    style={{ background: type === t ? (t === "income" ? "#4ade8022" : "#22d3ee22") : "transparent", border: `1px solid ${type === t ? (t === "income" ? "#4ade8055" : "#22d3ee55") : "transparent"}`, color: type === t ? (t === "income" ? "#4ade80" : "#22d3ee") : "#7a90a8", borderRadius: 6, padding: "4px 14px", cursor: "pointer", fontSize: 12, fontWeight: type === t ? 700 : 400, textTransform: "capitalize" }}>
+                    {t === "income" ? "📥 Income" : "📤 Expense"}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
             <div>
@@ -6925,13 +6928,97 @@
       );
     }
 
+    // ─── SL Income tab ────────────────────────────────────────────────────────
+    function SlIncome({ transactions, allIncomeCategories, currency, monthKey, onAdd, onEdit, onDelete }) {
+      const [showForm,   setShowForm]   = React.useState(false);
+      const [editEntry,  setEditEntry]  = React.useState(null);
+      const [confirmDel, setConfirmDel] = React.useState(null);
+      const monthInc = transactions
+        .filter(t => t.type === "income" && slMonthKey(t.date) === monthKey)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      const monthTotal = monthInc.reduce((s, t) => s + Number(t.amount), 0);
+
+      const handleSave = (data) => {
+        const entry = { ...data, type: "income" };
+        if (editEntry) { onEdit({ ...editEntry, ...entry }); setEditEntry(null); }
+        else { onAdd({ id: slUuid(), ...entry }); setShowForm(false); }
+      };
+
+      return (
+        <div style={{ padding: "28px 28px 60px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Income this month</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
+                +{slFmtAmount(monthTotal, currency)}
+              </div>
+            </div>
+            <button onClick={() => { setShowForm(true); setEditEntry(null); }}
+              style={{ background: "#4ade80", color: "#0f172a", border: "none", borderRadius: 9, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+              + Add income
+            </button>
+          </div>
+
+          {(showForm && !editEntry) && (
+            <div style={{ marginBottom: 20 }}>
+              <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} onSave={handleSave} onCancel={() => setShowForm(false)} initial={{ type: "income" }} />
+            </div>
+          )}
+          {editEntry && (
+            <div style={{ marginBottom: 20 }}>
+              <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} initial={editEntry} onSave={handleSave} onCancel={() => setEditEntry(null)} />
+            </div>
+          )}
+
+          {monthInc.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "60px 20px", color: "#7a90a8" }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>📥</div>
+              <div style={{ fontSize: 14 }}>No income recorded this month.</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {monthInc.map(t => {
+                const cat = allIncomeCategories.find(c => c.id === t.category);
+                return confirmDel === t.id ? (
+                  <div key={t.id} style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
+                    Delete this income entry?
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button onClick={() => { onDelete(t.id); setConfirmDel(null); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Delete</button>
+                      <button onClick={() => setConfirmDel(null)} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #8baabf", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "12px 16px", transition: "border-color 0.15s" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = "#4ade8044"}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+                    <span style={{ fontSize: 20, flexShrink: 0 }}>{cat ? cat.emoji : "📥"}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{cat ? cat.label : t.category}</div>
+                      <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>{t.date}{t.notes ? " · " + t.notes : ""}{t.paymentMethod ? " · " + t.paymentMethod : ""}</div>
+                    </div>
+                    <span style={{ fontSize: 15, color: "#4ade80", fontWeight: 700, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>+{slFmtAmount(t.amount, currency)}</span>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <button onClick={() => { setEditEntry(t); setShowForm(false); }} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#9aaabb"} onMouseLeave={e => e.currentTarget.style.color = "#7a90a8"}>✏️</button>
+                      <button onClick={() => setConfirmDel(t.id)} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#7a90a8"}>🗑</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // ─── SL Transactions tab ──────────────────────────────────────────────────
     function SlTransactions({ transactions, allExpenseCategories, allIncomeCategories, allCategories, currency, monthKey, onAdd, onEdit, onDelete }) {
       const [showForm,  setShowForm]  = React.useState(false);
       const [editEntry, setEditEntry] = React.useState(null);
       const [confirmDel, setConfirmDel] = React.useState(null);
       const monthTxs = transactions
-        .filter(t => slMonthKey(t.date) === monthKey)
+        .filter(t => t.type !== "income" && slMonthKey(t.date) === monthKey)
         .sort((a, b) => b.date.localeCompare(a.date));
 
       const handleSave = (data) => {
@@ -7237,14 +7324,18 @@
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
               {visibleDefs.map(c => {
                 const color = colorOverrides[c.id] || c.color;
+                const pinned = !!c.always;
                 return (
                   <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#0d1825", border: `1px solid ${color}44`, borderRadius: 20, padding: "5px 10px" }}>
                     <span style={{ fontSize: 14 }}>{c.emoji}</span>
                     <span style={{ fontSize: 12, color: "#9aaabb" }}>{c.label}</span>
+                    {pinned && <span style={{ fontSize: 10, color: color, opacity: 0.7 }}>★</span>}
                     <input type="color" value={color} onChange={e => overrideColor(c.id, e.target.value)} title="Change color"
                       style={{ width: 14, height: 14, borderRadius: "50%", border: "none", background: "none", cursor: "pointer", padding: 0, flexShrink: 0, opacity: 0.7 }} />
-                    <button onClick={() => removeDefault(c.id)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
-                      onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
+                    {!pinned && (
+                      <button onClick={() => removeDefault(c.id)} style={{ background: "none", border: "none", color: "#8baabf", cursor: "pointer", fontSize: 12, padding: "0 0 0 2px", lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#8baabf"}>×</button>
+                    )}
                   </div>
                 );
               })}
@@ -7412,6 +7503,7 @@
       const TABS = [
         { id: "dashboard",     label: "Dashboard" },
         { id: "transactions",  label: "Transactions" },
+        { id: "income",        label: "Income" },
         { id: "subscriptions", label: "Subscriptions" },
         { id: "settings",      label: "Settings" },
       ];
@@ -7434,14 +7526,17 @@
           {/* Tab bar + month nav */}
           <div style={{ borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", flexShrink: 0, background: "#080f18" }}>
             <div style={{ display: "flex", gap: 0 }}>
-              {TABS.map(t => (
-                <button key={t.id} onClick={() => setTab(t.id)}
-                  style={{ background: "none", border: "none", borderBottom: tab === t.id ? `2px solid ${SL_ACCENT_A}` : "2px solid transparent", color: tab === t.id ? SL_ACCENT_A : "#7a90a8", cursor: "pointer", padding: "14px 16px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, transition: "color 0.15s" }}
-                  onMouseEnter={e => { if (tab !== t.id) e.currentTarget.style.color = "#9aaabb"; }}
-                  onMouseLeave={e => { if (tab !== t.id) e.currentTarget.style.color = "#7a90a8"; }}>
-                  {t.label}
-                </button>
-              ))}
+              {TABS.map(t => {
+                const accent = t.id === "income" ? "#4ade80" : SL_ACCENT_A;
+                return (
+                  <button key={t.id} onClick={() => setTab(t.id)}
+                    style={{ background: "none", border: "none", borderBottom: tab === t.id ? `2px solid ${accent}` : "2px solid transparent", color: tab === t.id ? accent : "#7a90a8", cursor: "pointer", padding: "14px 16px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400, transition: "color 0.15s" }}
+                    onMouseEnter={e => { if (tab !== t.id) e.currentTarget.style.color = "#9aaabb"; }}
+                    onMouseLeave={e => { if (tab !== t.id) e.currentTarget.style.color = "#7a90a8"; }}>
+                    {t.label}
+                  </button>
+                );
+              })}
             </div>
             {tab !== "settings" && (
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -7463,9 +7558,10 @@
             ) : (
               <>
                 {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} />}
-                {tab === "transactions"  && <SlTransactions  transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
-                {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
-                {tab === "settings"      && <SlSettings      config={config} onSave={saveConfig} allCategories={allCategories} />}
+                {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
+                {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} />}
               </>
             )}
           </div>
