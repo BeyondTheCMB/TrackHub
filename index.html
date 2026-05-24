@@ -5951,21 +5951,22 @@
       { id: "finance",       label: "Finance",       emoji: "💰", color: "#4ade80" },
       { id: "pets",          label: "Pets",          emoji: "🐾", color: "#fbbf24" },
       { id: "personal",      label: "Personal care", emoji: "🧴", color: "#e879f9" },
+      { id: "investments",   label: "Investments",   emoji: "📈", color: "#a78bfa", always: true, neutral: true },
       { id: "other_exp",     label: "Other",         emoji: "📦", color: "#64748b" },
     ];
     const SL_DEFAULT_INCOME_CATEGORIES = [
       { id: "salary",        label: "Salary",        emoji: "💼", color: "#4ade80" },
       { id: "freelance",     label: "Freelance",     emoji: "🧑‍💻", color: "#22d3ee" },
       { id: "rental",        label: "Rental income", emoji: "🏠", color: "#60a5fa" },
-      { id: "investments",   label: "Investments",   emoji: "📈", color: "#a78bfa", always: true },
       { id: "gift_in",       label: "Gift received", emoji: "🎁", color: "#f59e0b" },
       { id: "refund",        label: "Refund",        emoji: "↩️", color: "#34d399" },
       { id: "interest",      label: "Interest",      emoji: "🏦", color: "#fbbf24" },
       { id: "other_inc",     label: "Other",         emoji: "📦", color: "#94a3b8" },
     ];
-    // Keep backward-compat alias used by widgets that just need "all" categories
     const SL_DEFAULT_CATEGORIES = SL_DEFAULT_EXPENSE_CATEGORIES;
-
+    // Neutral categories: recorded as expenses but excluded from spend totals/budget
+    const SL_NEUTRAL_CATEGORY_IDS = new Set(SL_DEFAULT_EXPENSE_CATEGORIES.filter(c => c.neutral).map(c => c.id));
+    const slIsNeutral = (t) => SL_NEUTRAL_CATEGORY_IDS.has(t.category);
     // ─── SL Supabase helpers ──────────────────────────────────────────────────
     async function slLoadConfig(profileId) {
       const { data, error } = await _sb.from("sl_config")
@@ -6316,6 +6317,7 @@
     const SL_SUMMARY_METRICS = [
       { id: "total_spent",       label: "Total spent",         always: true  },
       { id: "income",            label: "Income",              always: false },
+      { id: "invested",          label: "Invested",            always: false },
       { id: "net",               label: "Net balance",         always: false },
       { id: "transactions",      label: "Transactions",        always: false },
       { id: "subscriptions",     label: "Subscriptions",       always: false },
@@ -6332,7 +6334,7 @@
       id: m.id, order: i, visible: ["total_spent","transactions","subscriptions","budget_left"].includes(m.id),
     }));
 
-    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, incomeTotal, netTotal, monthIncTxs, currency, budget, transactions, monthKey, settings, onSettingsChange }) {
+    function WMonthlySummary({ monthTxs, monthSubs, total, txTotal, subTotal, incomeTotal, netTotal, investedTotal, monthIncTxs, currency, budget, transactions, monthKey, settings, onSettingsChange }) {
       const [editing, setEditing] = React.useState(false);
       const [draggingM, setDraggingM] = React.useState(null);
       const [dragOverM, setDragOverM] = React.useState(null);
@@ -6368,10 +6370,11 @@
       const topCatM = Object.entries(catMapM).sort((a,b)=>b[1]-a[1])[0];
       const largestM = monthTxs.length ? monthTxs.reduce((a,b)=>Number(a.amount)>Number(b.amount)?a:b) : null;
       const prevKeyM = (() => { const d=new Date(y2,mo2-2,1); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); })();
-      const prevTotalM = transactions.filter(t=>slMonthKey(t.date)===prevKeyM&&t.type!=="income").reduce((s,t)=>s+Number(t.amount),0);
+      const prevTotalM = transactions.filter(t=>slMonthKey(t.date)===prevKeyM&&t.type!=="income"&&!slIsNeutral(t)).reduce((s,t)=>s+Number(t.amount),0);
       const METRIC_DATA = {
         total_spent:       { label: "Total spent",        value: slFmtAmount(total, currency),          color: total > 0 ? "#e2e8f0" : "#7a90a8", sub: null },
         income:            { label: "Income",             value: slFmtAmount(incomeTotal||0, currency),  color: (incomeTotal||0) > 0 ? "#4ade80" : "#7a90a8", sub: `${(monthIncTxs||[]).length} item${(monthIncTxs||[]).length !== 1 ? "s" : ""}` },
+        invested:          { label: "Invested",           value: slFmtAmount(investedTotal||0, currency), color: "#a78bfa", sub: "excl. from expenses" },
         net:               { label: "Net balance",        value: ((netTotal||0) >= 0 ? "+" : "") + slFmtAmount(netTotal||0, currency), color: (netTotal||0) >= 0 ? "#4ade80" : "#f87171", sub: (netTotal||0) >= 0 ? "surplus" : "deficit" },
         transactions:      { label: "Transactions",       value: slFmtAmount(txTotal, currency),         color: "#c8d8e8", sub: `${monthTxs.length} item${monthTxs.length !== 1 ? "s" : ""}` },
         subscriptions:     { label: "Subscriptions",      value: slFmtAmount(subTotal, currency),        color: "#c8d8e8", sub: `${monthSubs.length} billing` },
@@ -6629,7 +6632,7 @@
         keys.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
       }
       const data = keys.map(k => {
-        const txs  = transactions.filter(t => slMonthKey(t.date) === k).reduce((s, t) => s + Number(t.amount), 0);
+        const txs  = transactions.filter(t => slMonthKey(t.date) === k && t.type !== "income" && !slIsNeutral(t)).reduce((s, t) => s + Number(t.amount), 0);
         const subs = subscriptions.filter(s => slSubBilledInMonth(s, k)).reduce((s, sub) => s + Number(sub.amount), 0);
         return { key: k, total: txs + subs, label: slMonthLabel(k).split(" ")[0] };
       });
@@ -6672,7 +6675,7 @@
       const lastKey = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
       const getMap = (mk) => {
         const map = {};
-        transactions.filter(t => slMonthKey(t.date) === mk).forEach(t => { map[t.category] = (map[t.category] || 0) + Number(t.amount); });
+        transactions.filter(t => slMonthKey(t.date) === mk && t.type !== "income" && !slIsNeutral(t)).forEach(t => { map[t.category] = (map[t.category] || 0) + Number(t.amount); });
         subscriptions.filter(s => slSubBilledInMonth(s, mk)).forEach(s => { map[s.category] = (map[s.category] || 0) + Number(s.amount); });
         return map;
       };
@@ -6800,19 +6803,23 @@
       const sorted = [...layout].sort((a, b) => a.order - b.order);
 
       // Shared data computations
-      const monthTxs     = transactions.filter(t => slMonthKey(t.date) === monthKey);
-      const monthSubs    = subscriptions.filter(s => slSubBilledInMonth(s, monthKey));
-      const monthExpTxs  = monthTxs.filter(t => t.type !== "income");
-      const monthIncTxs  = monthTxs.filter(t => t.type === "income");
-      const txExpTotal   = monthExpTxs.reduce((s, t) => s + Number(t.amount), 0);
-      const txIncTotal   = monthIncTxs.reduce((s, t) => s + Number(t.amount), 0);
-      const subTotal     = monthSubs.reduce((s, sub) => s + Number(sub.amount), 0);
-      const txTotal      = txExpTotal + subTotal; // expense total (txs + subs)
-      const total        = txTotal;               // total expenses for budget etc
-      const incomeTotal  = txIncTotal;
-      const netTotal     = incomeTotal - total;
-      const catMap       = {};
-      monthExpTxs.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
+      const monthTxs      = transactions.filter(t => slMonthKey(t.date) === monthKey);
+      const monthSubs     = subscriptions.filter(s => slSubBilledInMonth(s, monthKey));
+      const monthExpTxs   = monthTxs.filter(t => t.type !== "income");
+      const monthIncTxs   = monthTxs.filter(t => t.type === "income");
+      const monthNeutral  = monthExpTxs.filter(t => slIsNeutral(t));   // investments etc
+      const monthRealExp  = monthExpTxs.filter(t => !slIsNeutral(t));  // true expenses
+      const txIncTotal    = monthIncTxs.reduce((s, t) => s + Number(t.amount), 0);
+      const txNeutTotal   = monthNeutral.reduce((s, t) => s + Number(t.amount), 0);
+      const txExpTotal    = monthRealExp.reduce((s, t) => s + Number(t.amount), 0);
+      const subTotal      = monthSubs.reduce((s, sub) => s + Number(sub.amount), 0);
+      const txTotal       = txExpTotal + subTotal; // real expense total (excl. investments)
+      const total         = txTotal;               // used for budget, summary etc
+      const incomeTotal   = txIncTotal;
+      const investedTotal = txNeutTotal;
+      const netTotal      = incomeTotal - total - investedTotal;
+      const catMap        = {};
+      monthRealExp.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
       monthSubs.forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
       const catRows   = Object.entries(catMap)
         .map(([id, amt]) => ({ id, amt, cat: allCategories.find(c => c.id === id) }))
@@ -6864,7 +6871,7 @@
           <div key={w.id} {...dragProps}
             style={{ opacity: dragging === w.id ? 0.4 : 1, outline: isOver ? `2px solid ${SL_ACCENT_A}` : "none", borderRadius: 14, transition: "opacity 0.15s", height: "100%" }}>
             <SlWidgetCard title={def.label} editMode={editMode} dragHandleProps={{ draggable: false }} colButtons={colButtons}>
-              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthExpTxs} monthSubs={monthSubs} total={total} txTotal={txExpTotal} subTotal={subTotal} incomeTotal={incomeTotal} netTotal={netTotal} monthIncTxs={monthIncTxs} currency={currency} budget={budget} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
+              {w.id === "monthly_summary"    && <WMonthlySummary monthTxs={monthRealExp} monthSubs={monthSubs} total={total} txTotal={txExpTotal} subTotal={subTotal} incomeTotal={incomeTotal} netTotal={netTotal} investedTotal={investedTotal} monthIncTxs={monthIncTxs} currency={currency} budget={budget} transactions={transactions} monthKey={monthKey} settings={w.settings} onSettingsChange={s => updateWidgetSettings(w.id, s)} />}
               {w.id === "year_heatmap"       && <WYearHeatmap transactions={transactions} subscriptions={subscriptions} monthKey={monthKey} />}
               {w.id === "budget_status"      && <WBudgetStatus total={total} budget={budget} currency={currency} />}
               {w.id === "category_breakdown" && <WCategoryBreakdown catRows={catRows} maxAmt={maxAmt} currency={currency} total={total} />}
@@ -7074,6 +7081,7 @@
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{cat ? cat.label : t.category}</span>
                         {t.type === "income" && <span style={{ fontSize: 10, color: "#4ade80", background: "#4ade8015", border: "1px solid #4ade8033", borderRadius: 10, padding: "1px 7px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>income</span>}
+                        {slIsNeutral(t) && <span style={{ fontSize: 10, color: "#a78bfa", background: "#a78bfa15", border: "1px solid #a78bfa33", borderRadius: 10, padding: "1px 7px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>invested</span>}
                       </div>
                       <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>{t.date}{t.notes ? " · " + t.notes : ""}{t.paymentMethod ? " · " + t.paymentMethod : ""}</div>
                     </div>
