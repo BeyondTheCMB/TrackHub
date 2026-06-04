@@ -26,6 +26,17 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
+    // ─── Mobile detection ─────────────────────────────────────────────────────
+    const useIsMobile = () => {
+      const [mob, setMob] = useState(() => window.innerWidth < 640);
+      useEffect(() => {
+        const handler = () => setMob(window.innerWidth < 640);
+        window.addEventListener("resize", handler);
+        return () => window.removeEventListener("resize", handler);
+      }, []);
+      return mob;
+    };
+
     // ─── Error boundary ───────────────────────────────────────────────────────
     class ErrorBoundary extends React.Component {
       constructor(props) { super(props); this.state = { error: null }; }
@@ -401,6 +412,114 @@
         onProfileCreate({ id: "profile_" + Date.now(), name, color: colorId });
         setNewName(""); setColorId("blue"); setCreating(false);
       };
+      const isMobile = useIsMobile();
+
+      if (isMobile) {
+        return (
+          <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column", padding: "28px 20px 40px" }}>
+            {/* Logo */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 20 }}>🗃️</span>
+                <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 20, color: "#e2e8f0", letterSpacing: "-0.02em" }}>
+                  Track<span style={{ color: "#e2c97e" }}>Hub</span>
+                </span>
+              </div>
+              <button onClick={onSignOut} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 12 }}>Sign out</button>
+            </div>
+
+            {/* Greeting */}
+            <div style={{ textAlign: "center", marginBottom: 28 }}>
+              <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 4 }}>{greeting}, <span style={{ color: "#9aaabb", fontWeight: 600 }}>{username}</span></div>
+              <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 24, color: "#e2e8f0", margin: 0, letterSpacing: "-0.02em" }}>
+                What are you <span style={{ color: "#e2c97e" }}>tracking</span>?
+              </h1>
+            </div>
+
+            {/* Profile selector */}
+            {profiles.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, color: "#8baabf", textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: 700, marginBottom: 8 }}>Profile</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {profiles.map(p => {
+                    const color = profileColorOf(p.color);
+                    const isActive = p.id === activeProfileId;
+                    return (
+                      <button key={p.id} onClick={() => onProfileSelect(p.id)}
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 20, background: isActive ? color + "22" : "#0d1825", border: `1.5px solid ${isActive ? color : "#1a2535"}`, cursor: "pointer" }}>
+                        <span style={{ fontSize: 12, color: isActive ? color : "#9aaabb", fontWeight: isActive ? 700 : 400 }}>{p.name}</span>
+                        {isActive && <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, display: "inline-block" }} />}
+                      </button>
+                    );
+                  })}
+                  <button onClick={() => { /* handled below */ }}
+                    style={{ display: "none" }} />
+                </div>
+              </div>
+            )}
+
+            {/* Add profile / create form */}
+            {!creating ? (
+              <button onClick={() => setCreating(true)}
+                style={{ alignSelf: "flex-start", background: "transparent", color: "#8baabf", border: "1px dashed #1a2535", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, marginBottom: 24 }}>
+                + Add profile
+              </button>
+            ) : (
+              <div style={{ background: "#0b1520", borderRadius: 10, padding: "12px 14px", border: "1px solid #1a2535", marginBottom: 24 }}>
+                <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && doCreate()} placeholder="Profile name" autoFocus
+                  style={{ width: "100%", background: "#080f18", border: "1px solid #7a90a8", borderRadius: 7, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, marginBottom: 10 }} />
+                <div style={{ display: "flex", gap: 5, marginBottom: 10 }}>
+                  {PROFILE_COLORS_SHELL.map(c => (
+                    <button key={c.id} onClick={() => setColorId(c.id)} style={{ width: 20, height: 20, borderRadius: "50%", background: c.value + "33", border: `2px solid ${colorId === c.id ? c.value : "transparent"}`, cursor: "pointer", padding: 0 }} />
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={doCreate} disabled={!newName.trim()}
+                    style={{ flex: 1, background: newName.trim() ? profileColorOf(colorId) : "#1a2535", color: newName.trim() ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 7, padding: "8px", cursor: newName.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 12 }}>
+                    Create
+                  </button>
+                  <button onClick={() => { setCreating(false); setNewName(""); }}
+                    style={{ background: "transparent", color: "#7a90a8", border: "1px solid #7a90a8", borderRadius: 7, padding: "8px 10px", cursor: "pointer", fontSize: 12 }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!canEnter && (
+              <div style={{ fontSize: 13, color: "#8baabf", textAlign: "center", marginBottom: 20 }}>
+                {profiles.length === 0 ? "Create a profile above to get started." : "Select a profile to continue."}
+              </div>
+            )}
+
+            {/* Module cards */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, opacity: canEnter ? 1 : 0.25, pointerEvents: canEnter ? "auto" : "none" }}>
+              {cards.map(card => (
+                <button key={card.id} onClick={() => onSelect(card.id)}
+                  style={{ display: "flex", alignItems: "center", gap: 16, background: "#0d1825", border: `1px solid #1a2535`, borderRadius: 14, padding: "18px 20px", cursor: "pointer", textAlign: "left", position: "relative", overflow: "hidden" }}
+                  onTouchStart={e => e.currentTarget.style.borderColor = card.accentA + "44"}
+                  onTouchEnd={e => e.currentTarget.style.borderColor = "#1a2535"}>
+                  {card.wip && (
+                    <div style={{ position: "absolute", top: 8, right: 10, fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#f59e0b", background: "#f59e0b15", border: "1px solid #f59e0b33", borderRadius: 20, padding: "2px 7px" }}>
+                      Under construction
+                    </div>
+                  )}
+                  <span style={{ fontSize: 26, flexShrink: 0 }}>{card.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em", marginBottom: 3 }}>
+                      <span style={{ color: card.accentA }}>{card.label.slice(0, card.labelSplit)}</span>
+                      <span style={{ color: card.accentB }}>{card.label.slice(card.labelSplit)}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#7a90a8" }}>{card.desc}</div>
+                  </div>
+                  <span style={{ fontSize: 16, color: "#1a2535" }}>→</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "row" }}>
 
@@ -6138,6 +6257,7 @@
       const [payMethod,setPayMethod]= React.useState(initial ? (initial.paymentMethod || "") : "");
       const locked = allExpenseCategories.length === 0 || allIncomeCategories.length === 0;
       const allCategories = type === "income" ? allIncomeCategories : allExpenseCategories;
+      const isMob = useIsMobile();
       // Reset category when switching type if it doesn't exist in new list
       React.useEffect(() => {
         if (category && !allCategories.find(c => c.id === category)) setCategory("");
@@ -6165,7 +6285,8 @@
               </div>
             )}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          {/* Amount + Date: side by side on desktop, stacked on mobile */}
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 12, marginBottom: 12 }}>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Amount ({currency})</div>
               <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)}
@@ -6180,7 +6301,8 @@
             <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Category</div>
             <SlCategoryPicker value={category} onChange={setCategory} allCategories={allCategories} />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+          {/* Notes + Payment: side by side on desktop, stacked on mobile */}
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 12, marginBottom: 18 }}>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</div>
               <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
@@ -6818,7 +6940,7 @@
     }
 
     // ─── SlDashboard ──────────────────────────────────────────────────────────
-    function SlDashboard({ transactions, subscriptions, allCategories, currency, monthKey, budget, layout, onLayoutChange }) {
+    function SlDashboard({ transactions, subscriptions, allCategories, currency, monthKey, budget, layout, onLayoutChange, isMobile }) {
       const [editMode, setEditMode] = React.useState(false);
       const [dragging, setDragging] = React.useState(null); // { id, startY, currentOrder }
       const [dragOver, setDragOver] = React.useState(null);
@@ -6912,9 +7034,9 @@
       };
 
       return (
-        <div style={{ padding: "20px 24px 60px" }} ref={containerRef}>
-          {/* Edit mode toolbar */}
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 16 }}>
+        <div style={{ padding: isMobile ? "16px 12px 80px" : "20px 24px 60px" }} ref={containerRef}>
+          {/* Edit mode toolbar — desktop only */}
+          <div style={{ display: isMobile ? "none" : "flex", justifyContent: "flex-end", gap: 8, marginBottom: 16 }}>
             {editMode && (
               <button onClick={() => { onLayoutChange(SL_DEFAULT_LAYOUT); }}
                 style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}
@@ -6929,8 +7051,8 @@
             </button>
           </div>
 
-          {/* Widget visibility picker (edit mode) */}
-          {editMode && (
+          {/* Widget visibility picker (edit mode, desktop only) */}
+          {editMode && !isMobile && (
             <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
               <div style={{ fontSize: 12, color: "#8baabf", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>Show / hide widgets</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -6948,13 +7070,13 @@
             </div>
           )}
 
-          {/* Widgets — CSS grid, each widget has cols 1-3 */}
+          {/* Widgets — CSS grid, each widget has cols 1-3; on mobile always 1-col */}
           {(() => {
             const visible = sorted.filter(w => w.visible !== false);
             return (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gridAutoRows: "1fr", gap: 14, gridAutoFlow: "dense" }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gridAutoRows: isMobile ? "auto" : "1fr", gap: 14, gridAutoFlow: "dense" }}>
                 {visible.map(w => {
-                  const cols = Math.min(w.cols || 1, 3);
+                  const cols = isMobile ? 1 : Math.min(w.cols || 1, 3);
                   return (
                     <div key={w.id} style={{ gridColumn: `span ${cols}`, minWidth: 0 }}>
                       {renderWidget(w)}
@@ -7410,6 +7532,7 @@
       const [newColor, setNewColor] = React.useState("#94a3b8");
       const [newPM,    setNewPM]    = React.useState("");
       const [saved,    setSaved]    = React.useState(false);
+      const isMob = useIsMobile();
       const inp = { background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, boxSizing: "border-box" };
 
       const autoSave = (patch) => onSave({
@@ -7431,11 +7554,11 @@
       const removePM = (m) => autoSave({ customPaymentMethods: customPMs.filter(x => x !== m) });
 
       return (
-        <div style={{ padding: "28px 28px 60px", maxWidth: 600 }}>
+        <div style={{ padding: isMob ? "20px 16px 80px" : "28px 28px 60px", maxWidth: 600 }}>
           <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24, letterSpacing: "-0.02em" }}>Settings</div>
 
           {/* Currency + Budget */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 32 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 20, marginBottom: 32 }}>
             <div>
               <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Currency</div>
               <select value={currency} onChange={e => setCurrency(e.target.value)} style={{ ...inp, width: "100%", cursor: "pointer" }}>
@@ -7514,6 +7637,7 @@
       const [config,        setConfig]         = React.useState({ currency: "EUR", budget: null, customExpenseCategories: [], customIncomeCategories: [], deletedDefaultExpenseCategories: [], deletedDefaultIncomeCategories: [], expenseColorOverrides: {}, incomeColorOverrides: {}, customPaymentMethods: [] });
       const [dashLayout,    setDashLayout]     = React.useState(SL_DEFAULT_LAYOUT);
       const [loading,       setLoading]        = React.useState(true);
+      const isMobile = useIsMobile();
 
       const allExpenseCategories = React.useMemo(() =>
         [...SL_DEFAULT_EXPENSE_CATEGORIES.filter(c => !(config.deletedDefaultExpenseCategories || []).includes(c.id))
@@ -7591,13 +7715,75 @@
       const isCurrentMonth = monthKey === slTodayKey();
 
       const TABS = [
-        { id: "dashboard",     label: "Dashboard" },
-        { id: "transactions",  label: "Transactions" },
-        { id: "income",        label: "Income" },
-        { id: "subscriptions", label: "Subscriptions" },
-        { id: "settings",      label: "Settings" },
+        { id: "dashboard",     label: "Dashboard",     icon: "◈" },
+        { id: "transactions",  label: "Transactions",  icon: "↕" },
+        { id: "income",        label: "Income",        icon: "＋" },
+        { id: "subscriptions", label: "Subscriptions", icon: "↻" },
+        { id: "settings",      label: "Settings",      icon: "⚙" },
       ];
 
+      // ── Mobile layout ──────────────────────────────────────────────────────
+      if (isMobile) {
+        return (
+          <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column", paddingBottom: 60 }}>
+
+            {/* Top bar — compact */}
+            <div style={{ height: 52, borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {logoSlot}
+                <div style={{ width: 1, height: 16, background: "#1a2535" }} />
+                <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 15, letterSpacing: "-0.01em" }}>
+                  <span style={{ color: SL_ACCENT_A }}>Spend</span><span style={{ color: SL_ACCENT_B }}>Log</span>
+                </span>
+              </div>
+              {profileChip}
+            </div>
+
+            {/* Month nav bar (always visible, even on settings) */}
+            {tab !== "settings" && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, padding: "10px 16px", background: "#080f18", borderBottom: "1px solid #0d1825", flexShrink: 0 }}>
+                <button onClick={prevMonth} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 20, padding: "4px 10px", lineHeight: 1 }}>‹</button>
+                <span style={{ fontSize: 14, color: "#9aaabb", fontWeight: 600, minWidth: 140, textAlign: "center" }}>{slMonthLabel(monthKey)}</span>
+                <button onClick={nextMonth} disabled={isCurrentMonth}
+                  style={{ background: "none", border: "none", color: isCurrentMonth ? "#1a2535" : "#7a90a8", cursor: isCurrentMonth ? "default" : "pointer", fontSize: 20, padding: "4px 10px", lineHeight: 1 }}>›</button>
+              </div>
+            )}
+
+            {/* Content — scrollable */}
+            <div style={{ flex: 1, overflowY: "auto" }}>
+              {loading ? (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Loading…</div>
+              ) : (
+                <>
+                  {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} isMobile={true} />}
+                  {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                  {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                  {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
+                  {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} />}
+                </>
+              )}
+            </div>
+
+            {/* Bottom tab bar */}
+            <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, height: 60, background: "#080f18", borderTop: "1px solid #0d1825", display: "flex", alignItems: "stretch", zIndex: 50 }}>
+              {TABS.map(t => {
+                const isActive = tab === t.id;
+                const accent = t.id === "income" ? "#4ade80" : SL_ACCENT_A;
+                const shortLabel = t.id === "subscriptions" ? "Subs" : t.label;
+                return (
+                  <button key={t.id} onClick={() => setTab(t.id)}
+                    style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none", cursor: "pointer", borderTop: `2px solid ${isActive ? accent : "transparent"}`, paddingTop: 2 }}>
+                    <span style={{ fontSize: 16, lineHeight: 1 }}>{t.icon}</span>
+                    <span style={{ fontSize: 10, color: isActive ? accent : "#5a7080", fontWeight: isActive ? 700 : 400, letterSpacing: "0.02em" }}>{shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+
+      // ── Desktop layout ─────────────────────────────────────────────────────
       return (
         <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column" }}>
 
