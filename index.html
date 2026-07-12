@@ -79,9 +79,10 @@
 
     // ─── Module registry ──────────────────────────────────────────────────────
     const MODULE_REGISTRY = [
-      { id: "meeplelog", label: "MeepleLog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa" },
-      { id: "plottwist", label: "PlotTwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa" },
-      { id: "spendlog",  label: "SpendLog",  icon: "💰", accentA: "#4ade80", accentB: "#22d3ee" },
+      { id: "meeplelog",  label: "MeepleLog",  icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa" },
+      { id: "plottwist",  label: "PlotTwist",  icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa" },
+      { id: "spendlog",   label: "SpendLog",   icon: "💰", accentA: "#4ade80", accentB: "#22d3ee" },
+      { id: "figurelog",  label: "FigureLog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa" },
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
@@ -370,9 +371,10 @@
 
     function HomeScreen({ username, profiles, activeProfileId, onSelect, onSignOut, onProfileCreate, onProfileDelete, onProfileSelect }) {
       const cards = [
-        { id: "meeplelog", icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa", label: "MeepleLog", labelSplit: 6, desc: "Board game collection & wishlist" },
-        { id: "plottwist", icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa", label: "PlotTwist", labelSplit: 4, desc: "Book library & reading list" },
-        { id: "spendlog",  icon: "💰", accentA: "#4ade80", accentB: "#22d3ee", label: "SpendLog",  labelSplit: 5, desc: "Expenses & subscriptions" },
+        { id: "meeplelog",  icon: "🎲", accentA: "#e2c97e", accentB: "#60a5fa", label: "MeepleLog",  labelSplit: 6, desc: "Board game collection & wishlist" },
+        { id: "plottwist",  icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa", label: "PlotTwist",  labelSplit: 4, desc: "Book library & reading list" },
+        { id: "spendlog",   icon: "💰", accentA: "#4ade80", accentB: "#22d3ee", label: "SpendLog",   labelSplit: 5, desc: "Expenses & subscriptions" },
+        { id: "figurelog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa", label: "FigureLog",  labelSplit: 6, desc: "Anime figure collection & wishlist" },
       ];
       const [creating,   setCreating]   = React.useState(profiles.length === 0);
       const [newName,    setNewName]    = React.useState("");
@@ -6049,6 +6051,474 @@
       );
     }
 
+    // ─── FigureLog module ─────────────────────────────────────────────────────
+    const FL_ACCENT_A = "#22d3ee";
+    const FL_ACCENT_B = "#60a5fa";
+
+    const FL_FIGURE_TYPES = [
+      "Scale Figure", "Nendoroid", "Figma", "Funko Pop", "Statue",
+      "Bust", "Chibi / SD", "Garage Kit", "Prize Figure", "Other",
+    ];
+
+    const FL_STATUSES = [
+      { id: "owned",    label: "Owned",    color: "#22d3ee", emoji: "✅" },
+      { id: "preorder", label: "Preorder", color: "#f59e0b", emoji: "📦" },
+      { id: "wishlist", label: "Wishlist", color: "#a78bfa", emoji: "⭐" },
+      { id: "sold",     label: "Sold",     color: "#64748b", emoji: "🏷️" },
+    ];
+
+    const FL_SCALES = ["1/4", "1/6", "1/7", "1/8", "1/10", "1/12", "Non-scale", "Other"];
+
+    const flUuid = () => "fl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+    // ─── FL Supabase helpers ──────────────────────────────────────────────────
+    async function flLoad(profileId) {
+      const { data, error } = await _sb.from("fl_collection")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[FigureLog] load error:", error.message);
+      return Array.isArray(data?.data) ? data.data : [];
+    }
+    async function flSave(figures, profileId) {
+      const { error } = await _sb.from("fl_collection").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: figures },
+        { onConflict: "user_id,profile_id" }
+      );
+      if (error) console.error("[FigureLog] save error:", error.message);
+    }
+
+    // ─── FL Figure card ───────────────────────────────────────────────────────
+    function FlFigureCard({ figure, onClick }) {
+      const status = FL_STATUSES.find(s => s.id === figure.status) || FL_STATUSES[0];
+      return (
+        <div onClick={onClick}
+          style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, overflow: "hidden", cursor: "pointer", transition: "border-color 0.15s, transform 0.15s", display: "flex", flexDirection: "column" }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = FL_ACCENT_A + "55"; e.currentTarget.style.transform = "translateY(-2px)"; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.transform = "none"; }}>
+          {/* Image */}
+          <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18", flexShrink: 0 }}>
+            {figure.image
+              ? <img src={figure.image} alt={figure.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.display = "none"; }} />
+              : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6 }}>
+                  <span style={{ fontSize: 32, opacity: 0.3 }}>🗿</span>
+                  <span style={{ fontSize: 11, color: "#3a5060" }}>No image</span>
+                </div>
+            }
+            {/* Status badge */}
+            <div style={{ position: "absolute", top: 8, left: 8, background: "#060d14cc", backdropFilter: "blur(4px)", border: `1px solid ${status.color}44`, borderRadius: 20, padding: "3px 9px", display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 10 }}>{status.emoji}</span>
+              <span style={{ fontSize: 10, color: status.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>{status.label}</span>
+            </div>
+          </div>
+          {/* Info */}
+          <div style={{ padding: "12px 12px 14px", flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+              {figure.name}
+            </div>
+            {figure.character && (
+              <div style={{ fontSize: 11, color: FL_ACCENT_A, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{figure.character}</div>
+            )}
+            {figure.series && (
+              <div style={{ fontSize: 11, color: "#7a90a8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{figure.series}</div>
+            )}
+            <div style={{ marginTop: "auto", paddingTop: 6, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
+              {figure.scale && (
+                <span style={{ fontSize: 10, color: "#5a7080", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 6, padding: "2px 7px", fontFamily: "'DM Mono', monospace" }}>{figure.scale}</span>
+              )}
+              {figure.price != null && (
+                <span style={{ fontSize: 11, color: "#9aaabb", fontFamily: "'DM Mono', monospace", fontWeight: 600, marginLeft: "auto" }}>
+                  {figure.currency || "EUR"} {Number(figure.price).toFixed(0)}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── FL Figure modal (add / edit) ─────────────────────────────────────────
+    function FlFigureModal({ figure, onSave, onDelete, onClose }) {
+      const isNew = !figure;
+      const imgInputRef = React.useRef();
+      const [imgDragging, setImgDragging] = React.useState(false);
+      const [confirmDel,  setConfirmDel]  = React.useState(false);
+
+      const blank = { name: "", character: "", series: "", manufacturer: "", scale: "", type: "Scale Figure", status: "owned", price: "", currency: "EUR", releaseDate: "", notes: "", image: null };
+      const [edit, setEdit] = React.useState(figure ? { ...blank, ...figure, price: figure.price != null ? String(figure.price) : "" } : blank);
+
+      const set = (k, v) => setEdit(e => ({ ...e, [k]: v }));
+
+      const handleImageFile = (file) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = e => set("image", e.target.result);
+        reader.readAsDataURL(file);
+      };
+
+      const handleSave = () => {
+        if (!edit.name.trim()) return;
+        onSave({
+          ...(figure || {}),
+          ...edit,
+          name: edit.name.trim(),
+          price: edit.price !== "" ? Number(edit.price) : null,
+          id: figure?.id || flUuid(),
+          addedAt: figure?.addedAt || new Date().toISOString(),
+        });
+      };
+
+      const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, width: "100%", boxSizing: "border-box" };
+      const focusC = FL_ACCENT_A + "55";
+      const focus  = e => e.target.style.borderColor = focusC;
+      const blur   = e => e.target.style.borderColor = "#1a2535";
+      const label  = (text) => <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>{text}</div>;
+
+      return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.9)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={e => e.target === e.currentTarget && onClose()}>
+          <div style={{ background: "#0d1825", border: "1px solid #7a90a8", borderRadius: 18, width: 560, maxHeight: "92vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 40px 120px rgba(0,0,0,0.95)" }}>
+
+            {/* Header */}
+            <div style={{ padding: "22px 28px 18px", borderBottom: "1px solid #1a2535", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h2 style={{ margin: 0, fontFamily: "'Playfair Display', serif", fontSize: 20, color: "#e2e8f0" }}>
+                {isNew ? "Add figure" : "Edit figure"}
+              </h2>
+              <button onClick={onClose} style={{ background: "rgba(0,0,0,0.3)", border: "1px solid #7a90a8", color: "#94a3b8", borderRadius: 8, width: 30, height: 30, cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+            </div>
+
+            {/* Body */}
+            <div style={{ overflowY: "auto", flex: 1, padding: "22px 28px 28px" }}>
+              <div style={{ display: "flex", gap: 20, marginBottom: 20 }}>
+
+                {/* Image upload */}
+                <div
+                  style={{ width: 120, height: 160, borderRadius: 10, overflow: "hidden", flexShrink: 0, border: imgDragging ? `2px dashed ${FL_ACCENT_A}` : "2px solid #1a2535", background: "#080f18", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "border-color 0.2s" }}
+                  onClick={() => imgInputRef.current?.click()}
+                  onDragOver={e => { e.preventDefault(); setImgDragging(true); }}
+                  onDragLeave={() => setImgDragging(false)}
+                  onDrop={e => { e.preventDefault(); setImgDragging(false); handleImageFile(e.dataTransfer.files[0]); }}>
+                  {edit.image
+                    ? <img src={edit.image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    : <div style={{ textAlign: "center", padding: 8 }}>
+                        <div style={{ fontSize: 28, opacity: 0.3, marginBottom: 6 }}>🗿</div>
+                        <div style={{ fontSize: 11, color: "#3a5060", lineHeight: 1.4 }}>Click or drop<br/>image</div>
+                      </div>
+                  }
+                  <input ref={imgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleImageFile(e.target.files[0])} />
+                </div>
+
+                {/* Name + status */}
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    {label("Figure name *")}
+                    <input value={edit.name} onChange={e => set("name", e.target.value)} placeholder="e.g. Rem 1/7 Complete Figure"
+                      style={inp} onFocus={focus} onBlur={blur} autoFocus />
+                  </div>
+                  <div>
+                    {label("Status")}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {FL_STATUSES.map(s => (
+                        <button key={s.id} onClick={() => set("status", s.id)}
+                          style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 20, border: `1.5px solid ${edit.status === s.id ? s.color : "#1a2535"}`, background: edit.status === s.id ? s.color + "18" : "transparent", color: edit.status === s.id ? s.color : "#7a90a8", cursor: "pointer", fontSize: 12, fontWeight: edit.status === s.id ? 700 : 400 }}>
+                          <span>{s.emoji}</span>{s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {edit.image && (
+                    <button onClick={() => set("image", null)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 12, padding: 0 }}>✕ Remove image</button>
+                  )}
+                </div>
+              </div>
+
+              {/* Character + series */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+                <div>
+                  {label("Character")}
+                  <input value={edit.character} onChange={e => set("character", e.target.value)} placeholder="e.g. Rem"
+                    style={inp} onFocus={focus} onBlur={blur} />
+                </div>
+                <div>
+                  {label("Series / Franchise")}
+                  <input value={edit.series} onChange={e => set("series", e.target.value)} placeholder="e.g. Re:Zero"
+                    style={inp} onFocus={focus} onBlur={blur} />
+                </div>
+              </div>
+
+              {/* Manufacturer + Type */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+                <div>
+                  {label("Manufacturer")}
+                  <input value={edit.manufacturer} onChange={e => set("manufacturer", e.target.value)} placeholder="e.g. Good Smile Company"
+                    style={inp} onFocus={focus} onBlur={blur} />
+                </div>
+                <div>
+                  {label("Type")}
+                  <select value={edit.type} onChange={e => set("type", e.target.value)} style={{ ...inp, cursor: "pointer" }} onFocus={focus} onBlur={blur}>
+                    {FL_FIGURE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Scale + Release date */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+                <div>
+                  {label("Scale")}
+                  <select value={edit.scale} onChange={e => set("scale", e.target.value)} style={{ ...inp, cursor: "pointer" }} onFocus={focus} onBlur={blur}>
+                    <option value="">— Select —</option>
+                    {FL_SCALES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  {label("Release date")}
+                  <input type="month" value={edit.releaseDate} onChange={e => set("releaseDate", e.target.value)}
+                    style={inp} onFocus={focus} onBlur={blur} />
+                </div>
+              </div>
+
+              {/* Price */}
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginBottom: 14 }}>
+                <div>
+                  {label("Price paid")}
+                  <input type="number" min="0" step="0.01" value={edit.price} onChange={e => set("price", e.target.value)} placeholder="0.00"
+                    style={inp} onFocus={focus} onBlur={blur} />
+                </div>
+                <div>
+                  {label("Currency")}
+                  <input value={edit.currency} onChange={e => set("currency", e.target.value.toUpperCase().slice(0, 3))} placeholder="EUR" maxLength={3}
+                    style={{ ...inp, fontFamily: "'DM Mono', monospace", textTransform: "uppercase" }} onFocus={focus} onBlur={blur} />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div style={{ marginBottom: 20 }}>
+                {label("Notes")}
+                <textarea value={edit.notes} onChange={e => set("notes", e.target.value)} placeholder="Box condition, display notes, purchase source…" rows={3}
+                  style={{ ...inp, resize: "vertical", lineHeight: 1.6 }} onFocus={focus} onBlur={blur} />
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  {!isNew && (
+                    confirmDel
+                      ? <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 13, color: "#f87171" }}>Delete this figure?</span>
+                          <button onClick={() => { onDelete(figure.id); onClose(); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Yes</button>
+                          <button onClick={() => setConfirmDel(false)} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #7a90a8", borderRadius: 7, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>No</button>
+                        </div>
+                      : <button onClick={() => setConfirmDel(true)} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: 0 }}
+                          onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#7a90a8"}>
+                          🗑 Delete
+                        </button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={onClose} style={{ background: "transparent", border: "1px solid #1a2535", color: "#94a3b8", borderRadius: 9, padding: "9px 18px", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+                  <button onClick={handleSave} disabled={!edit.name.trim()}
+                    style={{ background: edit.name.trim() ? FL_ACCENT_A : "#1a2535", color: edit.name.trim() ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 9, padding: "9px 22px", cursor: edit.name.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 13 }}>
+                    {isNew ? "Add figure" : "Save changes"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── FL Stats bar ─────────────────────────────────────────────────────────
+    function FlStatsBar({ figures }) {
+      const owned    = figures.filter(f => f.status === "owned").length;
+      const preorder = figures.filter(f => f.status === "preorder").length;
+      const wishlist = figures.filter(f => f.status === "wishlist").length;
+      const sold     = figures.filter(f => f.status === "sold").length;
+      const totalSpent = figures.filter(f => f.status === "owned" && f.price != null)
+        .reduce((s, f) => s + Number(f.price), 0);
+      const hasCurrency = figures.find(f => f.status === "owned" && f.price != null);
+      const currency = hasCurrency?.currency || "EUR";
+
+      const stat = (label, value, color) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontSize: 18, fontWeight: 700, color: color || "#e2e8f0", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{value}</span>
+          <span style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em" }}>{label}</span>
+        </div>
+      );
+
+      return (
+        <div style={{ display: "flex", gap: 28, padding: "16px 28px", borderBottom: "1px solid #0d1825", background: "#080f18", flexWrap: "wrap" }}>
+          {stat("Owned",    owned,    FL_ACCENT_A)}
+          {preorder > 0 && stat("Preorder", preorder, "#f59e0b")}
+          {wishlist > 0 && stat("Wishlist", wishlist, "#a78bfa")}
+          {sold > 0     && stat("Sold",     sold,     "#64748b")}
+          {totalSpent > 0 && (
+            <div style={{ marginLeft: "auto", display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-end" }}>
+              <span style={{ fontSize: 18, fontWeight: 700, color: "#e2e8f0", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
+                {currency} {totalSpent.toFixed(0)}
+              </span>
+              <span style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Total spent</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── FigureLog App ────────────────────────────────────────────────────────
+    function FigureLogApp({ logoSlot, profileId, profileChip }) {
+      const [figures,   setFigures]   = useState([]);
+      const [loading,   setLoading]   = useState(true);
+      const [modal,     setModal]     = useState(null); // null | "new" | figure object
+      const [filterQ,   setFilterQ]   = useState("");
+      const [filterSt,  setFilterSt]  = useState("all"); // "all" | status id
+      const [sortBy,    setSortBy]    = useState("added");
+      const isMobile = useIsMobile();
+
+      useEffect(() => {
+        if (!profileId) return;
+        setLoading(true);
+        flLoad(profileId).then(data => { setFigures(data); setLoading(false); }).catch(() => setLoading(false));
+      }, [profileId]);
+
+      const save = async (updated) => { setFigures(updated); await flSave(updated, profileId); };
+      const addFigure    = (fig) => save([...figures, { ...fig, addedAt: fig.addedAt || new Date().toISOString() }]);
+      const editFigure   = (fig) => save(figures.map(f => f.id === fig.id ? fig : f));
+      const deleteFigure = (id)  => save(figures.filter(f => f.id !== id));
+
+      const handleSave = (fig) => {
+        if (figures.find(f => f.id === fig.id)) editFigure(fig); else addFigure(fig);
+        setModal(null);
+      };
+
+      // Filter + sort
+      const filtered = useMemo(() => {
+        let list = [...figures];
+        if (filterSt !== "all") list = list.filter(f => f.status === filterSt);
+        if (filterQ.trim()) {
+          const q = filterQ.toLowerCase();
+          list = list.filter(f =>
+            f.name?.toLowerCase().includes(q) ||
+            f.character?.toLowerCase().includes(q) ||
+            f.series?.toLowerCase().includes(q) ||
+            f.manufacturer?.toLowerCase().includes(q)
+          );
+        }
+        if (sortBy === "name")      list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        else if (sortBy === "character") list.sort((a, b) => (a.character || "").localeCompare(b.character || ""));
+        else if (sortBy === "series")    list.sort((a, b) => (a.series || "").localeCompare(b.series || ""));
+        else if (sortBy === "price")     list.sort((a, b) => (b.price || 0) - (a.price || 0));
+        else list.sort((a, b) => (b.addedAt || "").localeCompare(a.addedAt || "")); // added
+        return list;
+      }, [figures, filterQ, filterSt, sortBy]);
+
+      // Group by status for the "all" view
+      const grouped = useMemo(() => {
+        if (filterSt !== "all" || filterQ.trim()) return null;
+        const groups = {};
+        FL_STATUSES.forEach(s => { groups[s.id] = []; });
+        filtered.forEach(f => { if (groups[f.status]) groups[f.status].push(f); });
+        return FL_STATUSES.map(s => ({ ...s, figures: groups[s.id] })).filter(g => g.figures.length > 0);
+      }, [filtered, filterSt, filterQ]);
+
+      const cardGrid = (figs) => (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(180px, 1fr))", gap: isMobile ? 10 : 16 }}>
+          {figs.map(f => <FlFigureCard key={f.id} figure={f} onClick={() => setModal(f)} />)}
+        </div>
+      );
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column" }}>
+
+          {/* Top bar */}
+          <div style={{ height: 56, borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {logoSlot}
+              <div style={{ width: 1, height: 18, background: "#1a2535" }} />
+              <span style={{ fontFamily: "'Playfair Display', serif", fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em" }}>
+                <span style={{ color: FL_ACCENT_A }}>Figure</span><span style={{ color: FL_ACCENT_B }}>Log</span>
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={() => setModal("new")}
+                style={{ background: FL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "7px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+                + Add figure
+              </button>
+              {profileChip}
+            </div>
+          </div>
+
+          {/* Stats bar */}
+          {!loading && figures.length > 0 && <FlStatsBar figures={figures} />}
+
+          {/* Filter / sort bar */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 20px", borderBottom: "1px solid #0d1825", flexWrap: "wrap", flexShrink: 0 }}>
+            {/* Status pills */}
+            <div style={{ display: "flex", gap: 6 }}>
+              {[{ id: "all", label: "All", color: FL_ACCENT_A }, ...FL_STATUSES].map(s => (
+                <button key={s.id} onClick={() => setFilterSt(s.id)}
+                  style={{ padding: "4px 12px", borderRadius: 20, border: `1px solid ${filterSt === s.id ? s.color : "#1a2535"}`, background: filterSt === s.id ? s.color + "18" : "transparent", color: filterSt === s.id ? s.color : "#7a90a8", cursor: "pointer", fontSize: 12, fontWeight: filterSt === s.id ? 700 : 400 }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <input value={filterQ} onChange={e => setFilterQ(e.target.value)} placeholder="Search figures…"
+              style={{ marginLeft: "auto", background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "7px 12px", color: "#e2e8f0", fontSize: 13, width: isMobile ? "100%" : 200 }}
+              onFocus={e => e.target.style.borderColor = FL_ACCENT_A + "55"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+              style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, cursor: "pointer" }}>
+              <option value="added">Sort: Recent</option>
+              <option value="name">Sort: Name</option>
+              <option value="character">Sort: Character</option>
+              <option value="series">Sort: Series</option>
+              <option value="price">Sort: Price</option>
+            </select>
+          </div>
+
+          {/* Content */}
+          <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px 40px" : "24px 24px 60px" }}>
+            {loading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Loading…</div>
+            ) : figures.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "80px 20px" }}>
+                <div style={{ fontSize: 56, marginBottom: 12, opacity: 0.3 }}>🗿</div>
+                <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, color: "#e2e8f0", marginBottom: 8 }}>Your collection is empty</div>
+                <div style={{ fontSize: 14, color: "#7a90a8", marginBottom: 24 }}>Add your first figure to get started.</div>
+                <button onClick={() => setModal("new")}
+                  style={{ background: FL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 10, padding: "10px 24px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+                  + Add figure
+                </button>
+              </div>
+            ) : filtered.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "80px 20px", color: "#7a90a8", fontSize: 14 }}>No figures match your search.</div>
+            ) : grouped ? (
+              // Grouped by status
+              <div style={{ display: "flex", flexDirection: "column", gap: 36 }}>
+                {grouped.map(group => (
+                  <div key={group.id}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                      <div style={{ width: 3, height: 18, borderRadius: 2, background: group.color, flexShrink: 0 }} />
+                      <span style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, color: "#c8d8e8", fontWeight: 600 }}>{group.label}</span>
+                      <span style={{ fontSize: 12, color: "#7a90a8" }}>{group.figures.length}</span>
+                    </div>
+                    {cardGrid(group.figures)}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              cardGrid(filtered)
+            )}
+          </div>
+
+          {/* Modal */}
+          {modal && (
+            <FlFigureModal
+              figure={modal === "new" ? null : modal}
+              onSave={handleSave}
+              onDelete={deleteFigure}
+              onClose={() => setModal(null)} />
+          )}
+        </div>
+      );
+    }
+
     // ─── SpendLog module ──────────────────────────────────────────────────────
     const SpendLogApp = (() => {
 
@@ -7907,6 +8377,7 @@
           _sb.from("sl_transactions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_subscriptions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("fl_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
         if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
@@ -7977,9 +8448,10 @@
 
       return (
         <div style={{ minHeight: "100vh", background: "#060d14" }}>
-          {activeId === "meeplelog" && <MeepleLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
-          {activeId === "plottwist" && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
-          {activeId === "spendlog"  && <SpendLogApp.App logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "meeplelog"  && <MeepleLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "plottwist"  && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "spendlog"   && <SpendLogApp.App logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "figurelog"  && <FigureLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
         </div>
       )
     }
