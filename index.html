@@ -9,6 +9,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@500;600&display=swap" rel="stylesheet">
   <style>
@@ -8018,7 +8019,7 @@
       );
     }
 
-    function SlSettings({ config, onSave }) {
+    function SlSettings({ config, onSave, allCategories, transactions, subscriptions }) {
       const [currency, setCurrency] = React.useState(config.currency || "EUR");
       const [budget,   setBudget]   = React.useState(config.budget ? String(config.budget) : "");
       const [catTab,   setCatTab]   = React.useState("expense");
@@ -8047,6 +8048,135 @@
       const customPMs = config.customPaymentMethods || [];
       const addPM    = () => { if (!newPM.trim()) return; autoSave({ customPaymentMethods: [...customPMs, newPM.trim()] }); setNewPM(""); };
       const removePM = (m) => autoSave({ customPaymentMethods: customPMs.filter(x => x !== m) });
+
+      // ── Export to XLSX ──────────────────────────────────────────────────────
+      const handleExport = () => {
+        const wb = XLSX.utils.book_new();
+        const cur = config.currency || "EUR";
+
+        // Helper: category label lookup
+        const catLabel = (id) => {
+          const c = (allCategories || []).find(x => x.id === id);
+          return c ? c.label : (id || "");
+        };
+        const catEmoji = (id) => {
+          const c = (allCategories || []).find(x => x.id === id);
+          return c ? (c.emoji || "") : "";
+        };
+
+        // ── Sheet 1: Transactions ────────────────────────────────────────────
+        const txRows = (transactions || [])
+          .slice()
+          .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+          .map(t => ({
+            "Date":             t.date || "",
+            "Type":             t.type === "income" ? "Income" : slIsNeutral(t) ? "Investment" : "Expense",
+            "Category":         catEmoji(t.category) + " " + catLabel(t.category),
+            "Amount":           Number(t.amount) || 0,
+            "Currency":         cur,
+            "Payment method":   t.paymentMethod || "",
+            "Notes":            t.notes || "",
+            "Month":            t.date ? t.date.slice(0, 7) : "",
+          }));
+
+        const wsTx = XLSX.utils.json_to_sheet(txRows.length ? txRows : [{ "Date": "", "Type": "", "Category": "", "Amount": 0, "Currency": cur, "Payment method": "", "Notes": "", "Month": "" }]);
+
+        // Column widths
+        wsTx["!cols"] = [
+          { wch: 12 }, // Date
+          { wch: 12 }, // Type
+          { wch: 22 }, // Category
+          { wch: 10 }, // Amount
+          { wch: 9  }, // Currency
+          { wch: 18 }, // Payment method
+          { wch: 30 }, // Notes
+          { wch: 10 }, // Month
+        ];
+        XLSX.utils.book_append_sheet(wb, wsTx, "Transactions");
+
+        // ── Sheet 2: Subscriptions ───────────────────────────────────────────
+        const subRows = (subscriptions || [])
+          .slice()
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+          .map(s => ({
+            "Name":               s.name || "",
+            "Category":           catEmoji(s.category) + " " + catLabel(s.category),
+            "Amount":             Number(s.amount) || 0,
+            "Currency":           cur,
+            "Cycle":              s.cycle || "",
+            "Monthly equivalent": Number(slMonthlyCost(s).toFixed(2)),
+            "Next billing":       s.nextBilling || "",
+            "Start date":         s.startDate || "",
+            "Active":             s.active !== false ? "Yes" : "No",
+            "Notes":              s.notes || "",
+          }));
+
+        const wsSub = XLSX.utils.json_to_sheet(subRows.length ? subRows : [{ "Name": "", "Category": "", "Amount": 0, "Currency": cur, "Cycle": "", "Monthly equivalent": 0, "Next billing": "", "Start date": "", "Active": "", "Notes": "" }]);
+        wsSub["!cols"] = [
+          { wch: 22 }, // Name
+          { wch: 20 }, // Category
+          { wch: 10 }, // Amount
+          { wch: 9  }, // Currency
+          { wch: 10 }, // Cycle
+          { wch: 18 }, // Monthly equivalent
+          { wch: 14 }, // Next billing
+          { wch: 12 }, // Start date
+          { wch: 8  }, // Active
+          { wch: 30 }, // Notes
+        ];
+        XLSX.utils.book_append_sheet(wb, wsSub, "Subscriptions");
+
+        // ── Sheet 3: Summary ─────────────────────────────────────────────────
+        // Monthly totals by type + per-category breakdown
+        const monthsSet = new Set();
+        (transactions || []).forEach(t => { if (t.date) monthsSet.add(t.date.slice(0, 7)); });
+        const months = [...monthsSet].sort();
+
+        const summaryRows = [];
+        // Section header
+        summaryRows.push({ "Month": "MONTHLY SUMMARY", "Type": "", "Category": "", "Amount": "", "Currency": "" });
+        months.forEach(mk => {
+          const txs     = (transactions || []).filter(t => t.date && t.date.startsWith(mk));
+          const income   = txs.filter(t => t.type === "income").reduce((s, t) => s + Number(t.amount), 0);
+          const invested = txs.filter(t => slIsNeutral(t)).reduce((s, t) => s + Number(t.amount), 0);
+          const expenses = txs.filter(t => t.type !== "income" && !slIsNeutral(t)).reduce((s, t) => s + Number(t.amount), 0);
+          const subTotal = (subscriptions || []).filter(s => slSubBilledInMonth(s, mk)).reduce((s, sub) => s + Number(sub.amount), 0);
+          const net      = income - expenses - subTotal;
+          summaryRows.push({ "Month": mk, "Type": "Income",      "Category": "",  "Amount": Number(income.toFixed(2)),              "Currency": cur });
+          summaryRows.push({ "Month": mk, "Type": "Expenses",    "Category": "",  "Amount": Number((expenses + subTotal).toFixed(2)), "Currency": cur });
+          summaryRows.push({ "Month": mk, "Type": "Investments", "Category": "",  "Amount": Number(invested.toFixed(2)),             "Currency": cur });
+          summaryRows.push({ "Month": mk, "Type": "Net",         "Category": "",  "Amount": Number(net.toFixed(2)),                  "Currency": cur });
+        });
+
+        // Blank separator
+        summaryRows.push({ "Month": "", "Type": "", "Category": "", "Amount": "", "Currency": "" });
+
+        // Category breakdown (all time)
+        summaryRows.push({ "Month": "CATEGORY BREAKDOWN (all time)", "Type": "", "Category": "", "Amount": "", "Currency": "" });
+        const catTotals = {};
+        (transactions || []).forEach(t => {
+          if (t.type === "income") return;
+          const key = catLabel(t.category) || "Unknown";
+          catTotals[key] = (catTotals[key] || 0) + Number(t.amount);
+        });
+        Object.entries(catTotals).sort((a, b) => b[1] - a[1]).forEach(([cat, amt]) => {
+          summaryRows.push({ "Month": "", "Type": "Expense", "Category": cat, "Amount": Number(amt.toFixed(2)), "Currency": cur });
+        });
+
+        // Subscription monthly cost
+        summaryRows.push({ "Month": "", "Type": "", "Category": "", "Amount": "", "Currency": "" });
+        summaryRows.push({ "Month": "SUBSCRIPTIONS MONTHLY COST", "Type": "", "Category": "", "Amount": "", "Currency": "" });
+        const totalSubMonthly = (subscriptions || []).filter(s => s.active !== false).reduce((s, sub) => s + slMonthlyCost(sub), 0);
+        summaryRows.push({ "Month": "Total active subscriptions", "Type": "", "Category": "", "Amount": Number(totalSubMonthly.toFixed(2)), "Currency": cur + "/month" });
+
+        const wsSum = XLSX.utils.json_to_sheet(summaryRows);
+        wsSum["!cols"] = [{ wch: 36 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 12 }];
+        XLSX.utils.book_append_sheet(wb, wsSum, "Summary");
+
+        // Download
+        const date = new Date().toISOString().slice(0, 10);
+        XLSX.writeFile(wb, `spendlog-export-${date}.xlsx`);
+      };
 
       return (
         <div style={{ padding: isMob ? "20px 16px 80px" : "28px 28px 60px", maxWidth: 600 }}>
@@ -8119,6 +8249,20 @@
               {saved ? "Saved ✓" : "Save settings"}
             </button>
             <div style={{ fontSize: 12, color: "#8baabf", marginTop: 8 }}>Currency and budget require saving manually. Payment methods and categories are saved instantly.</div>
+          </div>
+
+          {/* Export */}
+          <div style={{ marginTop: 40, paddingTop: 32, borderTop: "1px solid #1a2535" }}>
+            <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Export data</div>
+            <div style={{ fontSize: 13, color: "#8baabf", marginBottom: 16, lineHeight: 1.6 }}>
+              Downloads an <span style={{ color: "#c8d8e8", fontWeight: 600 }}>XLSX</span> file with three sheets: <span style={{ color: "#9aaabb" }}>Transactions</span>, <span style={{ color: "#9aaabb" }}>Subscriptions</span>, and a <span style={{ color: "#9aaabb" }}>Summary</span> with monthly totals and category breakdown.
+            </div>
+            <button onClick={handleExport}
+              style={{ display: "flex", alignItems: "center", gap: 8, background: "#0d1825", border: `1px solid ${SL_ACCENT_A}44`, color: SL_ACCENT_A, borderRadius: 9, padding: "10px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13, transition: "background 0.15s" }}
+              onMouseEnter={e => e.currentTarget.style.background = SL_ACCENT_A + "18"}
+              onMouseLeave={e => e.currentTarget.style.background = "#0d1825"}>
+              ⬇ Export to XLSX
+            </button>
           </div>
         </div>
       );
@@ -8254,7 +8398,7 @@
                   {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
                   {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
                   {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
-                  {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} />}
+                  {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} transactions={transactions} subscriptions={subscriptions} />}
                 </>
               )}
             </div>
@@ -8332,7 +8476,7 @@
                 {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
                 {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
                 {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
-                {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} />}
+                {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} transactions={transactions} subscriptions={subscriptions} />}
               </>
             )}
           </div>
