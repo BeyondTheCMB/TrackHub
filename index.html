@@ -7084,7 +7084,7 @@
       const monthlyTotals = React.useMemo(() => {
         const map = {};
         transactions.forEach(t => {
-          if (t.date && t.date.startsWith(String(heatYear))) {
+          if (t.date && t.date.startsWith(String(heatYear)) && t.type !== "income" && !slIsNeutral(t)) {
             const mk = t.date.slice(0, 7);
             map[mk] = (map[mk] || 0) + Number(t.amount);
           }
