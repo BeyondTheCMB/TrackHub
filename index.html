@@ -7100,15 +7100,15 @@
 
       const maxMonth = Math.max(...Object.values(monthlyTotals), 1);
 
-      // Returns [bgColor, textColor] — text is always high-contrast against bg
+      // Returns [bgColor, textColor] — high spending = red, low = green
       const heatColors = (amt, future) => {
         if (future || !amt) return ["#080f18", "#3d526a"];
         const pct = Math.min(amt / maxMonth, 1);
-        if (pct < 0.2) return ["#162d1e", "#4ade80"];
-        if (pct < 0.4) return ["#1a5c34", "#7dffc0"];
-        if (pct < 0.6) return ["#1f8c4e", "#d4fff0"];
-        if (pct < 0.8) return ["#25b866", "#0a2918"];
-        return ["#4ade80", "#052010"];
+        if (pct < 0.2) return ["#162d1e", "#4ade80"];   // very low  → green
+        if (pct < 0.4) return ["#2d2a10", "#facc15"];   // low-mid   → yellow
+        if (pct < 0.6) return ["#3d2008", "#fb923c"];   // mid       → orange
+        if (pct < 0.8) return ["#3d0f0f", "#f87171"];   // high      → red-light
+        return ["#7f1d1d", "#fecaca"];                   // very high → deep red
       };
 
       const today = new Date();
@@ -7140,7 +7140,7 @@
               return (
                 <div key={mk} style={{
                   borderRadius: 8, background: bg,
-                  border: isActive ? "2px solid #4ade80" : "2px solid transparent",
+                  border: isActive ? "2px solid #60a5fa" : "2px solid transparent",
                   padding: "10px 10px",
                   display: "flex", flexDirection: "column", justifyContent: "space-between",
                   opacity: future ? 0.35 : 1,
@@ -7241,31 +7241,56 @@
     }
 
     function WMonthlyTrend({ transactions, subscriptions, currency, currentMonthKey }) {
-      const [months, setMonths] = React.useState(6);
-      const keys = [];
-      for (let i = months - 1; i >= 0; i--) {
-        const [y, m] = currentMonthKey.split("-").map(Number);
-        const d = new Date(y, m - 1 - i, 1);
-        keys.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
-      }
+      const ES_MONTHS = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+      // view: "6m" | "12m" | "year" (calendar year of current month)
+      const [view, setView] = React.useState("6m");
+
+      const keys = React.useMemo(() => {
+        const [cy, cm] = currentMonthKey.split("-").map(Number);
+        if (view === "year") {
+          // Jan–Dec of the current month's year, up to current month
+          const result = [];
+          for (let m = 1; m <= cm; m++) {
+            result.push(cy + "-" + String(m).padStart(2, "0"));
+          }
+          return result;
+        }
+        const count = view === "6m" ? 6 : 12;
+        const result = [];
+        for (let i = count - 1; i >= 0; i--) {
+          const d = new Date(cy, cm - 1 - i, 1);
+          result.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
+        }
+        return result;
+      }, [view, currentMonthKey]);
+
       const data = keys.map(k => {
         const txs  = transactions.filter(t => slMonthKey(t.date) === k && t.type !== "income" && !slIsNeutral(t)).reduce((s, t) => s + Number(t.amount), 0);
         const subs = subscriptions.filter(s => slSubBilledInMonth(s, k)).reduce((s, sub) => s + Number(sub.amount), 0);
-        return { key: k, total: txs + subs, label: slMonthLabel(k).split(" ")[0] };
+        const monthIdx = parseInt(k.split("-")[1]) - 1;
+        return { key: k, total: txs + subs, label: ES_MONTHS[monthIdx] };
       });
+
       const max = Math.max(...data.map(d => d.total), 1);
       const barW = 100 / keys.length;
+
+      const VIEWS = [
+        { id: "6m",   label: "6m" },
+        { id: "12m",  label: "12m" },
+        { id: "year", label: "año" },
+      ];
+
       return (
         <div>
           <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-            {[6, 12].map(n => (
-              <button key={n} onClick={() => setMonths(n)}
-                style={{ background: months === n ? "#4ade8022" : "transparent", border: `1px solid ${months === n ? "#4ade8044" : "#1a2535"}`, color: months === n ? SL_ACCENT_A : "#7a90a8", borderRadius: 6, padding: "3px 12px", cursor: "pointer", fontSize: 12, fontWeight: months === n ? 600 : 400 }}>
-                {n}m
+            {VIEWS.map(v => (
+              <button key={v.id} onClick={() => setView(v.id)}
+                style={{ background: view === v.id ? "#4ade8022" : "transparent", border: `1px solid ${view === v.id ? "#4ade8044" : "#1a2535"}`, color: view === v.id ? SL_ACCENT_A : "#7a90a8", borderRadius: 6, padding: "3px 12px", cursor: "pointer", fontSize: 12, fontWeight: view === v.id ? 600 : 400 }}>
+                {v.label}
               </button>
             ))}
           </div>
-          <svg width="100%" height={140} viewBox={`0 0 100 100`} preserveAspectRatio="none" style={{ display: "block" }}>
+          <svg width="100%" height={130} viewBox="0 0 100 100" preserveAspectRatio="none" style={{ display: "block" }}>
             {data.map((d, i) => {
               const h = (d.total / max) * 72;
               const x = i * barW + barW * 0.15;
@@ -7275,9 +7300,9 @@
             })}
           </svg>
           <div style={{ display: "flex" }}>
-            {data.map((d, i) => (
-              <div key={d.key} style={{ flex: 1, textAlign: "center" }}>
-                <div style={{ fontSize: 12, color: d.key === currentMonthKey ? SL_ACCENT_A : "#7a90a8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</div>
+            {data.map(d => (
+              <div key={d.key} style={{ flex: 1, textAlign: "center", minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: d.key === currentMonthKey ? SL_ACCENT_A : "#7a90a8", overflow: "hidden", textOverflow: "clip", whiteSpace: "nowrap" }}>{d.label}</div>
                 {d.total > 0 && <div style={{ fontSize: 8, color: "#8baabf", fontVariantNumeric: "tabular-nums" }}>{slFmtAmount(d.total, currency).replace(/[^0-9.,]/g, "")}</div>}
               </div>
             ))}
@@ -7434,7 +7459,7 @@
       const total         = txTotal;               // used for budget, summary etc
       const incomeTotal   = txIncTotal;
       const investedTotal = txNeutTotal;
-      const netTotal      = incomeTotal - total - investedTotal;
+      const netTotal      = incomeTotal - total; // investments excluded — they're not spending
       const catMap        = {};
       monthRealExp.forEach(t => { catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount); });
       monthSubs.forEach(s => { catMap[s.category] = (catMap[s.category] || 0) + Number(s.amount); });
