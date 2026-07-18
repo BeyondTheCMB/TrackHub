@@ -6106,7 +6106,7 @@
           {/* Image */}
           <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18", flexShrink: 0 }}>
             {figure.image
-              ? <img src={figure.image} alt={figure.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.display = "none"; }} />
+              ? <img src={figure.image} alt={figure.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: figure.imgPos || "center top" }} onError={e => { e.target.style.display = "none"; }} />
               : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6 }}>
                   <span style={{ fontSize: 32, opacity: 0.3 }}>🗿</span>
                   <span style={{ fontSize: 11, color: "#3a5060" }}>No image</span>
@@ -6158,7 +6158,7 @@
       const [mfrSelect,   setMfrSelect]   = React.useState(figure?.manufacturer ? (knownMfr ? figure.manufacturer : FL_MFR_CUSTOM) : "");
       const [mfrCustom,   setMfrCustom]   = React.useState(!knownMfr ? (figure?.manufacturer || "") : "");
 
-      const blank = { name: "", character: "", series: "", manufacturer: "", scale: "", type: "Scale Figure", status: "owned", price: "", currency: "EUR", releaseDate: "", notes: "", image: null };
+      const blank = { name: "", character: "", series: "", manufacturer: "", scale: "", type: "Scale Figure", status: "owned", price: "", currency: "EUR", releaseDate: "", notes: "", image: null, imgPos: "center top" };
       const [edit, setEdit] = React.useState(figure ? { ...blank, ...figure, price: figure.price != null ? String(figure.price) : "" } : blank);
 
       const set = (k, v) => setEdit(e => ({ ...e, [k]: v }));
@@ -6231,7 +6231,7 @@
                     onDragLeave={() => setImgDragging(false)}
                     onDrop={e => { e.preventDefault(); setImgDragging(false); handleImageFile(e.dataTransfer.files[0]); }}>
                     {edit.image
-                      ? <img src={edit.image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      ? <img src={edit.image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: edit.imgPos || "center top" }}
                           onError={e => { e.target.style.display = "none"; }} />
                       : <div style={{ textAlign: "center", padding: 8 }}>
                           <div style={{ fontSize: 28, opacity: 0.3, marginBottom: 6 }}>🗿</div>
@@ -6252,6 +6252,34 @@
                       </button>
                     ))}
                   </div>
+
+                  {/* 3×3 crop position picker — only shown when image is set */}
+                  {edit.image && (() => {
+                    const POS = [
+                      ["left top",    "right top",    "center top"   ],
+                      ["left center", "right center", "center center"],
+                      ["left bottom", "right bottom", "center bottom"],
+                    ];
+                    const LABELS = [
+                      ["↖","↗","↑"],
+                      ["←","→","·"],
+                      ["↙","↘","↓"],
+                    ];
+                    const cur = edit.imgPos || "center top";
+                    return (
+                      <div>
+                        <div style={{ fontSize: 10, color: "#5a7080", textAlign: "center", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Crop</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 2 }}>
+                          {POS.map((row, ri) => row.map((pos, ci) => (
+                            <button key={pos} onClick={() => set("imgPos", pos)}
+                              style={{ background: cur === pos ? FL_ACCENT_A + "22" : "#080f18", border: `1px solid ${cur === pos ? FL_ACCENT_A : "#1a2535"}`, borderRadius: 4, padding: "4px 0", cursor: "pointer", color: cur === pos ? FL_ACCENT_A : "#5a7080", fontSize: 12, lineHeight: 1 }}>
+                              {LABELS[ri][ci]}
+                            </button>
+                          )))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Search & remove */}
                   <button onClick={openImageSearch}
@@ -8711,4 +8739,5 @@
   </script>
 </body>
 </html>
+
 
