@@ -6070,6 +6070,14 @@
 
     const FL_SCALES = ["1/4", "1/6", "1/7", "1/8", "1/10", "1/12", "Non-scale", "Other"];
 
+    const FL_MANUFACTURERS = [
+      "Good Smile Company", "Max Factory", "Kotobukiya", "Alter", "Bandai Spirits",
+      "FREEing", "Aniplex+", "Aquamarine", "Stronger", "Ques Q",
+      "Wing", "Native", "Orchid Seed", "Wonderful Works", "Pulchra",
+      "Amakuni", "Phat!", "Revolve", "Kadokawa", "Knead",
+    ].sort();
+    const FL_MFR_CUSTOM = "__custom__";
+
     const flUuid = () => "fl_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
     // ─── FL Supabase helpers ──────────────────────────────────────────────────
@@ -6142,11 +6150,21 @@
       const imgInputRef = React.useRef();
       const [imgDragging, setImgDragging] = React.useState(false);
       const [confirmDel,  setConfirmDel]  = React.useState(false);
+      const [imgTab,      setImgTab]      = React.useState("upload"); // "upload" | "url"
+      const [imgUrlDraft, setImgUrlDraft] = React.useState("");
+
+      // Manufacturer: detect if existing value is a known one or custom
+      const knownMfr = figure?.manufacturer && FL_MANUFACTURERS.includes(figure.manufacturer);
+      const [mfrSelect,   setMfrSelect]   = React.useState(figure?.manufacturer ? (knownMfr ? figure.manufacturer : FL_MFR_CUSTOM) : "");
+      const [mfrCustom,   setMfrCustom]   = React.useState(!knownMfr ? (figure?.manufacturer || "") : "");
 
       const blank = { name: "", character: "", series: "", manufacturer: "", scale: "", type: "Scale Figure", status: "owned", price: "", currency: "EUR", releaseDate: "", notes: "", image: null };
       const [edit, setEdit] = React.useState(figure ? { ...blank, ...figure, price: figure.price != null ? String(figure.price) : "" } : blank);
 
       const set = (k, v) => setEdit(e => ({ ...e, [k]: v }));
+
+      // Resolved manufacturer value
+      const resolvedMfr = mfrSelect === FL_MFR_CUSTOM ? mfrCustom : mfrSelect;
 
       const handleImageFile = (file) => {
         if (!file) return;
@@ -6155,15 +6173,28 @@
         reader.readAsDataURL(file);
       };
 
+      const handleImgUrl = () => {
+        const url = imgUrlDraft.trim();
+        if (!url) return;
+        set("image", url);
+        setImgUrlDraft("");
+      };
+
+      const openImageSearch = () => {
+        const q = [edit.name, edit.character, edit.series, edit.manufacturer].filter(Boolean).join(" ");
+        window.open("https://www.google.com/search?tbm=isch&q=" + encodeURIComponent(q + " figure"), "_blank");
+      };
+
       const handleSave = () => {
         if (!edit.name.trim()) return;
         onSave({
           ...(figure || {}),
           ...edit,
-          name: edit.name.trim(),
-          price: edit.price !== "" ? Number(edit.price) : null,
-          id: figure?.id || flUuid(),
-          addedAt: figure?.addedAt || new Date().toISOString(),
+          name:         edit.name.trim(),
+          manufacturer: resolvedMfr,
+          price:        edit.price !== "" ? Number(edit.price) : null,
+          id:           figure?.id || flUuid(),
+          addedAt:      figure?.addedAt || new Date().toISOString(),
         });
       };
 
@@ -6190,24 +6221,54 @@
             <div style={{ overflowY: "auto", flex: 1, padding: "22px 28px 28px" }}>
               <div style={{ display: "flex", gap: 20, marginBottom: 20 }}>
 
-                {/* Image upload */}
-                <div
-                  style={{ width: 120, height: 160, borderRadius: 10, overflow: "hidden", flexShrink: 0, border: imgDragging ? `2px dashed ${FL_ACCENT_A}` : "2px solid #1a2535", background: "#080f18", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "border-color 0.2s" }}
-                  onClick={() => imgInputRef.current?.click()}
-                  onDragOver={e => { e.preventDefault(); setImgDragging(true); }}
-                  onDragLeave={() => setImgDragging(false)}
-                  onDrop={e => { e.preventDefault(); setImgDragging(false); handleImageFile(e.dataTransfer.files[0]); }}>
-                  {edit.image
-                    ? <img src={edit.image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    : <div style={{ textAlign: "center", padding: 8 }}>
-                        <div style={{ fontSize: 28, opacity: 0.3, marginBottom: 6 }}>🗿</div>
-                        <div style={{ fontSize: 11, color: "#3a5060", lineHeight: 1.4 }}>Click or drop<br/>image</div>
-                      </div>
-                  }
-                  <input ref={imgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleImageFile(e.target.files[0])} />
+                {/* Image area */}
+                <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, width: 120 }}>
+                  {/* Preview / drop zone */}
+                  <div
+                    style={{ width: 120, height: 155, borderRadius: 10, overflow: "hidden", border: imgDragging ? `2px dashed ${FL_ACCENT_A}` : "2px solid #1a2535", background: "#080f18", cursor: imgTab === "upload" ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", transition: "border-color 0.2s", position: "relative" }}
+                    onClick={() => imgTab === "upload" && imgInputRef.current?.click()}
+                    onDragOver={e => { e.preventDefault(); setImgDragging(true); }}
+                    onDragLeave={() => setImgDragging(false)}
+                    onDrop={e => { e.preventDefault(); setImgDragging(false); handleImageFile(e.dataTransfer.files[0]); }}>
+                    {edit.image
+                      ? <img src={edit.image} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          onError={e => { e.target.style.display = "none"; }} />
+                      : <div style={{ textAlign: "center", padding: 8 }}>
+                          <div style={{ fontSize: 28, opacity: 0.3, marginBottom: 6 }}>🗿</div>
+                          <div style={{ fontSize: 11, color: "#3a5060", lineHeight: 1.5 }}>
+                            {imgTab === "upload" ? "Click or\ndrop image" : "Paste URL\nbelow"}
+                          </div>
+                        </div>
+                    }
+                    <input ref={imgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleImageFile(e.target.files[0])} />
+                  </div>
+
+                  {/* Image tab toggle */}
+                  <div style={{ display: "flex", background: "#080f18", borderRadius: 7, padding: 2, gap: 2 }}>
+                    {[["upload","📁"],["url","🔗"]].map(([id, ico]) => (
+                      <button key={id} onClick={() => setImgTab(id)}
+                        style={{ flex: 1, background: imgTab === id ? "#1a2535" : "transparent", border: "none", color: imgTab === id ? FL_ACCENT_A : "#7a90a8", borderRadius: 5, padding: "4px 0", cursor: "pointer", fontSize: 14 }}>
+                        {ico}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Search & remove */}
+                  <button onClick={openImageSearch}
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 7, padding: "5px 0", cursor: "pointer", fontSize: 11, width: "100%" }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = FL_ACCENT_A + "55"; e.currentTarget.style.color = FL_ACCENT_A; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>
+                    🔍 Search
+                  </button>
+                  {edit.image && (
+                    <button onClick={() => set("image", null)}
+                      style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 11, padding: 0, textAlign: "center" }}>
+                      ✕ Remove
+                    </button>
+                  )}
                 </div>
 
-                {/* Name + status */}
+                {/* Name + status + URL input */}
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
                   <div>
                     {label("Figure name *")}
@@ -6225,8 +6286,20 @@
                       ))}
                     </div>
                   </div>
-                  {edit.image && (
-                    <button onClick={() => set("image", null)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 12, padding: 0 }}>✕ Remove image</button>
+                  {/* URL input — shown when url tab active */}
+                  {imgTab === "url" && (
+                    <div>
+                      {label("Image URL")}
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input value={imgUrlDraft} onChange={e => setImgUrlDraft(e.target.value)}
+                          onKeyDown={e => e.key === "Enter" && handleImgUrl()}
+                          placeholder="https://…" style={{ ...inp, fontSize: 12 }} onFocus={focus} onBlur={blur} />
+                        <button onClick={handleImgUrl} disabled={!imgUrlDraft.trim()}
+                          style={{ background: imgUrlDraft.trim() ? FL_ACCENT_A : "#1a2535", color: imgUrlDraft.trim() ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 8, padding: "0 14px", cursor: imgUrlDraft.trim() ? "pointer" : "default", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
+                          Set
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
@@ -6249,8 +6322,17 @@
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
                 <div>
                   {label("Manufacturer")}
-                  <input value={edit.manufacturer} onChange={e => set("manufacturer", e.target.value)} placeholder="e.g. Good Smile Company"
-                    style={inp} onFocus={focus} onBlur={blur} />
+                  <select value={mfrSelect} onChange={e => setMfrSelect(e.target.value)}
+                    style={{ ...inp, cursor: "pointer" }} onFocus={focus} onBlur={blur}>
+                    <option value="">— Select —</option>
+                    {FL_MANUFACTURERS.map(m => <option key={m} value={m}>{m}</option>)}
+                    <option value={FL_MFR_CUSTOM}>Other (custom)…</option>
+                  </select>
+                  {mfrSelect === FL_MFR_CUSTOM && (
+                    <input value={mfrCustom} onChange={e => setMfrCustom(e.target.value)}
+                      placeholder="Type manufacturer name…" autoFocus
+                      style={{ ...inp, marginTop: 6 }} onFocus={focus} onBlur={blur} />
+                  )}
                 </div>
                 <div>
                   {label("Type")}
@@ -8629,3 +8711,4 @@
   </script>
 </body>
 </html>
+
