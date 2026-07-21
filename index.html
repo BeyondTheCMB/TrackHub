@@ -6851,41 +6851,347 @@
       );
     }
 
+    const mlSimLoad = async (profileId) => {
+      const { data, error } = await _sb.from("ml_simulations").select("data")
+        .eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[MealLog] simulations load:", error.message);
+      return Array.isArray(data?.data) ? data.data : [];
+    };
+    const mlSimSave = async (profileId, sims) => {
+      const { error } = await _sb.from("ml_simulations").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: sims },
+        { onConflict: "user_id,profile_id" }
+      );
+      if (error) console.error("[MealLog] simulations save:", error.message);
+    };
+
+    // ── Simulate tab ──────────────────────────────────────────────────────────
+    const ML_SIM_DAYS = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+    const ML_SIM_DAY_KEYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+    const mlEmptySimWeek = () => {
+      const week = {};
+      ML_SIM_DAY_KEYS.forEach(d => {
+        week[d] = {};
+        ML_SLOTS.forEach(s => { week[d][s] = []; });
+      });
+      return week;
+    };
+
+    const mlSimDayMacros = (dayData) => {
+      const all = Object.values(dayData || {}).flat();
+      return all.reduce((acc, e) => mlAddMacros(acc, e.macros || ML_EMPTY_MACROS()), ML_EMPTY_MACROS());
+    };
+
+    const mlSimWeekAvg = (simDays) => {
+      const totals = ML_SIM_DAY_KEYS.map(k => mlSimDayMacros(simDays[k]));
+      const sum = totals.reduce((acc, d) => mlAddMacros(acc, d), ML_EMPTY_MACROS());
+      const result = ML_EMPTY_MACROS();
+      ML_MACROS.forEach(({ id }) => { result[id] = Math.round((sum[id] / 7) * 10) / 10; });
+      return result;
+    };
+
+    function MlSimulate({ simulations, pantry, recipes, config, onSave }) {
+      const [activeSim,  setActiveSim]  = useState(null); // null = list, sim object = editing
+      const [activeDay,  setActiveDay]  = useState(null); // null = week grid, dayKey = day detail
+      const [addingSlot, setAddingSlot] = useState(null);
+      const [renaming,   setRenaming]   = useState(false);
+      const [newName,    setNewName]    = useState("");
+      const [confirmDel, setConfirmDel] = useState(false);
+      const isMob = useIsMobile();
+
+      const goal = config.defaultGoal || null;
+
+      // Create new simulation
+      const createSim = () => {
+        const sim = { id: mlUuid(), name: "Nueva simulación", createdAt: new Date().toISOString(), days: mlEmptySimWeek() };
+        const updated = [...simulations, sim];
+        onSave(updated);
+        setActiveSim(sim);
+        setNewName(sim.name);
+      };
+
+      // Update active sim in list and persist
+      const updateSim = (updatedSim) => {
+        const updated = simulations.map(s => s.id === updatedSim.id ? updatedSim : s);
+        onSave(updated);
+        setActiveSim(updatedSim);
+      };
+
+      const deleteSim = (id) => {
+        onSave(simulations.filter(s => s.id !== id));
+        setActiveSim(null);
+        setConfirmDel(false);
+      };
+
+      const mealOptions = useMemo(() => {
+        const items = pantry.filter(p => p.isMeal).map(p => ({ type: "item", id: p.id, name: p.name, brand: p.brand, defaultGrams: p.mealGrams || 100 }));
+        const recs  = recipes.map(r => ({ type: "recipe", id: r.id, name: r.name, description: r.description, defaultPortions: 1 }));
+        return [...items, ...recs].sort((a, b) => a.name.localeCompare(b.name));
+      }, [pantry, recipes]);
+
+      // ── List view ──────────────────────────────────────────────────────────
+      if (!activeSim) return (
+        <div style={{ padding: "20px 24px 60px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+            <div>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 900, color: "#e2e8f0" }}>Simulaciones</div>
+              <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>Planifica semanas hipotéticas sin afectar tu registro real.</div>
+            </div>
+            <button onClick={createSim}
+              style={{ background: ML_A, color: "#0f172a", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
+              + Nueva
+            </button>
+          </div>
+
+          {simulations.length === 0
+            ? <div style={{ textAlign: "center", padding: "60px 20px" }}>
+                <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>🧪</div>
+                <div style={{ fontSize: 14, color: "#7a90a8", marginBottom: 20 }}>No tienes simulaciones guardadas aún.</div>
+                <button onClick={createSim}
+                  style={{ background: ML_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 24px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+                  Crear primera simulación
+                </button>
+              </div>
+            : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {simulations.map(sim => {
+                  const avg = mlSimWeekAvg(sim.days);
+                  const totalEntries = ML_SIM_DAY_KEYS.reduce((n, k) => n + ML_SLOTS.reduce((m, s) => m + (sim.days[k]?.[s]?.length || 0), 0), 0);
+                  return (
+                    <div key={sim.id} onClick={() => { setActiveSim(sim); setNewName(sim.name); setActiveDay(null); }}
+                      style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "14px 18px", cursor: "pointer" }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = ML_A + "55"}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
+                        <div>
+                          <div style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 700 }}>{sim.name}</div>
+                          <div style={{ fontSize: 11, color: "#5a7080", marginTop: 2 }}>
+                            {totalEntries} entradas · creada {new Date(sim.createdAt).toLocaleDateString("es-ES")}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 11, color: ML_A, fontWeight: 700 }}>{avg.kcal} kcal/día</span>
+                      </div>
+                      <MlMacroRow macros={avg} goal={goal} compact />
+                    </div>
+                  );
+                })}
+              </div>
+          }
+        </div>
+      );
+
+      // ── Week grid of active simulation ─────────────────────────────────────
+      if (!activeDay) {
+        const weekAvg = mlSimWeekAvg(activeSim.days);
+        return (
+          <div style={{ padding: "0 0 60px" }}>
+            {/* Sim header */}
+            <div style={{ padding: "12px 20px", borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <button onClick={() => { setActiveSim(null); setActiveDay(null); }}
+                style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 18, padding: "2px 6px" }}>←</button>
+              {renaming
+                ? <input value={newName} onChange={e => setNewName(e.target.value)} autoFocus
+                    onBlur={() => { if (newName.trim()) { updateSim({ ...activeSim, name: newName.trim() }); } setRenaming(false); }}
+                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") { setNewName(activeSim.name); setRenaming(false); } }}
+                    style={{ ...ML_INP, width: 200, fontSize: 15, fontWeight: 700, padding: "5px 10px" }} />
+                : <span onClick={() => setRenaming(true)} style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 700, cursor: "pointer" }}
+                    title="Click to rename">
+                    {activeSim.name} <span style={{ fontSize: 12, color: "#5a7080" }}>✎</span>
+                  </span>
+              }
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                {confirmDel
+                  ? <>
+                      <span style={{ fontSize: 13, color: "#f87171", alignSelf: "center" }}>¿Eliminar?</span>
+                      <button onClick={() => deleteSim(activeSim.id)} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Sí</button>
+                      <button onClick={() => setConfirmDel(false)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 7, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>No</button>
+                    </>
+                  : <button onClick={() => setConfirmDel(true)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8"; }}>
+                      🗑
+                    </button>
+                }
+              </div>
+            </div>
+
+            {/* Weekly average summary */}
+            <div style={{ padding: "14px 20px", background: "#080f18", borderBottom: "1px solid #0d1825" }}>
+              <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>Media semanal</div>
+              <MlMacroRow macros={weekAvg} goal={goal} />
+            </div>
+
+            {/* Day rows */}
+            <div style={{ padding: "14px 20px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {ML_SIM_DAY_KEYS.map((dayKey, i) => {
+                const dayMacros = mlSimDayMacros(activeSim.days[dayKey]);
+                const totalEntries = ML_SLOTS.reduce((n, s) => n + (activeSim.days[dayKey]?.[s]?.length || 0), 0);
+                return (
+                  <div key={dayKey} onClick={() => setActiveDay(dayKey)}
+                    style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "12px 16px", cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = ML_A + "55"}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = "#1a2535"}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: dayMacros.kcal > 0 ? 10 : 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13, color: ML_A, fontWeight: 700, minWidth: 28 }}>{ML_SIM_DAYS[i]}</span>
+                        {totalEntries > 0
+                          ? <span style={{ fontSize: 11, color: "#5a7080" }}>{totalEntries} entrada{totalEntries !== 1 ? "s" : ""}</span>
+                          : <span style={{ fontSize: 11, color: "#3a5060" }}>Sin planificar</span>
+                        }
+                      </div>
+                      {dayMacros.kcal > 0 && (
+                        <span style={{ fontSize: 14, fontWeight: 700, color: ML_A }}>{dayMacros.kcal} kcal</span>
+                      )}
+                    </div>
+                    {dayMacros.kcal > 0 && <MlMacroRow macros={dayMacros} goal={goal} compact />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+
+      // ── Day detail inside simulation ───────────────────────────────────────
+      const dayIdx  = ML_SIM_DAY_KEYS.indexOf(activeDay);
+      const dayData = activeSim.days[activeDay] || {};
+      const dayMacros = mlSimDayMacros(dayData);
+
+      const updateDaySlot = (slot, entries) => {
+        const updatedSim = {
+          ...activeSim,
+          days: { ...activeSim.days, [activeDay]: { ...dayData, [slot]: entries } }
+        };
+        updateSim(updatedSim);
+      };
+
+      const deleteSimEntry = (slot, entryId) => {
+        updateDaySlot(slot, (dayData[slot] || []).filter(e => e.id !== entryId));
+      };
+
+      return (
+        <div style={{ padding: "0 0 60px" }}>
+          {/* Day header */}
+          <div style={{ padding: "12px 20px", borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setActiveDay(null)}
+              style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 18, padding: "2px 6px" }}>←</button>
+            <span style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 600 }}>{ML_SIM_DAYS[dayIdx]}</span>
+            <span style={{ fontSize: 12, color: "#5a7080" }}>{activeSim.name}</span>
+            {/* Day nav */}
+            <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+              <button onClick={() => setActiveDay(ML_SIM_DAY_KEYS[dayIdx - 1])} disabled={dayIdx === 0}
+                style={{ background: "none", border: "none", color: dayIdx === 0 ? "#1a2535" : "#7a90a8", cursor: dayIdx === 0 ? "default" : "pointer", fontSize: 18, padding: "2px 8px" }}>‹</button>
+              <button onClick={() => setActiveDay(ML_SIM_DAY_KEYS[dayIdx + 1])} disabled={dayIdx === 6}
+                style={{ background: "none", border: "none", color: dayIdx === 6 ? "#1a2535" : "#7a90a8", cursor: dayIdx === 6 ? "default" : "pointer", fontSize: 18, padding: "2px 8px" }}>›</button>
+            </div>
+          </div>
+
+          {/* Day totals */}
+          <div style={{ padding: "12px 20px", background: "#080f18", borderBottom: "1px solid #0d1825" }}>
+            <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>Total del día</div>
+            <MlMacroRow macros={dayMacros} goal={goal} />
+          </div>
+
+          {/* Slots */}
+          <div style={{ padding: "14px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+            {ML_SLOTS.map(slot => {
+              const entries = dayData[slot] || [];
+              const slotMacros = entries.reduce((acc, e) => mlAddMacros(acc, e.macros || ML_EMPTY_MACROS()), ML_EMPTY_MACROS());
+              return (
+                <div key={slot}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ width: 3, height: 16, borderRadius: 2, background: ML_B }} />
+                      <span style={{ fontSize: 14, color: "#c8d8e8", fontWeight: 600 }}>{slot}</span>
+                      {slotMacros.kcal > 0 && <span style={{ fontSize: 12, color: ML_A }}>{slotMacros.kcal} kcal</span>}
+                    </div>
+                    <button onClick={() => setAddingSlot(slot)}
+                      style={{ background: "none", border: `1px solid ${ML_B}44`, color: ML_B, borderRadius: 7, padding: "3px 10px", cursor: "pointer", fontSize: 12 }}>+ Add</button>
+                  </div>
+                  {entries.length > 0
+                    ? <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {entries.map(entry => (
+                          <div key={entry.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 8, padding: "9px 13px", display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, color: "#c8d8e8", marginBottom: 4 }}>
+                                {entry.name}
+                                <span style={{ fontSize: 11, color: "#5a7080", marginLeft: 8 }}>
+                                  {entry.type === "recipe" ? `${entry.portions} porc.` : `${entry.grams}g`}
+                                </span>
+                              </div>
+                              <MlMacroRow macros={entry.macros} compact />
+                            </div>
+                            <button onClick={() => deleteSimEntry(slot, entry.id)}
+                              style={{ background: "none", border: "none", color: "#3a5060", cursor: "pointer", fontSize: 14, flexShrink: 0 }}
+                              onMouseEnter={e => e.currentTarget.style.color="#f87171"}
+                              onMouseLeave={e => e.currentTarget.style.color="#3a5060"}>✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    : <div style={{ fontSize: 12, color: "#3a5060", padding: "6px 0 0 13px" }}>—</div>
+                  }
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Reuse MlAddEntryModal */}
+          {addingSlot && (
+            <MlAddEntryModal
+              slot={addingSlot}
+              date={activeDay}
+              mealOptions={mealOptions}
+              recipes={recipes}
+              pantry={pantry}
+              onAdd={(entry) => {
+                updateDaySlot(addingSlot, [...(dayData[addingSlot] || []), entry]);
+                setAddingSlot(null);
+              }}
+              onClose={() => setAddingSlot(null)} />
+          )}
+        </div>
+      );
+    }
+
     // ── MealLog App ───────────────────────────────────────────────────────────
     function MealLogApp({ logoSlot, profileId, profileChip }) {
-      const [tab,       setTab]       = useState("week");
-      const [pantry,    setPantry]    = useState([]);
-      const [recipes,   setRecipes]   = useState([]);
-      const [log,       setLog]       = useState([]);
-      const [config,    setConfig]    = useState({ defaultGoal: null, dayGoals: {} });
-      const [loading,   setLoading]   = useState(true);
-      const [weekStart, setWeekStart] = useState(() => mlWeekStart(mlToday()));
-      const [dayView,   setDayView]   = useState(null);
+      const [tab,         setTab]         = useState("week");
+      const [pantry,      setPantry]      = useState([]);
+      const [recipes,     setRecipes]     = useState([]);
+      const [log,         setLog]         = useState([]);
+      const [simulations, setSimulations] = useState([]);
+      const [config,      setConfig]      = useState({ defaultGoal: null, dayGoals: {} });
+      const [loading,     setLoading]     = useState(true);
+      const [weekStart,   setWeekStart]   = useState(() => mlWeekStart(mlToday()));
+      const [dayView,     setDayView]     = useState(null);
       const isMobile = useIsMobile();
 
       useEffect(() => {
         if (!profileId) return;
         setLoading(true);
         Promise.all([
-          mlTable("ml_pantry",  profileId),
-          mlTable("ml_recipes", profileId),
-          mlTable("ml_log",     profileId),
+          mlTable("ml_pantry",      profileId),
+          mlTable("ml_recipes",     profileId),
+          mlTable("ml_log",         profileId),
+          mlTable("ml_simulations", profileId),
           mlConfigLoad(profileId),
-        ]).then(([p, r, l, c]) => {
-          setPantry(p); setRecipes(r); setLog(l); setConfig(c);
+        ]).then(([p, r, l, sims, c]) => {
+          setPantry(p); setRecipes(r); setLog(l); setSimulations(sims); setConfig(c);
           setLoading(false);
         }).catch(() => setLoading(false));
       }, [profileId]);
 
-      const savePantry  = async (v) => { setPantry(v);  await mlTableSave("ml_pantry",  profileId, v); };
-      const saveRecipes = async (v) => { setRecipes(v); await mlTableSave("ml_recipes", profileId, v); };
-      const saveLog     = async (v) => { setLog(v);     await mlTableSave("ml_log",     profileId, v); };
-      const saveConfig  = async (v) => { setConfig(v);  await mlConfigSave(profileId, v); };
+      const savePantry      = async (v) => { setPantry(v);      await mlTableSave("ml_pantry",      profileId, v); };
+      const saveRecipes     = async (v) => { setRecipes(v);     await mlTableSave("ml_recipes",     profileId, v); };
+      const saveLog         = async (v) => { setLog(v);         await mlTableSave("ml_log",         profileId, v); };
+      const saveSimulations = async (v) => { setSimulations(v); await mlSimSave(profileId, v); };
+      const saveConfig      = async (v) => { setConfig(v);      await mlConfigSave(profileId, v); };
 
       const TABS = [
-        { id: "week",    label: "Semana",      icon: "📅" },
-        { id: "pantry",  label: "Despensa",    icon: "🛒" },
-        { id: "recipes", label: "Recetas",     icon: "📋" },
+        { id: "week",     label: "Semana",      icon: "📅" },
+        { id: "simulate", label: "Simular",     icon: "🧪" },
+        { id: "pantry",   label: "Despensa",    icon: "🛒" },
+        { id: "recipes",  label: "Recetas",     icon: "📋" },
       ];
 
       const handleWeekChange = (days) => {
@@ -6946,6 +7252,9 @@
                   {tab === "week" && showDay && (
                     <MlDay date={dayView} log={log} recipes={recipes} pantry={pantry} config={config}
                       onLogChange={saveLog} onConfigChange={saveConfig} onBack={() => setDayView(null)} />
+                  )}
+                  {tab === "simulate" && (
+                    <MlSimulate simulations={simulations} pantry={pantry} recipes={recipes} config={config} onSave={saveSimulations} />
                   )}
                   {tab === "pantry"  && <MlPantry  pantry={pantry}   onSave={savePantry} />}
                   {tab === "recipes" && <MlRecipes recipes={recipes} pantry={pantry} onSave={saveRecipes} />}
@@ -9564,6 +9873,7 @@
           _sb.from("ml_pantry").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_recipes").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_log").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("ml_simulations").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("meallog_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
