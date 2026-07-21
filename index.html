@@ -8008,32 +8008,62 @@
     const slFmtDate = (d) => d.toISOString().slice(0, 10);
 
     function SlCategoryPicker({ value, onChange, allCategories, style }) {
-      const [open, setOpen] = React.useState(false);
+      const [open,   setOpen]   = React.useState(false);
+      const [query,  setQuery]  = React.useState("");
+      const inputRef = React.useRef();
       const cat = allCategories.find(c => c.id === value);
+
+      const filtered = React.useMemo(() => {
+        if (!query.trim()) return allCategories;
+        const q = query.toLowerCase();
+        return allCategories.filter(c => c.label.toLowerCase().includes(q) || (c.emoji || "").includes(q));
+      }, [allCategories, query]);
+
+      const openPicker = () => { setOpen(true); setQuery(""); setTimeout(() => inputRef.current?.focus(), 40); };
+      const closePicker = () => { setOpen(false); setQuery(""); };
+      const select = (id) => { onChange(id); closePicker(); };
+
+      // Keyboard: Enter selects first match, Escape closes
+      const handleKey = (e) => {
+        if (e.key === "Escape") { closePicker(); return; }
+        if (e.key === "Enter" && filtered.length > 0) { select(filtered[0].id); return; }
+      };
+
       return (
         <div style={{ position: "relative", ...style }}>
-          <button onClick={() => setOpen(o => !o)}
-            style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", cursor: "pointer", color: "#e2e8f0" }}
-            onFocus={e => e.currentTarget.style.borderColor = "#4ade8066"}
-            onBlur={e => e.currentTarget.style.borderColor = "#7a90a8"}>
+          <button onClick={() => open ? closePicker() : openPicker()}
+            style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, background: "#080f18", border: `1px solid ${open ? "#4ade8066" : "#7a90a8"}`, borderRadius: 8, padding: "9px 12px", cursor: "pointer", color: "#e2e8f0" }}>
             <span style={{ fontSize: 16 }}>{cat ? cat.emoji : "❓"}</span>
             <span style={{ flex: 1, textAlign: "left", fontSize: 14, color: cat ? "#e2e8f0" : "#7a90a8" }}>{cat ? cat.label : "Select category"}</span>
-            <span style={{ fontSize: 12, color: "#7a90a8" }}>▾</span>
+            <span style={{ fontSize: 12, color: "#7a90a8" }}>{open ? "▴" : "▾"}</span>
           </button>
           {open && (
             <>
-              <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 198 }} />
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, zIndex: 199, maxHeight: 240, overflowY: "auto", boxShadow: "0 16px 40px rgba(0,0,0,0.6)" }}>
-                {allCategories.map(c => (
-                  <button key={c.id} onClick={() => { onChange(c.id); setOpen(false); }}
-                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", background: value === c.id ? "#4ade8011" : "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#0f1923"}
-                    onMouseLeave={e => e.currentTarget.style.background = value === c.id ? "#4ade8011" : "transparent"}>
-                    <span style={{ fontSize: 16 }}>{c.emoji}</span>
-                    <span style={{ fontSize: 13, color: "#c8d8e8" }}>{c.label}</span>
-                    {value === c.id && <span style={{ marginLeft: "auto", color: "#4ade80", fontSize: 12 }}>✓</span>}
-                  </button>
-                ))}
+              <div onClick={closePicker} style={{ position: "fixed", inset: 0, zIndex: 198 }} />
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, zIndex: 199, boxShadow: "0 16px 40px rgba(0,0,0,0.6)", overflow: "hidden" }}>
+                {/* Search input */}
+                <div style={{ padding: "8px 10px", borderBottom: "1px solid #1a2535" }}>
+                  <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKey}
+                    placeholder="Search categories…"
+                    style={{ width: "100%", background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box", outline: "none" }}
+                    onFocus={e => e.target.style.borderColor = "#4ade8066"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+                </div>
+                {/* Results */}
+                <div style={{ maxHeight: 210, overflowY: "auto" }}>
+                  {filtered.length === 0
+                    ? <div style={{ padding: "12px 14px", fontSize: 13, color: "#5a7080" }}>No categories match.</div>
+                    : filtered.map(c => (
+                        <button key={c.id} onClick={() => select(c.id)}
+                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", background: value === c.id ? "#4ade8011" : "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                          onMouseEnter={e => e.currentTarget.style.background = "#0f1923"}
+                          onMouseLeave={e => e.currentTarget.style.background = value === c.id ? "#4ade8011" : "transparent"}>
+                          <span style={{ fontSize: 16 }}>{c.emoji}</span>
+                          <span style={{ fontSize: 13, color: "#c8d8e8" }}>{c.label}</span>
+                          {value === c.id && <span style={{ marginLeft: "auto", color: "#4ade80", fontSize: 12 }}>✓</span>}
+                        </button>
+                      ))
+                  }
+                </div>
               </div>
             </>
           )}
