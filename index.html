@@ -7512,153 +7512,318 @@
       );
     }
 
+    // ── Shared filter bar (reusable) ──────────────────────────────────────────
+    function SharedFilterBar({ search, onSearch, sortBy, onSort, sortOptions, statusFilter, onStatusFilter, statusOptions, accentA }) {
+      const sel = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, cursor: "pointer" };
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 32px", borderBottom: "1px solid #0d1825", flexWrap: "wrap", background: "#080f18" }}>
+          {statusOptions && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {statusOptions.map(s => (
+                <button key={s.id} onClick={() => onStatusFilter(s.id)}
+                  style={{ padding: "4px 12px", borderRadius: 20, border: `1px solid ${statusFilter === s.id ? accentA : "#1a2535"}`, background: statusFilter === s.id ? accentA + "18" : "transparent", color: statusFilter === s.id ? accentA : "#7a90a8", cursor: "pointer", fontSize: 12, fontWeight: statusFilter === s.id ? 700 : 400 }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <input value={search} onChange={e => onSearch(e.target.value)} placeholder="Search…"
+            style={{ ...sel, flex: 1, minWidth: 140, cursor: "text" }}
+            onFocus={e => e.target.style.borderColor = accentA + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+          <select value={sortBy} onChange={e => onSort(e.target.value)} style={sel}>
+            {sortOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      );
+    }
+
     // ── SharedMeepleLog ───────────────────────────────────────────────────────
     function SharedMeepleLog({ data, options }) {
-      const [filter, setFilter] = useState("all");
-      const games = data || [];
+      const [search,    setSearch]    = useState("");
+      const [sortBy,    setSortBy]    = useState("name");
+      const [statusFilter, setStatusFilter] = useState("all");
+      const games    = data || [];
       const statuses = options?.statuses || ["owned"];
+      const isMobile = useIsMobile();
 
-      const sections = [
-        { key: "owned",       label: "Collection",  color: "#fb923c", emoji: "🎲" },
-        { key: "plan_to_buy", label: "Wishlist",    color: "#c084fc", emoji: "⭐" },
+      const STATUS_OPTS = [
+        { id: "all",         label: "All"       },
+        { id: "owned",       label: "Collection" },
+        { id: "plan_to_buy", label: "Wishlist"   },
+      ].filter(s => s.id === "all" || statuses.includes(s.id));
+
+      const SORT_OPTS = [
+        { value: "name",   label: "Sort: Name A–Z" },
+        { value: "year",   label: "Sort: Year"     },
+        { value: "rating", label: "Sort: Rating"   },
+      ];
+
+      const filtered = useMemo(() => {
+        let list = [...games];
+        if (statusFilter !== "all") {
+          list = list.filter(g => {
+            const o = (g.status || {}).ownership;
+            return statusFilter === "owned" ? o === "owned" : o === "plan_to_buy";
+          });
+        }
+        if (search.trim()) {
+          const q = search.toLowerCase();
+          list = list.filter(g => g.name?.toLowerCase().includes(q));
+        }
+        if (sortBy === "name")   list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        if (sortBy === "year")   list.sort((a, b) => (b.year || 0) - (a.year || 0));
+        if (sortBy === "rating") list.sort((a, b) => (b.bggAvg || 0) - (a.bggAvg || 0));
+        return list;
+      }, [games, search, sortBy, statusFilter]);
+
+      // When a specific status is filtered, show flat grid; otherwise group
+      const sections = statusFilter !== "all" ? null : [
+        { key: "owned",       label: "Collection", color: "#fb923c", emoji: "🎲" },
+        { key: "plan_to_buy", label: "Wishlist",   color: "#c084fc", emoji: "⭐" },
       ].filter(s => statuses.includes(s.key));
 
-      const getGames = (key) => games.filter(g => {
-        const o = (g.status || {}).ownership;
-        if (key === "owned") return o === "owned";
-        if (key === "plan_to_buy") return o === "plan_to_buy";
-        return false;
-      });
+      const gameCard = (g) => (
+        <div key={g.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18" }}>
+            {g.image
+              ? <img src={g.image} alt={g.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+              : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, opacity: 0.2 }}>🎲</div>
+            }
+          </div>
+          <div style={{ padding: "10px 10px 12px" }}>
+            <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{g.name}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {g.year   && <span style={{ fontSize: 10, color: "#5a7080" }}>{g.year}</span>}
+              {g.bggAvg && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: "auto" }}>★ {g.bggAvg}</span>}
+            </div>
+          </div>
+        </div>
+      );
+
+      const grid = (list) => (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2,1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: 14 }}>
+          {list.map(gameCard)}
+        </div>
+      );
 
       return (
-        <div style={{ padding: "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
-          {sections.map(sec => {
-            const list = getGames(sec.key);
-            if (!list.length) return null;
-            return (
-              <div key={sec.key} style={{ marginBottom: 40 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-                  <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
-                  <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
-                  <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} game{list.length !== 1 ? "s" : ""}</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 14 }}>
-                  {list.map(g => (
-                    <div key={g.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
-                      <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18" }}>
-                        {g.image
-                          ? <img src={g.image} alt={g.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
-                          : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, opacity: 0.2 }}>🎲</div>
-                        }
-                      </div>
-                      <div style={{ padding: "10px 10px 12px" }}>
-                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{g.name}</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          {g.year && <span style={{ fontSize: 10, color: "#5a7080" }}>{g.year}</span>}
-                          {g.bggAvg && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: "auto" }}>★ {g.bggAvg}</span>}
+        <>
+          <SharedFilterBar search={search} onSearch={setSearch} sortBy={sortBy} onSort={setSortBy}
+            sortOptions={SORT_OPTS} statusFilter={statusFilter} onStatusFilter={setStatusFilter}
+            statusOptions={STATUS_OPTS.length > 2 ? STATUS_OPTS : null} accentA="#e2c97e" />
+          <div style={{ padding: isMobile ? "20px 16px 60px" : "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
+            {filtered.length === 0
+              ? <div style={{ textAlign: "center", padding: "60px 0", color: "#7a90a8" }}>No games match.</div>
+              : sections
+                ? sections.map(sec => {
+                    const list = filtered.filter(g => {
+                      const o = (g.status || {}).ownership;
+                      return sec.key === "owned" ? o === "owned" : o === "plan_to_buy";
+                    });
+                    if (!list.length) return null;
+                    return (
+                      <div key={sec.key} style={{ marginBottom: 40 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                          <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
+                          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
+                          <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} game{list.length !== 1 ? "s" : ""}</span>
                         </div>
+                        {grid(list)}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+                    );
+                  })
+                : grid(filtered)
+            }
+          </div>
+        </>
       );
     }
 
     // ── SharedPlotTwist ───────────────────────────────────────────────────────
     function SharedPlotTwist({ data, options }) {
-      const books = data || [];
+      const [search,       setSearch]       = useState("");
+      const [sortBy,       setSortBy]       = useState("title");
+      const [statusFilter, setStatusFilter] = useState("all");
+      const books    = data || [];
       const statuses = options?.statuses || ["owned", "read", "reading"];
+      const isMobile = useIsMobile();
 
-      const SECTIONS = [
-        { key: "reading", label: "Currently reading", color: "#22d3ee",  emoji: "📖", filter: b => b.status?.reading === "reading" },
-        { key: "read",    label: "Read",               color: "#4ade80",  emoji: "✅", filter: b => b.status?.reading === "read" },
-        { key: "owned",   label: "In my library",      color: "#e2c97e",  emoji: "📚", filter: b => b.status?.ownership === "owned" && b.status?.reading !== "reading" && b.status?.reading !== "read" },
-        { key: "wishlist",label: "Wishlist",            color: "#a78bfa",  emoji: "⭐", filter: b => b.status?.ownership !== "owned" && b.status?.reading !== "reading" && b.status?.reading !== "read" },
+      const SECTIONS_DEF = [
+        { key: "reading", label: "Currently reading", color: "#22d3ee", emoji: "📖", filter: b => b.status?.reading === "reading" },
+        { key: "read",    label: "Read",              color: "#4ade80", emoji: "✅", filter: b => b.status?.reading === "read" },
+        { key: "owned",   label: "In my library",     color: "#e2c97e", emoji: "📚", filter: b => b.status?.ownership === "owned" && b.status?.reading !== "reading" && b.status?.reading !== "read" },
+        { key: "wishlist",label: "Wishlist",           color: "#a78bfa", emoji: "⭐", filter: b => b.status?.ownership !== "owned" && b.status?.reading !== "reading" && b.status?.reading !== "read" },
       ].filter(s => statuses.includes(s.key));
 
-      return (
-        <div style={{ padding: "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
-          {SECTIONS.map(sec => {
-            const list = books.filter(sec.filter);
-            if (!list.length) return null;
-            return (
-              <div key={sec.key} style={{ marginBottom: 40 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-                  <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
-                  <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
-                  <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} book{list.length !== 1 ? "s" : ""}</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 14 }}>
-                  {list.map(b => (
-                    <div key={b.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
-                      <div style={{ width: "100%", paddingTop: "140%", position: "relative", background: "#080f18" }}>
-                        {b.cover
-                          ? <img src={b.cover} alt={b.title} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
-                          : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, opacity: 0.2 }}>📖</div>
-                        }
-                      </div>
-                      <div style={{ padding: "10px 10px 12px" }}>
-                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{b.title}</div>
-                        {b.author && <div style={{ fontSize: 10, color: "#7a90a8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.author}</div>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+      const STATUS_OPTS = [{ id: "all", label: "All" }, ...SECTIONS_DEF.map(s => ({ id: s.key, label: s.label }))];
+
+      const SORT_OPTS = [
+        { value: "title",  label: "Sort: Title A–Z"  },
+        { value: "author", label: "Sort: Author"      },
+        { value: "added",  label: "Sort: Date added"  },
+      ];
+
+      const filtered = useMemo(() => {
+        let list = [...books];
+        if (statusFilter !== "all") {
+          const sec = SECTIONS_DEF.find(s => s.key === statusFilter);
+          if (sec) list = list.filter(sec.filter);
+        }
+        if (search.trim()) {
+          const q = search.toLowerCase();
+          list = list.filter(b => b.title?.toLowerCase().includes(q) || b.author?.toLowerCase().includes(q));
+        }
+        if (sortBy === "title")  list.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+        if (sortBy === "author") list.sort((a, b) => (a.author || "").localeCompare(b.author || ""));
+        if (sortBy === "added")  list.sort((a, b) => (b.addedAt || "").localeCompare(a.addedAt || ""));
+        return list;
+      }, [books, search, sortBy, statusFilter]);
+
+      const bookCard = (b) => (
+        <div key={b.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ width: "100%", paddingTop: "140%", position: "relative", background: "#080f18" }}>
+            {b.cover
+              ? <img src={b.cover} alt={b.title} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+              : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, opacity: 0.2 }}>📖</div>
+            }
+          </div>
+          <div style={{ padding: "10px 10px 12px" }}>
+            <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{b.title}</div>
+            {b.author && <div style={{ fontSize: 10, color: "#7a90a8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.author}</div>}
+          </div>
         </div>
+      );
+
+      const grid = (list) => (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(3,1fr)" : "repeat(auto-fill, minmax(130px, 1fr))", gap: 14 }}>
+          {list.map(bookCard)}
+        </div>
+      );
+
+      return (
+        <>
+          <SharedFilterBar search={search} onSearch={setSearch} sortBy={sortBy} onSort={setSortBy}
+            sortOptions={SORT_OPTS} statusFilter={statusFilter} onStatusFilter={setStatusFilter}
+            statusOptions={STATUS_OPTS} accentA="#e2c97e" />
+          <div style={{ padding: isMobile ? "20px 16px 60px" : "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
+            {filtered.length === 0
+              ? <div style={{ textAlign: "center", padding: "60px 0", color: "#7a90a8" }}>No books match.</div>
+              : statusFilter !== "all"
+                ? grid(filtered)
+                : SECTIONS_DEF.map(sec => {
+                    const list = filtered.filter(sec.filter);
+                    if (!list.length) return null;
+                    return (
+                      <div key={sec.key} style={{ marginBottom: 40 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                          <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
+                          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
+                          <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} book{list.length !== 1 ? "s" : ""}</span>
+                        </div>
+                        {grid(list)}
+                      </div>
+                    );
+                  })
+            }
+          </div>
+        </>
       );
     }
 
     // ── SharedFigureLog ───────────────────────────────────────────────────────
     function SharedFigureLog({ data, options }) {
-      const figures = data || [];
-      const statuses = options?.statuses || ["owned"];
+      const [search,       setSearch]       = useState("");
+      const [sortBy,       setSortBy]       = useState("name");
+      const [statusFilter, setStatusFilter] = useState("all");
+      const figures   = data || [];
+      const statuses  = options?.statuses || ["owned"];
       const showPrices = options?.showPrices || false;
+      const isMobile  = useIsMobile();
 
-      const SECTIONS = FL_STATUSES.filter(s => statuses.includes(s.id)).map(s => ({
-        ...s,
-        figures: figures.filter(f => f.status === s.id),
-      })).filter(s => s.figures.length > 0);
+      const STATUS_OPTS = [
+        { id: "all", label: "All" },
+        ...FL_STATUSES.filter(s => statuses.includes(s.id)).map(s => ({ id: s.id, label: s.label })),
+      ];
+
+      const SORT_OPTS = [
+        { value: "name",      label: "Sort: Name"      },
+        { value: "character", label: "Sort: Character"  },
+        { value: "series",    label: "Sort: Series"     },
+        { value: "added",     label: "Sort: Date added" },
+      ];
+
+      const filtered = useMemo(() => {
+        let list = [...figures];
+        if (statusFilter !== "all") list = list.filter(f => f.status === statusFilter);
+        if (search.trim()) {
+          const q = search.toLowerCase();
+          list = list.filter(f =>
+            f.name?.toLowerCase().includes(q) ||
+            f.character?.toLowerCase().includes(q) ||
+            f.series?.toLowerCase().includes(q) ||
+            f.manufacturer?.toLowerCase().includes(q)
+          );
+        }
+        if (sortBy === "name")      list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        if (sortBy === "character") list.sort((a, b) => (a.character || "").localeCompare(b.character || ""));
+        if (sortBy === "series")    list.sort((a, b) => (a.series || "").localeCompare(b.series || ""));
+        if (sortBy === "added")     list.sort((a, b) => (b.addedAt || "").localeCompare(a.addedAt || ""));
+        return list;
+      }, [figures, search, sortBy, statusFilter]);
+
+      const figureCard = (f) => (
+        <div key={f.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, overflow: "hidden" }}>
+          <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18" }}>
+            {f.image
+              ? <img src={f.image} alt={f.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: f.imgPos || "center top" }} />
+              : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, opacity: 0.2 }}>🗿</div>
+            }
+          </div>
+          <div style={{ padding: "12px 12px 14px" }}>
+            <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{f.name}</div>
+            {f.character && <div style={{ fontSize: 11, color: FL_ACCENT_A, fontWeight: 600, marginBottom: 2 }}>{f.character}</div>}
+            {f.series    && <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4 }}>{f.series}</div>}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
+              {f.scale && <span style={{ fontSize: 10, color: "#5a7080", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 6, padding: "2px 7px" }}>{f.scale}</span>}
+              {showPrices && f.price != null && <span style={{ fontSize: 11, color: "#9aaabb", marginLeft: "auto" }}>{f.currency || "EUR"} {f.price}</span>}
+            </div>
+          </div>
+        </div>
+      );
+
+      const grid = (list) => (
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2,1fr)" : "repeat(auto-fill, minmax(180px, 1fr))", gap: isMobile ? 10 : 16 }}>
+          {list.map(figureCard)}
+        </div>
+      );
 
       return (
-        <div style={{ padding: "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
-          {SECTIONS.map(sec => (
-            <div key={sec.id} style={{ marginBottom: 40 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-                <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
-                <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
-                <span style={{ fontSize: 13, color: "#5a7080" }}>{sec.figures.length} figure{sec.figures.length !== 1 ? "s" : ""}</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 16 }}>
-                {sec.figures.map(f => (
-                  <div key={f.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, overflow: "hidden" }}>
-                    <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18" }}>
-                      {f.image
-                        ? <img src={f.image} alt={f.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: f.imgPos || "center top" }} />
-                        : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, opacity: 0.2 }}>🗿</div>
-                      }
-                    </div>
-                    <div style={{ padding: "12px 12px 14px" }}>
-                      <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{f.name}</div>
-                      {f.character && <div style={{ fontSize: 11, color: FL_ACCENT_A, fontWeight: 600, marginBottom: 2 }}>{f.character}</div>}
-                      {f.series    && <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4 }}>{f.series}</div>}
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
-                        {f.scale && <span style={{ fontSize: 10, color: "#5a7080", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 6, padding: "2px 7px" }}>{f.scale}</span>}
-                        {showPrices && f.price != null && <span style={{ fontSize: 11, color: "#9aaabb", marginLeft: "auto" }}>{f.currency || "EUR"} {f.price}</span>}
+        <>
+          <SharedFilterBar search={search} onSearch={setSearch} sortBy={sortBy} onSort={setSortBy}
+            sortOptions={SORT_OPTS} statusFilter={statusFilter} onStatusFilter={setStatusFilter}
+            statusOptions={STATUS_OPTS.length > 2 ? STATUS_OPTS : null} accentA={FL_ACCENT_A} />
+          <div style={{ padding: isMobile ? "20px 16px 60px" : "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
+            {filtered.length === 0
+              ? <div style={{ textAlign: "center", padding: "60px 0", color: "#7a90a8" }}>No figures match.</div>
+              : statusFilter !== "all"
+                ? grid(filtered)
+                : FL_STATUSES.filter(s => statuses.includes(s.id)).map(sec => {
+                    const list = filtered.filter(f => f.status === sec.id);
+                    if (!list.length) return null;
+                    return (
+                      <div key={sec.id} style={{ marginBottom: 40 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                          <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
+                          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
+                          <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} figure{list.length !== 1 ? "s" : ""}</span>
+                        </div>
+                        {grid(list)}
                       </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+                    );
+                  })
+            }
+          </div>
+        </>
       );
     }
 
