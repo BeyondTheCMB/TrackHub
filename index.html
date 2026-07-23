@@ -2608,6 +2608,7 @@
       const [showExport,     setShowExport]     = useState(false);
       const [selectedEntry,  setSelectedEntry]  = useState(null);
       const [sortBy,         setSortBy]         = useState("name");
+      const [sharingML,      setSharingML]      = useState(false);
       const [sortDir,        setSortDir]        = useState("asc");
       const [filterQ,        setFilterQ]        = useState("");
       const [activeTab,      setActiveTab]      = useState("collection");
@@ -2843,6 +2844,12 @@
                 onMouseEnter={(e) => e.currentTarget.style.borderColor = "#60a5fa"}
                 onMouseLeave={(e) => e.currentTarget.style.borderColor = "#1e3a5f"}>
                 ⬆ Export / Import
+              </button>
+              <button onClick={() => setSharingML(true)}
+                style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = "#e2c97e"}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = "#e2c97e44"}>
+                🔗 Share
               </button>
               <button onClick={() => { setSearchAsWishlist(false); setShowSearch(true); }}
                 style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}
@@ -3209,6 +3216,21 @@
           {showSearch    && <SearchModal onAdd={addGame} existingIds={collection.map((g) => g.id)} defaultWishlist={searchAsWishlist} onClose={() => setShowSearch(false)} />}
           {showExport    && <ExportModal collection={collection} onImport={handleImport} onUpdateGame={(game) => setCollection(c => c.map(g => g.id === game.id ? { ...g, ...game } : g))} onClose={() => setShowExport(false)} />}
           {selectedEntry && <GameDetailModal entry={selectedEntry} onSave={saveEntry} onDelete={deleteEntry} onClose={() => setSelectedEntry(null)} customSubcolls={customSubcolls} toggleGameInSubcoll={toggleGameInSubcoll} allWishlistTags={allWishlistTags} />}
+          {sharingML && (
+            <ShareModal
+              module="meeplelog"
+              profileName={profileId || "My"}
+              items={collection}
+              accentA="#e2c97e"
+              accentB="#60a5fa"
+              getShareData={(opts) => collection.filter(g => {
+                const o = (migrateStatus(g).status || {}).ownership;
+                if (opts.statuses.includes("owned")       && o === "owned")       return true;
+                if (opts.statuses.includes("plan_to_buy") && o === "plan_to_buy") return true;
+                return false;
+              })}
+              onClose={() => setSharingML(false)} />
+          )}
         </div>
       );
     }
@@ -5065,6 +5087,7 @@
       const [renameVal, setRenameVal] = useState("");
       const [confirmDeleteList, setConfirmDeleteList] = useState(null);
       const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+      const [sharingPT,      setSharingPT]      = useState(false);
 
       const accent = "#e2c97e";
 
@@ -5319,6 +5342,12 @@
             </div>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
               <span style={{ color: "#7a90a8", fontSize: 13 }}>{library.filter(b => effectiveBucket(b) !== "wishlist").length} in library</span>
+              <button onClick={() => setSharingPT(true)}
+                style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "7px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = "#e2c97e"}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = "#e2c97e44"}>
+                🔗 Share
+              </button>
               <button onClick={() => { setSearchAsWishlist(false); setShowSearch(true); }}
                 style={{ background: "transparent", color: "#e2c97e", border: "1px solid #e2c97e44", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}
                 onMouseEnter={(e) => e.currentTarget.style.borderColor = "#e2c97e"}
@@ -5649,6 +5678,24 @@
                 </div>
               </div>
             </div>
+          )}
+          {sharingPT && (
+            <ShareModal
+              module="plottwist"
+              profileName={profileId || "My"}
+              items={library}
+              accentA="#e2c97e"
+              accentB="#60a5fa"
+              getShareData={(opts) => library.filter(b => {
+                const s = b.status || {};
+                const reading = s.reading; const owned = s.ownership === "owned";
+                if (opts.statuses.includes("reading") && reading === "reading") return true;
+                if (opts.statuses.includes("read")    && reading === "read")    return true;
+                if (opts.statuses.includes("owned")   && owned && reading !== "reading" && reading !== "read") return true;
+                if (opts.statuses.includes("wishlist") && !owned && reading !== "reading" && reading !== "read") return true;
+                return false;
+              })}
+              onClose={() => setSharingPT(false)} />
           )}
         </div>
       );
@@ -7265,6 +7312,356 @@
       );
     }
 
+    // ─── Sharing system ───────────────────────────────────────────────────────
+    const shToken = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+
+    const shCreate = async (module, profileName, data, options) => {
+      const token = shToken();
+      const { error } = await _sb.from("shared_collections").insert({
+        token, user_id: _sbUser.id, module, profile_name: profileName, data, options,
+        created_at: new Date().toISOString(),
+      });
+      if (error) { console.error("[Share] create:", error.message); return null; }
+      return token;
+    };
+
+    const shLoad = async (token) => {
+      const { data, error } = await _sb.from("shared_collections").select("*").eq("token", token).maybeSingle();
+      if (error) { console.error("[Share] load:", error.message); return null; }
+      return data;
+    };
+
+    const shDelete = async (token) => {
+      await _sb.from("shared_collections").delete().eq("token", token).eq("user_id", _sbUser.id);
+    };
+
+    const shUrl = (token) => `${window.location.origin}${window.location.pathname}?share=${token}`;
+
+    // ── Share modal (reusable) ────────────────────────────────────────────────
+    function ShareModal({ module, profileName, items, getShareData, accentA, accentB, onClose }) {
+      // getShareData(options) → filtered data snapshot
+      const [step,       setStep]       = useState("config"); // "config" | "done"
+      const [token,      setToken]      = useState(null);
+      const [generating, setGenerating] = useState(false);
+      const [copied,     setCopied]     = useState(false);
+      const [title,      setTitle]      = useState(`${profileName}'s ${module === "meeplelog" ? "Board Game Collection" : module === "plottwist" ? "Bookshelf" : "Figure Collection"}`);
+      const [bio,        setBio]        = useState("");
+      const [showPrices, setShowPrices] = useState(false);
+
+      // Status options per module
+      const STATUS_OPTS = module === "meeplelog"
+        ? [{ id: "owned", label: "Owned" }, { id: "plan_to_buy", label: "Wishlist" }]
+        : module === "plottwist"
+        ? [{ id: "owned", label: "In my library" }, { id: "read", label: "Read" }, { id: "reading", label: "Reading" }, { id: "wishlist", label: "Wishlist" }]
+        : [{ id: "owned", label: "Owned" }, { id: "preorder", label: "Preorder" }, { id: "wishlist", label: "Wishlist" }, { id: "sold", label: "Sold" }];
+
+      const [selectedStatuses, setSelectedStatuses] = useState(
+        module === "meeplelog" ? ["owned"] :
+        module === "plottwist" ? ["owned", "read", "reading"] :
+        ["owned", "preorder"]
+      );
+
+      const toggleStatus = (id) => setSelectedStatuses(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+
+      const generate = async () => {
+        setGenerating(true);
+        const options = { title, bio, showPrices, statuses: selectedStatuses };
+        const data = getShareData(options);
+        const tok = await shCreate(module, profileName, data, options);
+        if (tok) { setToken(tok); setStep("done"); }
+        setGenerating(false);
+      };
+
+      const copy = () => {
+        navigator.clipboard.writeText(shUrl(token));
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      };
+
+      const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, width: "100%", boxSizing: "border-box" };
+
+      return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(0,0,0,0.9)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={e => e.target === e.currentTarget && onClose()}>
+          <div style={{ background: "#0d1825", border: "1px solid #7a90a8", borderRadius: 18, width: 480, overflow: "hidden", boxShadow: "0 40px 120px rgba(0,0,0,0.95)" }}>
+
+            {/* Header */}
+            <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid #1a2535", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, fontWeight: 900, color: "#e2e8f0" }}>Share collection</div>
+                <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>Creates a public link — no login needed to view.</div>
+              </div>
+              <button onClick={onClose} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 7, width: 28, height: 28, cursor: "pointer", fontSize: 13 }}>✕</button>
+            </div>
+
+            <div style={{ padding: "20px 24px 24px" }}>
+              {step === "config" ? (
+                <>
+                  {/* Title */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Page title</div>
+                    <input value={title} onChange={e => setTitle(e.target.value)} style={inp}
+                      onFocus={e => e.target.style.borderColor = accentA + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+                  </div>
+
+                  {/* Bio */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5, fontWeight: 600 }}>Short bio / message <span style={{ textTransform: "none", fontWeight: 400 }}>(optional)</span></div>
+                    <input value={bio} onChange={e => setBio(e.target.value)} placeholder="e.g. My collection as of 2025…" style={inp}
+                      onFocus={e => e.target.style.borderColor = accentA + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+                  </div>
+
+                  {/* Statuses */}
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 600 }}>Include</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {STATUS_OPTS.map(s => (
+                        <button key={s.id} onClick={() => toggleStatus(s.id)}
+                          style={{ padding: "5px 14px", borderRadius: 20, border: `1.5px solid ${selectedStatuses.includes(s.id) ? accentA : "#1a2535"}`, background: selectedStatuses.includes(s.id) ? accentA + "18" : "transparent", color: selectedStatuses.includes(s.id) ? accentA : "#7a90a8", cursor: "pointer", fontSize: 12, fontWeight: selectedStatuses.includes(s.id) ? 700 : 400 }}>
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Show prices (FigureLog only) */}
+                  {module === "figurelog" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, background: "#080f18", borderRadius: 8, padding: "10px 12px" }}>
+                      <button onClick={() => setShowPrices(!showPrices)}
+                        style={{ width: 36, height: 20, borderRadius: 10, background: showPrices ? accentA : "#1a2535", border: "none", cursor: "pointer", position: "relative", flexShrink: 0, transition: "background 0.15s" }}>
+                        <div style={{ position: "absolute", top: 2, left: showPrices ? 17 : 2, width: 16, height: 16, borderRadius: "50%", background: "#e2e8f0", transition: "left 0.15s" }} />
+                      </button>
+                      <span style={{ fontSize: 13, color: "#c8d8e8" }}>Show prices</span>
+                    </div>
+                  )}
+
+                  <button onClick={generate} disabled={generating || selectedStatuses.length === 0 || !title.trim()}
+                    style={{ width: "100%", background: (generating || selectedStatuses.length === 0 || !title.trim()) ? "#1a2535" : accentA, color: (generating || selectedStatuses.length === 0 || !title.trim()) ? "#7a90a8" : "#0f172a", border: "none", borderRadius: 10, padding: "11px", cursor: "pointer", fontWeight: 700, fontSize: 14, marginTop: 4 }}>
+                    {generating ? "Generating…" : "Generate link"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Done */}
+                  <div style={{ textAlign: "center", marginBottom: 20 }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>🔗</div>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 17, color: "#e2e8f0", fontWeight: 700, marginBottom: 4 }}>Link ready!</div>
+                    <div style={{ fontSize: 13, color: "#7a90a8" }}>Anyone with this link can view your collection.</div>
+                  </div>
+                  <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 12, color: "#7a90a8", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shUrl(token)}</span>
+                    <button onClick={copy}
+                      style={{ background: copied ? "#4ade8022" : accentA, color: copied ? "#4ade80" : "#0f172a", border: copied ? "1px solid #4ade8044" : "none", borderRadius: 7, padding: "6px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
+                      {copied ? "Copied ✓" : "Copy"}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#5a7080", textAlign: "center" }}>
+                    This is a snapshot — regenerate the link to update it.
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Shared view router ────────────────────────────────────────────────────
+    function SharedView({ token }) {
+      const [share, setShare] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error,   setError]   = useState(false);
+
+      useEffect(() => {
+        shLoad(token).then(d => { if (d) setShare(d); else setError(true); setLoading(false); });
+      }, [token]);
+
+      if (loading) return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ color: "#7a90a8", fontSize: 14 }}>Loading…</div>
+        </div>
+      );
+      if (error) return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 32, opacity: 0.3 }}>🔗</div>
+          <div style={{ color: "#e2e8f0", fontSize: 16 }}>Collection not found</div>
+          <div style={{ color: "#7a90a8", fontSize: 13 }}>This link may have expired or been removed.</div>
+          <a href={window.location.pathname} style={{ color: "#60a5fa", fontSize: 13, marginTop: 8 }}>← Open TrackHub</a>
+        </div>
+      );
+
+      const { module, options, data } = share;
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#060d14" }}>
+          {/* Shared header */}
+          <div style={{ borderBottom: "1px solid #0d1825", padding: "24px 32px 20px", background: "#080f18" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 900, fontSize: 15, color: "#e2c97e" }}>Track</span>
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 900, fontSize: 15, color: "#60a5fa" }}>Hub</span>
+              <span style={{ fontSize: 11, color: "#5a7080", marginLeft: 4 }}>— shared collection</span>
+            </div>
+            <h1 style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, fontWeight: 900, color: "#e2e8f0", margin: "0 0 6px", letterSpacing: "-0.02em" }}>{options?.title || "Collection"}</h1>
+            {options?.bio && <p style={{ fontSize: 14, color: "#9aaabb", margin: 0, lineHeight: 1.6 }}>{options.bio}</p>}
+          </div>
+
+          {module === "meeplelog"  && <SharedMeepleLog  data={data} options={options} />}
+          {module === "plottwist"  && <SharedPlotTwist  data={data} options={options} />}
+          {module === "figurelog"  && <SharedFigureLog  data={data} options={options} />}
+        </div>
+      );
+    }
+
+    // ── SharedMeepleLog ───────────────────────────────────────────────────────
+    function SharedMeepleLog({ data, options }) {
+      const [filter, setFilter] = useState("all");
+      const games = data || [];
+      const statuses = options?.statuses || ["owned"];
+
+      const sections = [
+        { key: "owned",       label: "Collection",  color: "#fb923c", emoji: "🎲" },
+        { key: "plan_to_buy", label: "Wishlist",    color: "#c084fc", emoji: "⭐" },
+      ].filter(s => statuses.includes(s.key));
+
+      const getGames = (key) => games.filter(g => {
+        const o = (g.status || {}).ownership;
+        if (key === "owned") return o === "owned";
+        if (key === "plan_to_buy") return o === "plan_to_buy";
+        return false;
+      });
+
+      return (
+        <div style={{ padding: "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
+          {sections.map(sec => {
+            const list = getGames(sec.key);
+            if (!list.length) return null;
+            return (
+              <div key={sec.key} style={{ marginBottom: 40 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                  <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
+                  <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
+                  <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} game{list.length !== 1 ? "s" : ""}</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 14 }}>
+                  {list.map(g => (
+                    <div key={g.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
+                      <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18" }}>
+                        {g.image
+                          ? <img src={g.image} alt={g.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+                          : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, opacity: 0.2 }}>🎲</div>
+                        }
+                      </div>
+                      <div style={{ padding: "10px 10px 12px" }}>
+                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{g.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          {g.year && <span style={{ fontSize: 10, color: "#5a7080" }}>{g.year}</span>}
+                          {g.bggAvg && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: "auto" }}>★ {g.bggAvg}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ── SharedPlotTwist ───────────────────────────────────────────────────────
+    function SharedPlotTwist({ data, options }) {
+      const books = data || [];
+      const statuses = options?.statuses || ["owned", "read", "reading"];
+
+      const SECTIONS = [
+        { key: "reading", label: "Currently reading", color: "#22d3ee",  emoji: "📖", filter: b => b.status?.reading === "reading" },
+        { key: "read",    label: "Read",               color: "#4ade80",  emoji: "✅", filter: b => b.status?.reading === "read" },
+        { key: "owned",   label: "In my library",      color: "#e2c97e",  emoji: "📚", filter: b => b.status?.ownership === "owned" && b.status?.reading !== "reading" && b.status?.reading !== "read" },
+        { key: "wishlist",label: "Wishlist",            color: "#a78bfa",  emoji: "⭐", filter: b => b.status?.ownership !== "owned" && b.status?.reading !== "reading" && b.status?.reading !== "read" },
+      ].filter(s => statuses.includes(s.key));
+
+      return (
+        <div style={{ padding: "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
+          {SECTIONS.map(sec => {
+            const list = books.filter(sec.filter);
+            if (!list.length) return null;
+            return (
+              <div key={sec.key} style={{ marginBottom: 40 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                  <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
+                  <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
+                  <span style={{ fontSize: 13, color: "#5a7080" }}>{list.length} book{list.length !== 1 ? "s" : ""}</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 14 }}>
+                  {list.map(b => (
+                    <div key={b.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
+                      <div style={{ width: "100%", paddingTop: "140%", position: "relative", background: "#080f18" }}>
+                        {b.cover
+                          ? <img src={b.cover} alt={b.title} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+                          : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, opacity: 0.2 }}>📖</div>
+                        }
+                      </div>
+                      <div style={{ padding: "10px 10px 12px" }}>
+                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{b.title}</div>
+                        {b.author && <div style={{ fontSize: 10, color: "#7a90a8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.author}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ── SharedFigureLog ───────────────────────────────────────────────────────
+    function SharedFigureLog({ data, options }) {
+      const figures = data || [];
+      const statuses = options?.statuses || ["owned"];
+      const showPrices = options?.showPrices || false;
+
+      const SECTIONS = FL_STATUSES.filter(s => statuses.includes(s.id)).map(s => ({
+        ...s,
+        figures: figures.filter(f => f.status === s.id),
+      })).filter(s => s.figures.length > 0);
+
+      return (
+        <div style={{ padding: "28px 32px 60px", maxWidth: 1200, margin: "0 auto" }}>
+          {SECTIONS.map(sec => (
+            <div key={sec.id} style={{ marginBottom: 40 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                <div style={{ width: 3, height: 20, borderRadius: 2, background: sec.color }} />
+                <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", fontWeight: 700 }}>{sec.emoji} {sec.label}</span>
+                <span style={{ fontSize: 13, color: "#5a7080" }}>{sec.figures.length} figure{sec.figures.length !== 1 ? "s" : ""}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 16 }}>
+                {sec.figures.map(f => (
+                  <div key={f.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 14, overflow: "hidden" }}>
+                    <div style={{ width: "100%", paddingTop: "100%", position: "relative", background: "#080f18" }}>
+                      {f.image
+                        ? <img src={f.image} alt={f.name} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", objectPosition: f.imgPos || "center top" }} />
+                        : <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, opacity: 0.2 }}>🗿</div>
+                      }
+                    </div>
+                    <div style={{ padding: "12px 12px 14px" }}>
+                      <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600, lineHeight: 1.3, marginBottom: 4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{f.name}</div>
+                      {f.character && <div style={{ fontSize: 11, color: FL_ACCENT_A, fontWeight: 600, marginBottom: 2 }}>{f.character}</div>}
+                      {f.series    && <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4 }}>{f.series}</div>}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
+                        {f.scale && <span style={{ fontSize: 10, color: "#5a7080", background: "#0a1520", border: "1px solid #1a2535", borderRadius: 6, padding: "2px 7px" }}>{f.scale}</span>}
+                        {showPrices && f.price != null && <span style={{ fontSize: 11, color: "#9aaabb", marginLeft: "auto" }}>{f.currency || "EUR"} {f.price}</span>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
     // ─── FigureLog module ─────────────────────────────────────────────────────
     const FL_ACCENT_A = "#22d3ee";
     const FL_ACCENT_B = "#60a5fa";
@@ -7690,10 +8087,11 @@
     function FigureLogApp({ logoSlot, profileId, profileChip }) {
       const [figures,   setFigures]   = useState([]);
       const [loading,   setLoading]   = useState(true);
-      const [modal,     setModal]     = useState(null); // null | "new" | figure object
+      const [modal,     setModal]     = useState(null);
       const [filterQ,   setFilterQ]   = useState("");
-      const [filterSt,  setFilterSt]  = useState("all"); // "all" | status id
+      const [filterSt,  setFilterSt]  = useState("all");
       const [sortBy,    setSortBy]    = useState("added");
+      const [sharing,   setSharing]   = useState(false);
       const isMobile = useIsMobile();
 
       useEffect(() => {
@@ -7761,6 +8159,10 @@
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={() => setSharing(true)}
+                style={{ background: "none", border: `1px solid ${FL_ACCENT_A}44`, color: FL_ACCENT_A, borderRadius: 9, padding: "7px 14px", cursor: "pointer", fontSize: 13 }}>
+                🔗 Share
+              </button>
               <button onClick={() => setModal("new")}
                 style={{ background: FL_ACCENT_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "7px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
                 + Add figure
@@ -7771,6 +8173,17 @@
 
           {/* Stats bar */}
           {!loading && figures.length > 0 && <FlStatsBar figures={figures} />}
+
+          {sharing && (
+            <ShareModal
+              module="figurelog"
+              profileName={profileId || "My"}
+              items={figures}
+              accentA={FL_ACCENT_A}
+              accentB={FL_ACCENT_B}
+              getShareData={(opts) => figures.filter(f => (opts.statuses || []).includes(f.status))}
+              onClose={() => setSharing(false)} />
+          )}
 
           {/* Filter / sort bar */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 20px", borderBottom: "1px solid #0d1825", flexWrap: "wrap", flexShrink: 0 }}>
@@ -10066,7 +10479,16 @@
       )
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><TrackHub /></ErrorBoundary>);
+    ReactDOM.createRoot(document.getElementById("root")).render(
+      <ErrorBoundary>
+        {(() => {
+          const params = new URLSearchParams(window.location.search);
+          const shareToken = params.get("share");
+          if (shareToken) return <SharedView token={shareToken} />;
+          return <TrackHub />;
+        })()}
+      </ErrorBoundary>
+    );
   </script>
 </body>
 </html>
