@@ -85,6 +85,7 @@
       { id: "spendlog",   label: "SpendLog",   icon: "💰", accentA: "#4ade80", accentB: "#22d3ee" },
       { id: "figurelog",  label: "FigureLog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa" },
       { id: "meallog",    label: "MealLog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16" },
+      { id: "biwenger",   label: "BiwengerLog",icon: "⚽", accentA: "#34d399", accentB: "#60a5fa" },
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
@@ -378,6 +379,7 @@
         { id: "spendlog",   icon: "💰", accentA: "#4ade80", accentB: "#22d3ee", label: "SpendLog",   labelSplit: 5, desc: "Expenses & subscriptions" },
         { id: "figurelog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa", label: "FigureLog",  labelSplit: 6, desc: "Anime figure collection & wishlist" },
         { id: "meallog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16", label: "MealLog",    labelSplit: 4, desc: "Calories, macros & meal planning" },
+        { id: "biwenger",   icon: "⚽", accentA: "#34d399", accentB: "#60a5fa", label: "BiwengerLog", labelSplit: 8, desc: "Fantasy Biwenger simulator" },
       ];
       const [creating,   setCreating]   = React.useState(profiles.length === 0);
       const [newName,    setNewName]    = React.useState("");
@@ -10565,6 +10567,7 @@
           _sb.from("ml_log").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_simulations").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("meallog_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("bw_data").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
         if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
@@ -10639,9 +10642,602 @@
           {activeId === "plottwist"  && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "spendlog"   && <SpendLogApp.App logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "figurelog"  && <FigureLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
-          {activeId === "meallog"    && <MealLogApp   logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "meallog"    && <MealLogApp     logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "biwenger"   && <BiwengerLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
         </div>
       )
+    }
+
+    // ─── BiwengerLog module ───────────────────────────────────────────────────
+    const BW_A = "#34d399"; // emerald
+    const BW_B = "#60a5fa"; // blue
+
+    const BW_POS_ORDER = { POR: 0, DEF: 1, MC: 2, DEL: 3 };
+    const BW_POS_COLOR = { POR: "#facc15", DEF: "#60a5fa", MC: "#34d399", DEL: "#f87171" };
+    const BW_POS_ES    = { Portero: "POR", Defensa: "DEF", Centrocampista: "MC", Delantero: "DEL" };
+
+    // puja máxima formula confirmed from real data
+    const bwPuja = (saldo, valorEquipo) => saldo + valorEquipo * 0.25;
+
+    const bwFmt = (n) => {
+      if (n == null) return "—";
+      const abs = Math.abs(n);
+      const s = abs >= 1_000_000
+        ? (abs / 1_000_000).toFixed(2).replace(".", ",") + "M €"
+        : abs.toLocaleString("es-ES") + " €";
+      return n < 0 ? "-" + s : s;
+    };
+
+    const bwPct = (n, ref) => ref ? ((n - ref) / ref * 100).toFixed(1) : null;
+
+    // ── Supabase helpers ──────────────────────────────────────────────────────
+    const bwLoad = async (profileId) => {
+      const { data, error } = await _sb.from("bw_data").select("data")
+        .eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) console.error("[BiwengerLog] load:", error.message);
+      return data?.data ?? { players: [], saldo: 0, settings: {} };
+    };
+    const bwSave = async (profileId, val) => {
+      const { error } = await _sb.from("bw_data").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: val },
+        { onConflict: "user_id,profile_id" }
+      );
+      if (error) console.error("[BiwengerLog] save:", error.message);
+    };
+
+    // ── Biwenger API fetch via proxy ──────────────────────────────────────────
+    const bwFetchTeam = async (settings) => {
+      const { userId, leagueId, token } = settings;
+      if (!userId || !leagueId || !token) throw new Error("Missing credentials");
+      const res = await fetch(`/api/biwenger?endpoint=user&userId=${userId}&leagueId=${leagueId}&token=${encodeURIComponent(token)}`);
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      return res.json();
+    };
+
+    // Parse Biwenger CSV (raw export format)
+    const bwParseCSV = (text) => {
+      const lines = text.trim().split("\n").filter(Boolean);
+      if (lines.length < 2) return [];
+      const header = lines[0].replace(/^\uFEFF/, "").split(";").map(s => s.trim());
+      return lines.slice(1).map(line => {
+        const cols = line.split(";").map(s => s.trim());
+        const row = {};
+        header.forEach((h, i) => { row[h] = cols[i] || ""; });
+        return row;
+      }).filter(r => r.Jugador);
+    };
+
+    // ── Position badge ────────────────────────────────────────────────────────
+    const BwPosBadge = ({ pos }) => (
+      <span style={{ fontSize: 10, fontWeight: 700, color: BW_POS_COLOR[pos] || "#9aaabb", background: (BW_POS_COLOR[pos] || "#9aaabb") + "22", border: `1px solid ${(BW_POS_COLOR[pos] || "#9aaabb")}44`, borderRadius: 5, padding: "1px 5px", flexShrink: 0 }}>{pos}</span>
+    );
+
+    // ── Delta chip ────────────────────────────────────────────────────────────
+    const BwDelta = ({ value, style }) => {
+      if (!value) return null;
+      const pos = value >= 0;
+      return (
+        <span style={{ fontSize: 11, color: pos ? "#34d399" : "#f87171", fontWeight: 600, ...style }}>
+          {pos ? "▲" : "▼"} {bwFmt(Math.abs(value))}
+        </span>
+      );
+    };
+
+    // ── Summary bar ───────────────────────────────────────────────────────────
+    function BwSummaryBar({ saldo, valorEquipo, highlight }) {
+      const puja = bwPuja(saldo, valorEquipo);
+      const stats = [
+        { label: "Valor equipo", value: valorEquipo, color: BW_B },
+        { label: "Saldo",        value: saldo,        color: saldo >= 0 ? BW_A : "#f87171" },
+        { label: "Puja máxima",  value: puja,         color: BW_A, bold: true },
+      ];
+      return (
+        <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #0d1825", background: "#080f18", flexWrap: "wrap" }}>
+          {stats.map(s => (
+            <div key={s.label} style={{ flex: 1, minWidth: 120, padding: "12px 20px", borderRight: "1px solid #0d1825", position: "relative", background: highlight && s.label === "Puja máxima" ? BW_A + "0a" : "transparent" }}>
+              <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>{s.label}</div>
+              <div style={{ fontSize: s.bold ? 20 : 17, fontWeight: 800, color: s.color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>{bwFmt(s.value)}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ── Plantilla tab ─────────────────────────────────────────────────────────
+    function BwPlantilla({ players, onOfferChange }) {
+      const [sortBy, setSortBy] = useState("pos");
+      const [search, setSearch] = useState("");
+      const [editOffer, setEditOffer] = useState(null); // playerId being edited
+
+      const sorted = useMemo(() => {
+        let list = [...players];
+        if (search.trim()) {
+          const q = search.toLowerCase();
+          list = list.filter(p => p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q));
+        }
+        if (sortBy === "pos")    list.sort((a, b) => (BW_POS_ORDER[a.pos] ?? 9) - (BW_POS_ORDER[b.pos] ?? 9) || a.nombre.localeCompare(b.nombre));
+        if (sortBy === "valor")  list.sort((a, b) => b.precio - a.precio);
+        if (sortBy === "oferta") list.sort((a, b) => (b.oferta || 0) - (a.oferta || 0));
+        if (sortBy === "ganancia") list.sort((a, b) => ((b.oferta || b.precio) - b.compra) - ((a.oferta || a.precio) - a.compra));
+        return list;
+      }, [players, sortBy, search]);
+
+      const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "6px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box" };
+
+      return (
+        <div style={{ padding: "16px 20px 60px" }}>
+          {/* Filter bar */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar jugador…"
+              style={{ ...inp, flex: 1, minWidth: 140 }}
+              onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...inp, cursor: "pointer" }}>
+              <option value="pos">Posición</option>
+              <option value="valor">Valor ↓</option>
+              <option value="oferta">Oferta ↓</option>
+              <option value="ganancia">Ganancia ↓</option>
+            </select>
+          </div>
+
+          {/* Player list */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {sorted.map(p => {
+              const ganancia = (p.oferta || p.precio) - p.compra;
+              const isEditing = editOffer === p.id;
+              return (
+                <div key={p.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "11px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <BwPosBadge pos={p.pos} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{p.nombre}</div>
+                      <div style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</div>
+                    </div>
+                    {/* Prices */}
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: 13, color: "#c8d8e8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(p.precio)}</div>
+                      <div style={{ fontSize: 10, color: "#5a7080" }}>comprado: {bwFmt(p.compra)}</div>
+                    </div>
+                    {/* Ganancia */}
+                    <div style={{ textAlign: "right", flexShrink: 0, minWidth: 80 }}>
+                      <BwDelta value={ganancia} />
+                    </div>
+                  </div>
+                  {/* Oferta row */}
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 11, color: "#7a90a8", flexShrink: 0 }}>Oferta recibida:</span>
+                    {isEditing ? (
+                      <input type="number" min="0" defaultValue={p.oferta || ""}
+                        autoFocus
+                        style={{ ...inp, width: 140, fontSize: 12 }}
+                        onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                        onKeyDown={e => {
+                          if (e.key === "Enter")   { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }
+                          if (e.key === "Escape")  setEditOffer(null);
+                        }}
+                        onBlur={e => { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }} />
+                    ) : (
+                      <button onClick={() => setEditOffer(p.id)}
+                        style={{ background: p.oferta ? BW_A + "18" : "transparent", border: `1px solid ${p.oferta ? BW_A + "44" : "#1a2535"}`, borderRadius: 7, padding: "4px 12px", cursor: "pointer", color: p.oferta ? BW_A : "#5a7080", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                        {p.oferta ? bwFmt(p.oferta) : "+ Añadir oferta"}
+                      </button>
+                    )}
+                    {p.oferta && !isEditing && (
+                      <BwDelta value={p.oferta - p.precio} style={{ marginLeft: 4 }} />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Simular tab ───────────────────────────────────────────────────────────
+    function BwSimular({ players, saldo, valorEquipo }) {
+      const [sellIds,    setSellIds]    = useState(new Set());
+      const [buys,       setBuys]       = useState([]); // { id, nombre, precio }
+      const [newBuyName, setNewBuyName] = useState("");
+      const [newBuyPrice,setNewBuyPrice]= useState("");
+      const isMob = useIsMobile();
+
+      const toggleSell = (id) => setSellIds(prev => {
+        const next = new Set(prev);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
+
+      const addBuy = () => {
+        if (!newBuyName.trim() || !newBuyPrice) return;
+        setBuys(b => [...b, { id: "buy_" + Date.now(), nombre: newBuyName.trim(), precio: Number(newBuyPrice) }]);
+        setNewBuyName(""); setNewBuyPrice("");
+      };
+      const removeBuy = (id) => setBuys(b => b.filter(x => x.id !== id));
+
+      // Simulation
+      const simSaldo = useMemo(() => {
+        let s = saldo;
+        players.forEach(p => { if (sellIds.has(p.id)) s += (p.oferta || p.precio); });
+        buys.forEach(b => { s -= b.precio; });
+        return s;
+      }, [saldo, players, sellIds, buys]);
+
+      const simValor = useMemo(() => {
+        let v = valorEquipo;
+        players.forEach(p => { if (sellIds.has(p.id)) v -= p.precio; });
+        buys.forEach(b => { v += b.precio; });
+        return v;
+      }, [valorEquipo, players, sellIds, buys]);
+
+      const simPuja  = bwPuja(simSaldo, simValor);
+      const origPuja = bwPuja(saldo, valorEquipo);
+
+      const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box" };
+
+      const hasChanges = sellIds.size > 0 || buys.length > 0;
+
+      return (
+        <div style={{ padding: "16px 20px 60px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Simulation result */}
+          <div style={{ background: "#080f18", border: `1px solid ${hasChanges ? BW_A + "44" : "#1a2535"}`, borderRadius: 12, padding: "16px 18px" }}>
+            <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Resultado simulación</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+              {[
+                { label: "Valor equipo", orig: valorEquipo, sim: simValor, color: BW_B },
+                { label: "Saldo",        orig: saldo,       sim: simSaldo, color: simSaldo >= 0 ? BW_A : "#f87171" },
+                { label: "Puja máxima",  orig: origPuja,    sim: simPuja,  color: BW_A, bold: true },
+              ].map(s => {
+                const diff = s.sim - s.orig;
+                return (
+                  <div key={s.label} style={{ background: "#0d1825", borderRadius: 10, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 10, color: "#7a90a8", marginBottom: 6 }}>{s.label}</div>
+                    <div style={{ fontSize: s.bold ? 18 : 15, fontWeight: 800, color: s.color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.01em" }}>
+                      {bwFmt(s.sim)}
+                    </div>
+                    {hasChanges && diff !== 0 && (
+                      <div style={{ fontSize: 11, color: diff > 0 ? "#34d399" : "#f87171", marginTop: 4 }}>
+                        {diff > 0 ? "▲" : "▼"} {bwFmt(Math.abs(diff))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {hasChanges && (
+              <button onClick={() => { setSellIds(new Set()); setBuys([]); }}
+                style={{ marginTop: 12, background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 12, padding: 0 }}
+                onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>
+                ↺ Reiniciar simulación
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 16 }}>
+            {/* Sell side */}
+            <div>
+              <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
+                Vender ({sellIds.size} seleccionados)
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {[...players].sort((a, b) => (BW_POS_ORDER[a.pos] ?? 9) - (BW_POS_ORDER[b.pos] ?? 9)).map(p => {
+                  const selected = sellIds.has(p.id);
+                  const saleVal  = p.oferta || p.precio;
+                  return (
+                    <button key={p.id} onClick={() => toggleSell(p.id)}
+                      style={{ display: "flex", alignItems: "center", gap: 8, background: selected ? BW_A + "15" : "#0d1825", border: `1px solid ${selected ? BW_A : "#1a2535"}`, borderRadius: 9, padding: "9px 12px", cursor: "pointer", textAlign: "left" }}>
+                      <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${selected ? BW_A : "#1a2535"}`, background: selected ? BW_A : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        {selected && <span style={{ fontSize: 10, color: "#0f172a" }}>✓</span>}
+                      </div>
+                      <BwPosBadge pos={p.pos} />
+                      <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8" }}>{p.nombre}</span>
+                      <span style={{ fontSize: 12, color: selected ? BW_A : "#7a90a8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(saleVal)}</span>
+                      {p.oferta && <span style={{ fontSize: 10, color: "#7a90a8" }}>oferta</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Buy side */}
+            <div>
+              <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
+                Comprar ({buys.length} fichajes)
+              </div>
+              {/* Add buy */}
+              <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <input value={newBuyName} onChange={e => setNewBuyName(e.target.value)} placeholder="Nombre del jugador"
+                    style={{ ...inp, flex: 1 }} onFocus={e => e.target.style.borderColor = BW_B + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                    onKeyDown={e => e.key === "Enter" && addBuy()} />
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input type="number" min="0" value={newBuyPrice} onChange={e => setNewBuyPrice(e.target.value)} placeholder="Precio (€)"
+                    style={{ ...inp, flex: 1 }} onFocus={e => e.target.style.borderColor = BW_B + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                    onKeyDown={e => e.key === "Enter" && addBuy()} />
+                  <button onClick={addBuy} disabled={!newBuyName.trim() || !newBuyPrice}
+                    style={{ background: newBuyName.trim() && newBuyPrice ? BW_B : "#1a2535", color: newBuyName.trim() && newBuyPrice ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 7, padding: "7px 14px", cursor: newBuyName.trim() && newBuyPrice ? "pointer" : "default", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
+                    + Añadir
+                  </button>
+                </div>
+              </div>
+
+              {/* Buy list */}
+              {buys.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {buys.map(b => (
+                    <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 10, background: BW_B + "12", border: `1px solid ${BW_B}33`, borderRadius: 9, padding: "9px 12px" }}>
+                      <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8" }}>{b.nombre}</span>
+                      <span style={{ fontSize: 12, color: BW_B, fontVariantNumeric: "tabular-nums" }}>-{bwFmt(b.precio)}</span>
+                      <button onClick={() => removeBuy(b.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 14 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 13, color: "#3a5060", padding: "12px 0" }}>Añade fichajes hipotéticos para simular su coste.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Ajustes tab ───────────────────────────────────────────────────────────
+    function BwAjustes({ settings, saldo, onSettingsSave, onImportCSV, onSyncAPI, syncing, syncError }) {
+      const [userId,   setUserId]   = useState(settings.userId   || "");
+      const [leagueId, setLeagueId] = useState(settings.leagueId || "");
+      const [token,    setToken]    = useState(settings.token    || "");
+      const [manSaldo, setManSaldo] = useState(String(saldo || 0));
+      const [saved,    setSaved]    = useState(false);
+      const fileRef = useRef();
+      const isMob = useIsMobile();
+
+      const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, width: "100%", boxSizing: "border-box" };
+      const focus = e => e.target.style.borderColor = BW_A + "66";
+      const blur  = e => e.target.style.borderColor = "#1a2535";
+
+      const save = () => {
+        onSettingsSave({ userId, leagueId, token }, Number(manSaldo));
+        setSaved(true);
+        setTimeout(() => setSaved(false), 1500);
+      };
+
+      return (
+        <div style={{ padding: "20px 24px 80px", maxWidth: 560 }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 20, fontWeight: 900, color: "#e2e8f0", marginBottom: 24 }}>Ajustes</div>
+
+          {/* API credentials */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px", marginBottom: 20 }}>
+            <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 700, marginBottom: 4 }}>Credenciales Biwenger API</div>
+            <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 14, lineHeight: 1.6 }}>
+              Abre Biwenger en el navegador → DevTools → Network → cualquier petición → copia las cabeceras <code style={{ color: BW_A }}>x-user</code>, <code style={{ color: BW_A }}>x-league</code> y <code style={{ color: BW_A }}>authorization</code> (el token Bearer).
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>x-user (userId)</div>
+                <input value={userId} onChange={e => setUserId(e.target.value)} placeholder="ej. 123456" style={inp} onFocus={focus} onBlur={blur} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>x-league (leagueId)</div>
+                <input value={leagueId} onChange={e => setLeagueId(e.target.value)} placeholder="ej. 789012" style={inp} onFocus={focus} onBlur={blur} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Token (Bearer …)</div>
+                <input value={token} onChange={e => setToken(e.target.value)} placeholder="eyJhbGci…" style={{ ...inp, fontFamily: "monospace", fontSize: 11 }} onFocus={focus} onBlur={blur} />
+              </div>
+            </div>
+          </div>
+
+          {/* Manual saldo */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px", marginBottom: 20 }}>
+            <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 700, marginBottom: 4 }}>Saldo actual</div>
+            <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 10 }}>El saldo se obtiene de la API si está configurada, o puedes introducirlo manualmente.</div>
+            <input type="number" value={manSaldo} onChange={e => setManSaldo(e.target.value)} placeholder="ej. -18779772" style={inp} onFocus={focus} onBlur={blur} />
+          </div>
+
+          {/* Save */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 28, flexWrap: "wrap" }}>
+            <button onClick={save}
+              style={{ background: BW_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 24px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+              {saved ? "Guardado ✓" : "Guardar ajustes"}
+            </button>
+            {settings.userId && settings.token && (
+              <button onClick={onSyncAPI} disabled={syncing}
+                style={{ background: syncing ? "#1a2535" : BW_B + "22", color: syncing ? "#5a7080" : BW_B, border: `1px solid ${BW_B}44`, borderRadius: 9, padding: "10px 20px", cursor: syncing ? "default" : "pointer", fontWeight: 600, fontSize: 13 }}>
+                {syncing ? "Sincronizando…" : "↻ Sincronizar con Biwenger"}
+              </button>
+            )}
+          </div>
+          {syncError && <div style={{ fontSize: 12, color: "#f87171", marginBottom: 16, background: "#f8717120", borderRadius: 8, padding: "8px 12px" }}>Error: {syncError}</div>}
+
+          {/* CSV import */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px" }}>
+            <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 700, marginBottom: 4 }}>Importar CSV (Biwenger export)</div>
+            <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 12, lineHeight: 1.6 }}>
+              Descarga el CSV desde Biwenger (Mi equipo → Exportar) y súbelo aquí para sincronizar nombres, equipos y precios. Las ofertas y el precio de compra se mantienen.
+            </div>
+            <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }}
+              onChange={e => { const f = e.target.files[0]; if (f) { const r = new FileReader(); r.onload = ev => onImportCSV(ev.target.result); r.readAsText(f, "UTF-8"); } }} />
+            <button onClick={() => fileRef.current?.click()}
+              style={{ background: "none", border: `1px solid ${BW_A}44`, color: BW_A, borderRadius: 9, padding: "9px 18px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+              📂 Seleccionar CSV
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── BiwengerLog App ───────────────────────────────────────────────────────
+    function BiwengerLogApp({ logoSlot, profileId, profileChip }) {
+      const [tab,      setTab]      = useState("plantilla");
+      const [players,  setPlayers]  = useState([]);
+      const [saldo,    setSaldo]    = useState(0);
+      const [settings, setSettings] = useState({});
+      const [loading,  setLoading]  = useState(true);
+      const [syncing,  setSyncing]  = useState(false);
+      const [syncErr,  setSyncErr]  = useState(null);
+      const isMobile = useIsMobile();
+
+      const valorEquipo = useMemo(() => players.reduce((s, p) => s + (p.precio || 0), 0), [players]);
+
+      // Load from Supabase
+      useEffect(() => {
+        if (!profileId) return;
+        setLoading(true);
+        bwLoad(profileId).then(d => {
+          setPlayers(d.players || []);
+          setSaldo(d.saldo || 0);
+          setSettings(d.settings || {});
+          setLoading(false);
+        });
+      }, [profileId]);
+
+      const persist = async (newPlayers, newSaldo, newSettings) => {
+        const p = newPlayers ?? players;
+        const s = newSaldo   ?? saldo;
+        const st = newSettings ?? settings;
+        setPlayers(p); setSaldo(s); setSettings(st);
+        await bwSave(profileId, { players: p, saldo: s, settings: st });
+      };
+
+      const handleOfferChange = (id, offer) => {
+        const next = players.map(p => p.id === id ? { ...p, oferta: offer || null } : p);
+        persist(next, null, null);
+      };
+
+      const handleSettingsSave = (newSettings, newSaldo) => {
+        persist(null, newSaldo, newSettings);
+      };
+
+      // Parse Biwenger CSV and merge into players
+      const handleImportCSV = (text) => {
+        const rows = bwParseCSV(text);
+        if (!rows.length) return;
+        const next = rows.map(r => {
+          const pos = BW_POS_ES[r.Posición] || r.Posición || "MC";
+          const precio = parseInt(r.Precio) || 0;
+          const existing = players.find(p => p.nombre === r.Jugador);
+          return {
+            id:      existing?.id || "bw_" + Math.random().toString(36).slice(2, 8),
+            nombre:  r.Jugador,
+            equipo:  r.Equipo,
+            pos,
+            precio,
+            compra:  existing?.compra || precio, // keep original purchase price
+            oferta:  existing?.oferta || null,
+          };
+        });
+        persist(next, null, null);
+        setTab("plantilla");
+      };
+
+      // Sync via API
+      const handleSyncAPI = async () => {
+        setSyncing(true); setSyncErr(null);
+        try {
+          const raw = await bwFetchTeam(settings);
+          // raw.data.players is array; raw.data.account has balance
+          const apiPlayers = raw?.data?.players || [];
+          const apiAccount = raw?.data?.account || {};
+          const newSaldo   = apiAccount.balance ?? saldo;
+
+          const next = apiPlayers.map(ap => {
+            const pos    = BW_POS_ES[ap.position] || "MC";
+            const precio = ap.price || 0;
+            const nombre = ap.name || ap.slug || "";
+            const existing = players.find(p => p.nombre === nombre);
+            // offers come as array on the player or top-level
+            const apiOffer = ap.offers?.[0]?.amount || null;
+            return {
+              id:     existing?.id || "bw_" + Math.random().toString(36).slice(2, 8),
+              nombre,
+              equipo: ap.team?.name || "",
+              pos,
+              precio,
+              compra: existing?.compra || precio,
+              oferta: apiOffer || existing?.oferta || null,
+            };
+          });
+
+          await persist(next, newSaldo, settings);
+        } catch (e) {
+          setSyncErr(e.message);
+        }
+        setSyncing(false);
+      };
+
+      const TABS = [
+        { id: "plantilla", label: "Plantilla", icon: "👥" },
+        { id: "simular",   label: "Simular",   icon: "🧮" },
+        { id: "ajustes",   label: "Ajustes",   icon: "⚙" },
+      ];
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column" }}>
+          {/* Top bar */}
+          <div style={{ height: 56, borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {logoSlot}
+              <div style={{ width: 1, height: 18, background: "#1a2535" }} />
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 900, fontSize: 17, letterSpacing: "-0.01em" }}>
+                <span style={{ color: BW_A }}>Biwenger</span><span style={{ color: BW_B }}>Log</span>
+              </span>
+            </div>
+            {profileChip}
+          </div>
+
+          {/* Summary bar */}
+          {!loading && <BwSummaryBar saldo={saldo} valorEquipo={valorEquipo} />}
+
+          {/* Tab bar */}
+          {isMobile ? (
+            <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, height: 60, background: "#080f18", borderTop: "1px solid #0d1825", display: "flex", zIndex: 50 }}>
+              {TABS.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)}
+                  style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none", cursor: "pointer", borderTop: `2px solid ${tab === t.id ? BW_A : "transparent"}` }}>
+                  <span style={{ fontSize: 16 }}>{t.icon}</span>
+                  <span style={{ fontSize: 10, color: tab === t.id ? BW_A : "#5a7080", fontWeight: tab === t.id ? 700 : 400 }}>{t.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div style={{ borderBottom: "1px solid #0d1825", display: "flex", background: "#080f18", flexShrink: 0 }}>
+              {TABS.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)}
+                  style={{ background: "none", border: "none", borderBottom: tab === t.id ? `2px solid ${BW_A}` : "2px solid transparent", color: tab === t.id ? BW_A : "#7a90a8", cursor: "pointer", padding: "14px 20px", fontSize: 13, fontWeight: tab === t.id ? 600 : 400 }}
+                  onMouseEnter={e => { if (tab !== t.id) e.currentTarget.style.color = "#9aaabb"; }}
+                  onMouseLeave={e => { if (tab !== t.id) e.currentTarget.style.color = "#7a90a8"; }}>
+                  {t.icon} {t.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Content */}
+          <div style={{ flex: 1, overflowY: "auto", paddingBottom: isMobile ? 60 : 0 }}>
+            {loading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Cargando…</div>
+            ) : players.length === 0 && tab !== "ajustes" ? (
+              <div style={{ textAlign: "center", padding: "80px 20px" }}>
+                <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>⚽</div>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: "#e2e8f0", marginBottom: 8 }}>Sin plantilla</div>
+                <div style={{ fontSize: 13, color: "#7a90a8", marginBottom: 24 }}>Importa tu plantilla desde Biwenger o configura la API.</div>
+                <button onClick={() => setTab("ajustes")}
+                  style={{ background: BW_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 24px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+                  ⚙ Ir a Ajustes
+                </button>
+              </div>
+            ) : (
+              <>
+                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} />}
+                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} />}
+                {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} />}
+              </>
+            )}
+          </div>
+        </div>
+      );
     }
 
     ReactDOM.createRoot(document.getElementById("root")).render(
