@@ -11145,26 +11145,22 @@
         setSyncing(true); setSyncErr(null);
         try {
           const raw = await bwFetchTeam(settings);
-          // raw.data.players is array; raw.data.account has balance
-          const apiPlayers = raw?.data?.players || [];
-          const apiAccount = raw?.data?.account || {};
-          const newSaldo   = apiAccount.balance ?? saldo;
+          // New proxy returns { status, balance, players, rawOffers }
+          const newSaldo  = raw.balance ?? saldo;
+          const apiPlayers = raw.players || [];
 
           const next = apiPlayers.map(ap => {
-            const pos    = BW_POS_ES[ap.position] || "MC";
-            const precio = ap.price || 0;
-            const nombre = ap.name || ap.slug || "";
-            const existing = players.find(p => p.nombre === nombre);
-            // offers come as array on the player or top-level
-            const apiOffer = ap.offers?.[0]?.amount || null;
+            const existing = players.find(p => p.id === ap.id);
             return {
-              id:     existing?.id || "bw_" + Math.random().toString(36).slice(2, 8),
-              nombre,
-              equipo: ap.team?.name || "",
-              pos,
-              precio,
-              compra: existing?.compra || precio,
-              oferta: apiOffer || existing?.oferta || null,
+              id:     ap.id,
+              nombre: ap.nombre,
+              slug:   ap.slug || "",
+              pos:    ap.pos,
+              equipo: ap.equipo,
+              precio: ap.precio,
+              compra: ap.compra || existing?.compra || ap.precio,
+              oferta: ap.oferta || existing?.oferta || null,
+              fechaCompra: ap.fechaCompra || null,
             };
           });
 
