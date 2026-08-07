@@ -10747,7 +10747,13 @@
     }
 
     // ── Plantilla tab ─────────────────────────────────────────────────────────
-    function BwPlantilla({ players, onOfferChange }) {
+    // Proxy image URLs through Vercel to avoid 403/CORS from biwenger CDN
+    const bwImg = (url, token) => {
+      if (!url) return null;
+      return `/api/biwenger_img?url=${encodeURIComponent(url)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+    };
+
+    function BwPlantilla({ players, onOfferChange, token }) {
       const [sortBy, setSortBy] = useState("pos");
       const [search, setSearch] = useState("");
       const [editOffer, setEditOffer] = useState(null); // playerId being edited
@@ -10793,7 +10799,7 @@
                     {/* Player photo */}
                     <div style={{ width: 44, height: 44, borderRadius: 8, overflow: "hidden", background: "#080f18", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
                       {p.photoUrl
-                        ? <img src={p.photoUrl} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        ? <img src={bwImg(p.photoUrl, token)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }}
                             onError={e => { e.target.style.display = "none"; e.target.parentNode.querySelector(".bw-fallback").style.display = "flex"; }} />
                         : null}
                       <div className="bw-fallback" style={{ display: p.photoUrl ? "none" : "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#1a2535" }}>👤</div>
@@ -10803,7 +10809,7 @@
                       <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{p.nombre}</div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
                         {p.teamBadgeUrl && (
-                          <img src={p.teamBadgeUrl} alt={p.equipo} style={{ width: 14, height: 14, objectFit: "contain" }}
+                          <img src={bwImg(p.teamBadgeUrl, token)} alt={p.equipo} style={{ width: 14, height: 14, objectFit: "contain" }}
                             onError={e => e.target.style.display = "none"} />
                         )}
                         <span style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</span>
@@ -10851,7 +10857,7 @@
     }
 
     // ── Simular tab ───────────────────────────────────────────────────────────
-    function BwSimular({ players, saldo, valorEquipo }) {
+    function BwSimular({ players, saldo, valorEquipo, token }) {
       const [sellIds,    setSellIds]    = useState(new Set());
       const [buys,       setBuys]       = useState([]); // { id, nombre, precio }
       const [newBuyName, setNewBuyName] = useState("");
@@ -10944,8 +10950,8 @@
                     <button key={p.id} onClick={() => toggleSell(p.id)}
                       style={{ display: "flex", alignItems: "center", gap: 8, background: selected ? BW_A + "15" : "#0d1825", border: `1px solid ${selected ? BW_A : "#1a2535"}`, borderRadius: 9, padding: "9px 12px", cursor: "pointer", textAlign: "left" }}>
                       <div style={{ width: 30, height: 30, borderRadius: 6, overflow: "hidden", background: "#080f18", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        {p.photoUrl
-                          ? <img src={p.photoUrl} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.display="none"; }} />
+                      {p.photoUrl
+                          ? <img src={bwImg(p.photoUrl, token)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.target.style.display="none"; }} />
                           : <span style={{ fontSize: 14, color: "#1a2535" }}>👤</span>}
                       </div>
                       <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${selected ? BW_A : "#1a2535"}`, background: selected ? BW_A : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -11265,8 +11271,8 @@
               </div>
             ) : (
               <>
-                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} />}
-                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} />}
+                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} token={settings.token} />}
+                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} />}
                 {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} />}
               </>
             )}
