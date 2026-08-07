@@ -70,8 +70,12 @@ export default async function handler(req, res) {
           name:     p.name     || p.slug || `Jugador ${p.id}`,
           slug:     p.slug     || "",
           pos:      POS_MAP[p.position] || POS_MAP[p.positionID] || "MC",
+          teamId:   p.teamID   || p.teamId || null,
           teamName: teams[p.teamID]?.name || teams[p.teamId]?.name || "",
           precio:   p.price    || p.marketValue || 0,
+          // Image URLs derived from slug and teamId
+          photoUrl: p.slug ? `https://cf.biwenger.com/api/v2/players/la-liga/${p.slug}/photo` : null,
+          teamBadgeUrl: (p.teamID || p.teamId) ? `https://cdn.biwenger.com/img/teams/${p.teamID || p.teamId}.png` : null,
         };
       });
     }
@@ -93,15 +97,17 @@ export default async function handler(req, res) {
     const cat    = catalogue[p.id] || {};
     const compra = p.owner?.price || 0;
     return {
-      id:          p.id,
-      nombre:      cat.name     || p.name  || `Jugador ${p.id}`,
-      slug:        cat.slug     || p.slug  || "",
-      pos:         cat.pos      || "MC",
-      equipo:      cat.teamName || p.team?.name || "",
-      precio:      cat.precio   || p.price || 0,
+      id:           p.id,
+      nombre:       cat.name        || p.name  || `Jugador ${p.id}`,
+      slug:         cat.slug        || p.slug  || "",
+      pos:          cat.pos         || "MC",
+      equipo:       cat.teamName    || p.team?.name || "",
+      precio:       cat.precio      || p.price || 0,
       compra,
-      oferta:      offerMap[p.id] || null,
-      fechaCompra: p.owner?.date  || null,
+      oferta:       offerMap[p.id]  || null,
+      fechaCompra:  p.owner?.date   || null,
+      photoUrl:     cat.photoUrl    || null,
+      teamBadgeUrl: cat.teamBadgeUrl|| null,
     };
   });
 
