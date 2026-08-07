@@ -1,63 +1,60 @@
 // api/biwenger.js — Vercel serverless proxy for Biwenger API
-// Proxies requests to biwenger.as.com/api/v2 with the user's credentials
-// stored in TrackHub settings (userId, leagueId, version token).
-//
-// Usage: GET /api/biwenger?endpoint=user&userId=X&leagueId=Y&token=Z
-//
-// Supported endpoints:
-//   user    → full team data (players, offers, saldo, market)
-//   account → league account info (balance)
 
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(200).end();
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
+  const { endpoint = "user", userId, leagueId, token, version } = req.query;
+
+  if (!userId || !leagueId || !token || !version) {
+    return res.status(400).json({ error: "Missing userId, leagueId, token or version" });
   }
 
-  const { endpoint = "user", userId, leagueId, token } = req.query;
+  const cleanToken = token.startsWith("Bearer ") ? token.slice(7).trim() : token.trim();
 
-  if (!userId || !leagueId || !token) {
-    return res.status(400).json({ error: "Missing userId, leagueId or token" });
-  }
+  const URLS = {
+    user:    "https://biwenger.as.com/api/v2/user?fields=*,players(*,team,owner),offers,account",
+    offers:  "https://biwenger.as.com/api/v2/user?fields=offers",
+    account: "https://biwenger.as.com/api/v2/account",
+    league:  `https://biwenger.as.com/api/v2/leagues/${leagueId}?fields=*,standings(*,user,team(*,players(*,team)))`,
+  };
 
-  // Build Biwenger API URL based on endpoint
-  let url;
-  if (endpoint === "user") {
-    url = `https://biwenger.as.com/api/v2/user?fields=*,players(*,team,owner),market(*,-userID),offers,account`;
-  } else if (endpoint === "account") {
-    url = `https://biwenger.as.com/api/v2/account`;
-  } else {
-    return res.status(400).json({ error: `Unknown endpoint: ${endpoint}` });
-  }
+  const url = URLS[endpoint];
+  if (!url) return res.status(400).json({ error: `Unknown endpoint: ${endpoint}` });
 
   try {
     const response = await fetch(url, {
+      method: "GET",
       headers: {
-        "Authorization": `Bearer ${token}`,
-        "x-user":    userId,
-        "x-league":  leagueId,
-        "x-version": "2",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; TrackHub/1.0)",
+        "Authorization": `Bearer ${cleanToken}`,
+        "x-user":        String(userId),
+        "x-league":      String(leagueId),
+        "x-version":     String(version),
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
       },
     });
 
+    const text = await response.text();
+
     if (!response.ok) {
-      const text = await response.text();
       return res.status(response.status).json({
-        error: `Biwenger API error: ${response.status}`,
-        detail: text.slice(0, 200),
+        error:  `Biwenger API returned ${response.status}`,
+        detail: text.slice(0, 500),
+        url,
+        headers_sent: { userId, leagueId, version, tokenPreview: cleanToken.slice(0, 20) + "…" },
       });
     }
 
-    const data = await response.json();
-    return res.status(200).json(data);
+    try {
+      return res.status(200).json(JSON.parse(text));
+    } catch {
+      return res.status(200).send(text);
+    }
 
   } catch (err) {
-    return res.status(500).json({ error: "Proxy error", detail: err.message });
+    return res.status(500).json({ error: "Proxy fetch error", detail: err.message });
   }
 }
