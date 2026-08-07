@@ -11145,24 +11145,34 @@
         setSyncing(true); setSyncErr(null);
         try {
           const raw = await bwFetchTeam(settings);
-          // New proxy returns { status, balance, players, rawOffers }
-          const newSaldo  = raw.balance ?? saldo;
+          const newSaldo   = raw.balance ?? saldo;
           const apiPlayers = raw.players || [];
+
+          if (apiPlayers.length === 0) {
+            setSyncErr(`API respondió OK pero devolvió 0 jugadores. catalogueSize=${raw.catalogueSize ?? "?"}`);
+            setSyncing(false);
+            return;
+          }
 
           const next = apiPlayers.map(ap => {
             const existing = players.find(p => p.id === ap.id);
             return {
-              id:     ap.id,
-              nombre: ap.nombre,
-              slug:   ap.slug || "",
-              pos:    ap.pos,
-              equipo: ap.equipo,
-              precio: ap.precio,
-              compra: ap.compra || existing?.compra || ap.precio,
-              oferta: ap.oferta || existing?.oferta || null,
+              id:          ap.id,
+              nombre:      ap.nombre,
+              slug:        ap.slug || "",
+              pos:         ap.pos,
+              equipo:      ap.equipo,
+              precio:      ap.precio,
+              compra:      ap.compra || existing?.compra || ap.precio,
+              oferta:      ap.oferta || existing?.oferta || null,
               fechaCompra: ap.fechaCompra || null,
             };
           });
+
+          // Show warning if catalogue was empty (names will show as "Jugador {id}")
+          if (raw.catalogueSize === 0) {
+            setSyncErr(`Sincronizado ${next.length} jugadores, pero el catálogo de La Liga no respondió — los nombres y precios actuales pueden estar vacíos. Inténtalo de nuevo.`);
+          }
 
           await persist(next, newSaldo, settings);
         } catch (e) {
