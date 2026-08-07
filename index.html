@@ -10753,10 +10753,11 @@
       return `/api/biwenger_img?url=${encodeURIComponent(url)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
     };
 
-    function BwPlantilla({ players, onOfferChange, token }) {
-      const [sortBy, setSortBy] = useState("pos");
-      const [search, setSearch] = useState("");
-      const [editOffer, setEditOffer] = useState(null); // playerId being edited
+    function BwPlantilla({ players, onOfferChange, onCompraChange, token }) {
+      const [sortBy,     setSortBy]     = useState("pos");
+      const [search,     setSearch]     = useState("");
+      const [editOffer,  setEditOffer]  = useState(null);
+      const [editCompra, setEditCompra] = useState(null);
 
       const sorted = useMemo(() => {
         let list = [...players];
@@ -10818,7 +10819,23 @@
                     {/* Prices */}
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       <div style={{ fontSize: 13, color: "#c8d8e8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(p.precio)}</div>
-                      <div style={{ fontSize: 10, color: "#5a7080" }}>comprado: {bwFmt(p.compra)}</div>
+                      {editCompra === p.id ? (
+                        <input type="number" min="0" defaultValue={p.compra || ""}
+                          autoFocus
+                          style={{ ...inp, width: 120, fontSize: 11, padding: "3px 8px" }}
+                          onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") { onCompraChange(p.id, Number(e.target.value)); setEditCompra(null); }
+                            if (e.key === "Escape") setEditCompra(null);
+                          }}
+                          onBlur={e => { onCompraChange(p.id, Number(e.target.value)); setEditCompra(null); }} />
+                      ) : (
+                        <button onClick={() => setEditCompra(p.id)}
+                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "right" }}
+                          title="Editar precio de compra">
+                          <div style={{ fontSize: 10, color: "#5a7080" }}>comprado: <span style={{ textDecoration: "underline dotted", color: "#7a90a8" }}>{bwFmt(p.compra)}</span></div>
+                        </button>
+                      )}
                     </div>
                     {/* Ganancia */}
                     <div style={{ textAlign: "right", flexShrink: 0, minWidth: 80 }}>
@@ -11134,8 +11151,13 @@
         await bwSave(profileId, { players: p, saldo: s, settings: st });
       };
 
-      const handleOfferChange = (id, offer) => {
+      const handleOfferChange  = (id, offer)  => {
         const next = players.map(p => p.id === id ? { ...p, oferta: offer || null } : p);
+        persist(next, null, null);
+      };
+
+      const handleCompraChange = (id, compra) => {
+        const next = players.map(p => p.id === id ? { ...p, compra: compra || 0 } : p);
         persist(next, null, null);
       };
 
@@ -11271,7 +11293,7 @@
               </div>
             ) : (
               <>
-                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} token={settings.token} />}
+                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} />}
                 {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} />}
                 {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} />}
               </>
