@@ -1,79 +1,141 @@
-// api/biwenger_img.js — Image proxy for Biwenger CDN
+// api/biwenger.js — Vercel serverless proxy for Biwenger API
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const { url, token } = req.query;
-  if (!url) return res.status(400).send("Missing url");
+  const { userId, leagueId, token, version } = req.query;
 
-  const allowed = ["cf.biwenger.com", "cdn.biwenger.com", "biwenger.as.com",
-                   "media.api-sports.io", "sofascore.com", "img.sofascore.com"];
-  let parsed;
-  try { parsed = new URL(decodeURIComponent(url)); } catch { return res.status(400).send("Invalid url"); }
-  if (!allowed.some(d => parsed.hostname.endsWith(d))) {
-    return res.status(403).json({ error: "Domain not allowed", hostname: parsed.hostname });
+  if (!userId || !leagueId || !token || !version) {
+    return res.status(400).json({ error: "Missing userId, leagueId, token or version" });
   }
 
-  const cleanToken = token
-    ? (token.startsWith("Bearer ") ? token.slice(7).trim() : token.trim())
-    : null;
+  const cleanToken = token.startsWith("Bearer ") ? token.slice(7).trim() : token.trim();
 
-  const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120",
-    "Referer":    "https://biwenger.as.com/",
-    "Accept":     "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-    "Accept-Language": "es-ES,es;q=0.9",
+  const authHeaders = {
+    "Authorization": `Bearer ${cleanToken}`,
+    "x-user":        String(userId),
+    "x-league":      String(leagueId),
+    "x-version":     String(version),
+    "Content-Type":  "application/json",
+    "Accept":        "application/json",
   };
-  if (cleanToken) headers["Authorization"] = `Bearer ${cleanToken}`;
 
+  // ── Call 1: user team ─────────────────────────────────────────────────────
+  let teamData;
   try {
-    // Step 1: HEAD request to follow redirects and find final URL
-    let finalUrl = decodeURIComponent(url);
-    const headRes = await fetch(finalUrl, { method: "GET", headers, redirect: "follow" });
+    const teamRes = await fetch(
+      "https://biwenger.as.com/api/v2/user?fields=*,players(*,team,owner),offers,account",
+      { headers: authHeaders }
+    );
+    if (!teamRes.ok) {
+      const text = await teamRes.text();
+      return res.status(teamRes.status).json({ error: `Team API ${teamRes.status}`, detail: text.slice(0, 300) });
+    }
+    const json = await teamRes.json();
+    teamData = json.data || json;
+  } catch (err) {
+    return res.status(500).json({ error: "Team fetch error", detail: err.message });
+  }
 
-    // If we got HTML back, the URL is wrong — return debug info
-    const ct = headRes.headers.get("content-type") || "";
-    if (ct.includes("text/html")) {
-      // Try the redirected URL without auth (some CDNs serve images publicly after redirect)
-      const finalLocation = headRes.url; // fetch follows redirects, headRes.url is the final URL
-      if (finalLocation && finalLocation !== finalUrl) {
-        const retryRes = await fetch(finalLocation, {
-          headers: {
-            "User-Agent": headers["User-Agent"],
-            "Referer":    "https://biwenger.as.com/",
-            "Accept":     headers["Accept"],
-          }
-        });
-        const retryCt = retryRes.headers.get("content-type") || "";
-        if (!retryCt.includes("text/html") && retryRes.ok) {
-          res.setHeader("Content-Type", retryCt);
-          res.setHeader("Cache-Control", "public, max-age=86400");
-          const buf = await retryRes.arrayBuffer();
-          return res.send(Buffer.from(buf));
-        }
-      }
-      // Return debug info so we can see what's happening
-      const body = await headRes.text();
-      return res.status(502).json({
-        error: "Got HTML instead of image",
-        finalUrl: headRes.url,
-        status: headRes.status,
-        contentType: ct,
-        bodyPreview: body.slice(0, 300),
+  const myPlayers    = teamData.players || [];
+  const myOffers     = teamData.offers  || [];
+  const balance      = teamData.balance  ?? 0;
+  const myPlayerIds  = myPlayers.map(p => p.id);
+
+  // ── Call 2: La Liga catalogue (names, positions, teams, prices) ───────────
+  let catalogue = {};
+  try {
+    const catRes = await fetch(
+      "https://cf.biwenger.com/api/v2/competitions/la-liga/data?lang=es&score=2",
+      { headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" } }
+    );
+    if (catRes.ok) {
+      const catJson = await catRes.json();
+      const players = catJson?.data?.players || catJson?.players || {};
+      const teams   = catJson?.data?.teams   || catJson?.teams   || {};
+      const POS_MAP = { 1: "POR", 2: "DEF", 3: "MC", 4: "DEL" };
+      Object.values(players).forEach(p => {
+        catalogue[p.id] = {
+          name:     p.name || `Jugador ${p.id}`,
+          slug:     p.slug || "",
+          pos:      POS_MAP[p.position] || POS_MAP[p.positionID] || "MC",
+          teamId:   p.teamID || p.teamId || null,
+          teamName: teams[p.teamID]?.name || teams[p.teamId]?.name || "",
+          precio:   p.price || 0,
+          // Direct image from catalogue if available
+          photoUrl: p.image || p.photo || p.avatar || null,
+        };
       });
     }
+  } catch (e) { /* catalogue best-effort */ }
 
-    if (!headRes.ok) {
-      return res.status(headRes.status).json({ error: `Upstream ${headRes.status}`, finalUrl: headRes.url });
-    }
+  // ── Call 3: Individual player details to get real image URLs ──────────────
+  // Fetch each owned player individually to get their image URL
+  // We batch these in parallel, max 5 at a time to avoid rate limiting
+  const slugsToFetch = myPlayerIds
+    .map(id => ({ id, slug: catalogue[id]?.slug }))
+    .filter(p => p.slug);
 
-    res.setHeader("Content-Type", ct || "image/png");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    const buffer = await headRes.arrayBuffer();
-    return res.send(Buffer.from(buffer));
-
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
+  const playerImages = {};
+  for (let i = 0; i < slugsToFetch.length; i += 5) {
+    const batch = slugsToFetch.slice(i, i + 5);
+    await Promise.all(batch.map(async ({ id, slug }) => {
+      try {
+        const r = await fetch(
+          `https://cf.biwenger.com/api/v2/players/la-liga/${slug}?fields=id,image,photo,slug&lang=es`,
+          { headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" } }
+        );
+        if (r.ok) {
+          const d = await r.json();
+          const p = d?.data || d;
+          playerImages[id] = p.image || p.photo || p.avatar || null;
+        }
+      } catch (e) { /* ignore individual failures */ }
+    }));
   }
+
+  // ── Build offer map ────────────────────────────────────────────────────────
+  const offerMap = {};
+  myOffers.forEach(o => {
+    if (o.type === "purchase" && o.status === "waiting" && o.requestedPlayers?.length) {
+      const pid = o.requestedPlayers[0];
+      if (!offerMap[pid] || o.amount > offerMap[pid]) offerMap[pid] = o.amount;
+    }
+  });
+
+  // ── Team badge URLs from cdn.biwenger.com (public, no auth) ──────────────
+  const teamBadgeUrl = (teamId) => teamId
+    ? `https://cdn.biwenger.com/img/teams/${teamId}.png`
+    : null;
+
+  // ── Join ──────────────────────────────────────────────────────────────────
+  const enriched = myPlayers.map(p => {
+    const cat    = catalogue[p.id] || {};
+    const compra = p.owner?.price || 0;
+    const photo  = playerImages[p.id] || cat.photoUrl || null;
+    return {
+      id:           p.id,
+      nombre:       cat.name     || `Jugador ${p.id}`,
+      slug:         cat.slug     || "",
+      pos:          cat.pos      || "MC",
+      equipo:       cat.teamName || "",
+      teamId:       cat.teamId   || null,
+      precio:       cat.precio   || 0,
+      compra,
+      oferta:       offerMap[p.id] || null,
+      fechaCompra:  p.owner?.date  || null,
+      photoUrl:     photo,
+      teamBadgeUrl: teamBadgeUrl(cat.teamId),
+    };
+  });
+
+  return res.status(200).json({
+    status:        200,
+    balance,
+    players:       enriched,
+    catalogueSize: Object.keys(catalogue).length,
+  });
 }
