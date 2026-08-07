@@ -10687,10 +10687,13 @@
 
     // ── Biwenger API fetch via proxy ──────────────────────────────────────────
     const bwFetchTeam = async (settings) => {
-      const { userId, leagueId, token } = settings;
-      if (!userId || !leagueId || !token) throw new Error("Missing credentials");
-      const res = await fetch(`/api/biwenger?endpoint=user&userId=${userId}&leagueId=${leagueId}&token=${encodeURIComponent(token)}`);
-      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const { userId, leagueId, token, version } = settings;
+      if (!userId || !leagueId || !token || !version) throw new Error("Faltan credenciales (userId, leagueId, token, x-version)");
+      const res = await fetch(`/api/biwenger?endpoint=user&userId=${encodeURIComponent(userId)}&leagueId=${encodeURIComponent(leagueId)}&token=${encodeURIComponent(token)}&version=${encodeURIComponent(version)}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || err.error || `API error ${res.status}`);
+      }
       return res.json();
     };
 
@@ -10988,6 +10991,7 @@
       const [userId,   setUserId]   = useState(settings.userId   || "");
       const [leagueId, setLeagueId] = useState(settings.leagueId || "");
       const [token,    setToken]    = useState(settings.token    || "");
+      const [version,  setVersion]  = useState(settings.version  || "");
       const [manSaldo, setManSaldo] = useState(String(saldo || 0));
       const [saved,    setSaved]    = useState(false);
       const fileRef = useRef();
@@ -10998,7 +11002,7 @@
       const blur  = e => e.target.style.borderColor = "#1a2535";
 
       const save = () => {
-        onSettingsSave({ userId, leagueId, token }, Number(manSaldo));
+        onSettingsSave({ userId, leagueId, token, version }, Number(manSaldo));
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
       };
@@ -11026,6 +11030,10 @@
                 <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Token (Bearer …)</div>
                 <input value={token} onChange={e => setToken(e.target.value)} placeholder="eyJhbGci…" style={{ ...inp, fontFamily: "monospace", fontSize: 11 }} onFocus={focus} onBlur={blur} />
               </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>x-version</div>
+                <input value={version} onChange={e => setVersion(e.target.value)} placeholder="ej. 631" style={inp} onFocus={focus} onBlur={blur} />
+              </div>
             </div>
           </div>
 
@@ -11042,7 +11050,7 @@
               style={{ background: BW_A, color: "#0f172a", border: "none", borderRadius: 9, padding: "10px 24px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
               {saved ? "Guardado ✓" : "Guardar ajustes"}
             </button>
-            {settings.userId && settings.token && (
+            {settings.userId && settings.token && settings.version && (
               <button onClick={onSyncAPI} disabled={syncing}
                 style={{ background: syncing ? "#1a2535" : BW_B + "22", color: syncing ? "#5a7080" : BW_B, border: `1px solid ${BW_B}44`, borderRadius: 9, padding: "10px 20px", cursor: syncing ? "default" : "pointer", fontWeight: 600, fontSize: 13 }}>
                 {syncing ? "Sincronizando…" : "↻ Sincronizar con Biwenger"}
