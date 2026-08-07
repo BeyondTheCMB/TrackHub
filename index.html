@@ -11001,7 +11001,9 @@
                       <BwPosBadge pos={p.pos} />
                       <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8" }}>{p.nombre}</span>
                       <span style={{ fontSize: 12, color: selected ? BW_A : "#7a90a8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(saleVal)}</span>
-                      {p.oferta && <span style={{ fontSize: 10, color: "#7a90a8" }}>oferta</span>}
+                      {p.oferta && (
+                        <BwDelta value={p.oferta - p.precio} style={{ fontSize: 11 }} />
+                      )}
                     </button>
                   );
                 })}
