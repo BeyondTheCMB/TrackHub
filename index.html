@@ -10687,7 +10687,10 @@
 
     // ── Biwenger API fetch via proxy ──────────────────────────────────────────
     const bwFetchTeam = async (settings) => {
-      const { userId, leagueId, token, version } = settings;
+      const userId   = (settings.userId   || "").trim();
+      const leagueId = (settings.leagueId || "").trim();
+      const token    = (settings.token    || "").trim();
+      const version  = (settings.version  || "").trim();
       if (!userId || !leagueId || !token || !version) throw new Error("Faltan credenciales (userId, leagueId, token, x-version)");
       const res = await fetch(`/api/biwenger?endpoint=user&userId=${encodeURIComponent(userId)}&leagueId=${encodeURIComponent(leagueId)}&token=${encodeURIComponent(token)}&version=${encodeURIComponent(version)}`);
       if (!res.ok) {
@@ -10999,7 +11002,14 @@
                         {selected && <span style={{ fontSize: 10, color: "#0f172a" }}>✓</span>}
                       </div>
                       <BwPosBadge pos={p.pos} />
-                      <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8" }}>{p.nombre}</span>
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 13, color: "#c8d8e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</span>
+                        {p.priceIncrement !== 0 && p.priceIncrement != null && (
+                          <span style={{ fontSize: 11, color: p.priceIncrement > 0 ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+                            ({p.priceIncrement > 0 ? "+" : ""}{bwFmt(p.priceIncrement)})
+                          </span>
+                        )}
+                      </div>
                       <span style={{ fontSize: 12, color: selected ? BW_A : "#7a90a8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(saleVal)}</span>
                       {p.oferta && (
                         <BwDelta value={p.oferta - p.precio} style={{ fontSize: 11 }} />
@@ -11070,7 +11080,7 @@
       const blur  = e => e.target.style.borderColor = "#1a2535";
 
       const save = () => {
-        onSettingsSave({ userId, leagueId, token, version }, Number(manSaldo));
+        onSettingsSave({ userId: userId.trim(), leagueId: leagueId.trim(), token: token.trim(), version: version.trim() }, Number(manSaldo));
         setSaved(true);
         setTimeout(() => setSaved(false), 1500);
       };
@@ -11157,15 +11167,46 @@
 
       const valorEquipo = useMemo(() => players.reduce((s, p) => s + (p.precio || 0), 0), [players]);
 
-      // Load from Supabase
+      // Load from Supabase, then auto-sync if credentials are configured
       useEffect(() => {
         if (!profileId) return;
         setLoading(true);
         bwLoad(profileId).then(d => {
+          const loadedSettings = d.settings || {};
           setPlayers(d.players || []);
           setSaldo(d.saldo || 0);
-          setSettings(d.settings || {});
+          setSettings(loadedSettings);
           setLoading(false);
+          // Auto-sync if credentials are present
+          const { userId, leagueId, token, version } = loadedSettings;
+          if (userId?.trim() && leagueId?.trim() && token?.trim() && version?.trim()) {
+            setSyncing(true); setSyncErr(null);
+            bwFetchTeam(loadedSettings).then(raw => {
+              const newSaldo   = raw.balance ?? d.saldo ?? 0;
+              const apiPlayers = raw.players || [];
+              if (apiPlayers.length === 0) { setSyncing(false); return; }
+              const existingPlayers = d.players || [];
+              const next = apiPlayers.map(ap => {
+                const existing = existingPlayers.find(p => p.id === ap.id);
+                return {
+                  id:             ap.id,
+                  nombre:         ap.nombre,
+                  slug:           ap.slug || "",
+                  pos:            ap.pos,
+                  equipo:         ap.equipo,
+                  teamSlug:       ap.teamSlug || "",
+                  precio:         ap.precio,
+                  priceIncrement: ap.priceIncrement || 0,
+                  compra:         existing?.compra || ap.compra || ap.precio,
+                  oferta:         ap.oferta || existing?.oferta || null,
+                  fechaCompra:    ap.fechaCompra || null,
+                };
+              });
+              setPlayers(next); setSaldo(newSaldo);
+              bwSave(profileId, { players: next, saldo: newSaldo, settings: loadedSettings });
+              setSyncing(false);
+            }).catch(() => setSyncing(false));
+          }
         });
       }, [profileId]);
 
@@ -11230,16 +11271,17 @@
           const next = apiPlayers.map(ap => {
             const existing = players.find(p => p.id === ap.id);
             return {
-              id:          ap.id,
-              nombre:      ap.nombre,
-              slug:        ap.slug || "",
-              pos:         ap.pos,
-              equipo:      ap.equipo,
-              teamSlug:    ap.teamSlug || "",
-              precio:      ap.precio,
-              compra:      ap.compra || existing?.compra || ap.precio,
-              oferta:      ap.oferta || existing?.oferta || null,
-              fechaCompra: ap.fechaCompra || null,
+              id:             ap.id,
+              nombre:         ap.nombre,
+              slug:           ap.slug || "",
+              pos:            ap.pos,
+              equipo:         ap.equipo,
+              teamSlug:       ap.teamSlug || "",
+              precio:         ap.precio,
+              priceIncrement: ap.priceIncrement || 0,
+              compra:         ap.compra || existing?.compra || ap.precio,
+              oferta:         ap.oferta || existing?.oferta || null,
+              fechaCompra:    ap.fechaCompra || null,
             };
           });
 
