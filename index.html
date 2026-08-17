@@ -10789,7 +10789,7 @@
       );
     };
 
-    function BwPlantilla({ players, onOfferChange, onCompraChange, token }) {
+    function BwPlantilla({ players, onOfferChange, onCompraChange, token, lineup, onLineupSave }) {
       const [sortBy,     setSortBy]     = useState("pos");
       const [search,     setSearch]     = useState("");
       const [editOffer,  setEditOffer]  = useState(null);
@@ -10811,7 +10811,8 @@
       const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "6px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box" };
 
       return (
-        <div style={{ padding: "16px 20px 60px" }}>
+        <>
+        <div style={{ padding: "16px 20px 0" }}>
           {/* Filter bar */}
           <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar jugador…"
@@ -10880,10 +10881,10 @@
                       <input type="number" min="0" defaultValue={p.oferta || ""}
                         autoFocus
                         style={{ ...inp, width: 140, fontSize: 12 }}
-                        onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                        onFocus={e => e.target.style.borderColor = BW_A + "66"}
                         onKeyDown={e => {
-                          if (e.key === "Enter")   { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }
-                          if (e.key === "Escape")  setEditOffer(null);
+                          if (e.key === "Enter")  { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }
+                          if (e.key === "Escape") setEditOffer(null);
                         }}
                         onBlur={e => { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }} />
                     ) : (
@@ -10901,58 +10902,62 @@
             })}
           </div>
         </div>
+
+        {/* Mi Once */}
+        <div style={{ padding: "0 20px 60px" }}>
+          <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12, fontWeight: 700, paddingTop: 24, borderTop: "1px solid #0d1825" }}>
+            Mi Once
+          </div>
+          <BwPitch players={players} savedLineup={lineup} onSaveLineup={onLineupSave} />
+        </div>
+        </>
       );
     }
 
     // ── Simular tab ───────────────────────────────────────────────────────────
     // ── Tactical pitch ────────────────────────────────────────────────────────
     const BW_FORMATIONS = {
-      "4-3-3":   { def: 4, mid: 3, att: 3 },
-      "4-4-2":   { def: 4, mid: 4, att: 2 },
-      "4-2-3-1": { def: 4, lines: [2, 3, 1] },
-      "4-1-4-1": { def: 4, lines: [1, 4, 1] },
-      "4-5-1":   { def: 4, mid: 5, att: 1 },
-      "3-4-3":   { def: 3, mid: 4, att: 3 },
-      "3-5-2":   { def: 3, mid: 5, att: 2 },
-      "3-4-2-1": { def: 3, lines: [4, 2, 1] },
-      "5-3-2":   { def: 5, mid: 3, att: 2 },
-      "5-4-1":   { def: 5, mid: 4, att: 1 },
-      "4-3-2-1": { def: 4, lines: [3, 2, 1] },
-      "4-2-2-2": { def: 4, lines: [2, 2, 2] },
+      "3-4-3": [[1],[3],[4],[3]],
+      "3-5-2": [[1],[3],[5],[2]],
+      "3-6-1": [[1],[3],[6],[1]],
+      "3-3-4": [[1],[3],[3],[4]],
+      "3-2-5": [[1],[3],[2],[5]],
+      "4-3-3": [[1],[4],[3],[3]],
+      "4-4-2": [[1],[4],[4],[2]],
+      "4-5-1": [[1],[4],[5],[1]],
+      "4-2-4": [[1],[4],[2],[4]],
+      "4-6-0": [[1],[4],[6],[0]],
+      "5-3-2": [[1],[5],[3],[2]],
+      "5-4-1": [[1],[5],[4],[1]],
+      "5-2-3": [[1],[5],[2],[3]],
+      "5-1-4": [[1],[5],[1],[4]],
     };
 
-    // Expand formation into ordered lines: [[GK], [DEF×n], ..., [ATT×n]]
-    const bwFormationLines = (key) => {
-      const f = BW_FORMATIONS[key];
-      if (!f) return [[1], [4], [3], [3]];
-      const lines = [[1], [f.def]];
-      if (f.lines) { f.lines.forEach(n => lines.push([n])); }
-      else { lines.push([f.mid]); lines.push([f.att]); }
-      return lines;
-    };
+    function BwPitch({ players, sellIds = new Set(), buys = [], savedLineup, onSaveLineup, readOnly }) {
+      const initFormation = savedLineup?.formation || "4-3-3";
+      const initSlotMap   = savedLineup?.slotMap   || {};
 
-    function BwPitch({ players, sellIds, buys }) {
-      const [formation,   setFormation]   = useState("4-3-3");
-      const [slotMap,     setSlotMap]     = useState({}); // slotKey → playerId
-      const [dragging,    setDragging]    = useState(null); // playerId being dragged
-      const [dragTarget,  setDragTarget]  = useState(null); // slotKey being hovered
+      const [formation,  setFormation]  = useState(initFormation);
+      const [slotMap,    setSlotMap]    = useState(initSlotMap);
+      const [dragging,   setDragging]   = useState(null);
+      const [dragTarget, setDragTarget] = useState(null);
 
-      // Available squad = players not sold + buys (treated as generic slots)
-      const availablePlayers = useMemo(() => {
-        const kept  = players.filter(p => !sellIds.has(p.id));
-        const buyPs = buys.map(b => ({ ...b, pos: "?", isBuy: true }));
-        return [...kept, ...buyPs];
-      }, [players, sellIds, buys]);
+      // Sync from saved lineup when it loads
+      useEffect(() => {
+        if (savedLineup) {
+          setFormation(savedLineup.formation || "4-3-3");
+          setSlotMap(savedLineup.slotMap || {});
+        }
+      }, [savedLineup]);
 
-      const lines    = bwFormationLines(formation);
+      const lines = BW_FORMATIONS[formation] || BW_FORMATIONS["4-3-3"];
+
       const allSlots = [];
       lines.forEach((line, li) => {
-        for (let si = 0; si < line[0]; si++) {
-          allSlots.push(`${li}-${si}`);
-        }
+        for (let si = 0; si < line[0]; si++) allSlots.push(`${li}-${si}`);
       });
 
-      // When formation changes, reset any slots that no longer exist
+      // Drop slots that no longer exist when formation changes
       useEffect(() => {
         setSlotMap(prev => {
           const next = {};
@@ -10961,10 +10966,16 @@
         });
       }, [formation]);
 
+      const availablePlayers = useMemo(() => {
+        const kept  = players.filter(p => !sellIds.has(p.id));
+        const buyPs = buys.map(b => ({ ...b, pos: "?", isBuy: true }));
+        return [...kept, ...buyPs];
+      }, [players, sellIds, buys]);
+
       const assignSlot = (slotKey, playerId) => {
+        if (readOnly) return;
         setSlotMap(prev => {
           const next = { ...prev };
-          // Remove player from any other slot first
           Object.keys(next).forEach(k => { if (next[k] === playerId) delete next[k]; });
           if (playerId) next[slotKey] = playerId;
           else delete next[slotKey];
@@ -10977,41 +10988,35 @@
         setDragging(null); setDragTarget(null);
       };
 
+      const handleFormationChange = (f) => {
+        setFormation(f);
+      };
+
+      const save = () => { if (onSaveLineup) onSaveLineup({ formation, slotMap }); };
+
       const usedIds = new Set(Object.values(slotMap));
       const bench   = availablePlayers.filter(p => !usedIds.has(p.id));
 
-      const POS_LINE_LABEL = ["POR", "DEF", "MED", "DEL", "DEL2", "DEL3"];
-
-      const SlotCircle = ({ slotKey, lineIdx }) => {
-        const pid    = slotMap[slotKey];
-        const player = pid ? availablePlayers.find(p => p.id === pid) : null;
-        const isDragOver = dragTarget === slotKey;
-        const color  = player ? (BW_POS_COLOR[player.pos] || "#9aaabb") : "#2a4060";
-
+      const SlotCircle = ({ slotKey }) => {
+        const pid      = slotMap[slotKey];
+        const player   = pid ? availablePlayers.find(p => p.id === pid) : null;
+        const over     = dragTarget === slotKey;
+        const posColor = player ? (BW_POS_COLOR[player.pos] || "#9aaabb") : "#2a4060";
         return (
-          <div
-            onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
+          <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
             onDragLeave={() => setDragTarget(null)}
             onDrop={() => handleDrop(slotKey)}
-            onClick={() => { if (player) assignSlot(slotKey, null); }}
-            style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: player ? "pointer" : "default" }}>
-            <div style={{
-              width: 44, height: 44, borderRadius: "50%",
-              background: player ? color + "33" : isDragOver ? BW_A + "33" : "#0d1825",
-              border: `2px solid ${player ? color : isDragOver ? BW_A : "#1a2535"}`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              transition: "all 0.15s", position: "relative", overflow: "hidden",
-            }}>
+            onClick={() => { if (player && !readOnly) assignSlot(slotKey, null); }}
+            style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: player && !readOnly ? "pointer" : "default", minWidth: 54 }}>
+            <div style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s" }}>
               {player
                 ? (player.isBuy
-                    ? <span style={{ fontSize: 11, color: BW_B, fontWeight: 700 }}>{player.nombre.slice(0,3).toUpperCase()}</span>
-                    : <img src={bwPlayerPhoto(player.id)} alt={player.nombre}
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        onError={e => { e.target.style.display="none"; }} />)
-                : <span style={{ fontSize: 18, color: isDragOver ? BW_A : "#1a2535" }}>+</span>
+                    ? <span style={{ fontSize: 10, color: BW_B, fontWeight: 700 }}>{player.nombre.slice(0,3).toUpperCase()}</span>
+                    : <img src={bwPlayerPhoto(player.id)} alt={player.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />)
+                : <span style={{ fontSize: 18, color: over ? BW_A : "#ffffff22" }}>+</span>
               }
             </div>
-            <span style={{ fontSize: 10, color: player ? "#c8d8e8" : "#3a5060", fontWeight: player ? 600 : 400, maxWidth: 50, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center" }}>
+            <span style={{ fontSize: 10, color: player ? "#e2e8f0" : "#ffffff33", fontWeight: 600, maxWidth: 54, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", textShadow: "0 1px 3px #000" }}>
               {player ? player.nombre.split(" ").slice(-1)[0] : ""}
             </span>
           </div>
@@ -11020,34 +11025,50 @@
 
       return (
         <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
-          {/* Formation selector */}
+          {/* Formation pills */}
           <div style={{ padding: "10px 14px", borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Formación</span>
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, flexShrink: 0 }}>Formación</span>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
               {Object.keys(BW_FORMATIONS).map(f => (
-                <button key={f} onClick={() => setFormation(f)}
-                  style={{ padding: "3px 9px", borderRadius: 6, border: `1px solid ${formation === f ? BW_A : "#1a2535"}`, background: formation === f ? BW_A + "22" : "transparent", color: formation === f ? BW_A : "#7a90a8", cursor: "pointer", fontSize: 11, fontWeight: formation === f ? 700 : 400 }}>
+                <button key={f} onClick={() => !readOnly && handleFormationChange(f)}
+                  style={{ padding: "3px 9px", borderRadius: 6, border: `1px solid ${formation === f ? BW_A : "#1a2535"}`, background: formation === f ? BW_A + "22" : "transparent", color: formation === f ? BW_A : "#7a90a8", cursor: readOnly ? "default" : "pointer", fontSize: 11, fontWeight: formation === f ? 700 : 400 }}>
                   {f}
                 </button>
               ))}
             </div>
+            {!readOnly && onSaveLineup && (
+              <button onClick={save}
+                style={{ background: BW_A, color: "#0f172a", border: "none", borderRadius: 7, padding: "5px 14px", cursor: "pointer", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
+                Guardar
+              </button>
+            )}
           </div>
 
-          {/* Pitch */}
-          <div style={{ position: "relative", background: "linear-gradient(180deg, #0a2010 0%, #0d2a14 40%, #0a2010 100%)", padding: "16px 8px" }}>
-            {/* Pitch lines */}
-            <div style={{ position: "absolute", inset: "8px", border: "1px solid #ffffff18", borderRadius: 4, pointerEvents: "none" }} />
-            <div style={{ position: "absolute", top: "50%", left: "8px", right: "8px", height: 1, background: "#ffffff12", pointerEvents: "none" }} />
-            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 60, height: 60, borderRadius: "50%", border: "1px solid #ffffff12", pointerEvents: "none" }} />
+          {/* Pitch — fixed aspect ratio 68:105 (standard football pitch) */}
+          <div style={{ position: "relative", width: "100%", paddingBottom: "154%", background: "linear-gradient(180deg, #0f3318 0%, #134020 25%, #0f3318 50%, #134020 75%, #0f3318 100%)" }}>
+            {/* Field markings */}
+            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.25 }} viewBox="0 0 68 105" preserveAspectRatio="none">
+              <rect x="1" y="1" width="66" height="103" fill="none" stroke="white" strokeWidth="0.5"/>
+              <line x1="1" y1="52.5" x2="67" y2="52.5" stroke="white" strokeWidth="0.5"/>
+              <circle cx="34" cy="52.5" r="9.15" fill="none" stroke="white" strokeWidth="0.5"/>
+              <circle cx="34" cy="52.5" r="0.5" fill="white"/>
+              {/* Top penalty area */}
+              <rect x="13.84" y="1" width="40.32" height="16.5" fill="none" stroke="white" strokeWidth="0.5"/>
+              <rect x="24.84" y="1" width="18.32" height="5.5" fill="none" stroke="white" strokeWidth="0.5"/>
+              {/* Bottom penalty area */}
+              <rect x="13.84" y="87.5" width="40.32" height="16.5" fill="none" stroke="white" strokeWidth="0.5"/>
+              <rect x="24.84" y="98.5" width="18.32" height="5.5" fill="none" stroke="white" strokeWidth="0.5"/>
+            </svg>
 
-            {/* Lines from GK to ATT (bottom to top = GK at bottom) */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "8px 0" }}>
+            {/* Player lines — absolute positioned */}
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "space-around", padding: "6% 4%" }}>
               {[...lines].reverse().map((line, ri) => {
                 const li = lines.length - 1 - ri;
+                if (line[0] === 0) return null;
                 return (
                   <div key={li} style={{ display: "flex", justifyContent: "space-evenly", alignItems: "center" }}>
                     {Array.from({ length: line[0] }).map((_, si) => (
-                      <SlotCircle key={si} slotKey={`${li}-${si}`} lineIdx={li} />
+                      <SlotCircle key={si} slotKey={`${li}-${si}`} />
                     ))}
                   </div>
                 );
@@ -11055,36 +11076,37 @@
             </div>
           </div>
 
-          {/* Bench — drag players onto pitch */}
-          <div style={{ padding: "10px 14px", borderTop: "1px solid #0d1825" }}>
-            <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
-              Banquillo — arrastra al campo
-            </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {bench.map(p => (
-                <div key={p.id}
-                  draggable
-                  onDragStart={() => setDragging(p.id)}
-                  onDragEnd={() => { setDragging(null); setDragTarget(null); }}
-                  style={{ display: "flex", alignItems: "center", gap: 5, background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, padding: "4px 10px 4px 4px", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
-                  <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                    {p.isBuy
-                      ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
-                      : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
-                    }
+          {/* Bench */}
+          {!readOnly && (
+            <div style={{ padding: "10px 14px", borderTop: "1px solid #0d1825" }}>
+              <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
+                Banquillo — arrastra al campo
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {bench.map(p => (
+                  <div key={p.id} draggable
+                    onDragStart={() => setDragging(p.id)}
+                    onDragEnd={() => { setDragging(null); setDragTarget(null); }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, padding: "4px 10px 4px 4px", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
+                    <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+                      {p.isBuy
+                        ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
+                        : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+                      }
+                    </div>
+                    <BwPosBadge pos={p.pos} />
+                    <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
                   </div>
-                  <BwPosBadge pos={p.pos} />
-                  <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
-                </div>
-              ))}
-              {bench.length === 0 && <span style={{ fontSize: 12, color: "#3a5060" }}>Todos asignados</span>}
+                ))}
+                {bench.length === 0 && <span style={{ fontSize: 12, color: "#3a5060" }}>Todos colocados ✓</span>}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       );
     }
 
-    function BwSimular({ players, saldo, valorEquipo, token }) {
+    function BwSimular({ players, saldo, valorEquipo, token, savedLineup }) {
       const [sellIds,    setSellIds]    = useState(new Set());
       const [buys,       setBuys]       = useState([]); // { id, nombre, precio }
       const [newBuyName, setNewBuyName] = useState("");
@@ -11239,8 +11261,8 @@
                 )}
               </div>
 
-              {/* Tactical pitch */}
-              <BwPitch players={players} sellIds={sellIds} buys={buys} />
+              {/* Tactical pitch — starts from saved lineup, local changes only */}
+              <BwPitch players={players} sellIds={sellIds} buys={buys} savedLineup={savedLineup} />
             </div>
           </div>
         </div>
@@ -11343,6 +11365,7 @@
       const [players,  setPlayers]  = useState([]);
       const [saldo,    setSaldo]    = useState(0);
       const [settings, setSettings] = useState({});
+      const [lineup,   setLineup]   = useState(null); // { formation, slotMap }
       const [loading,  setLoading]  = useState(true);
       const [syncing,  setSyncing]  = useState(false);
       const [syncErr,  setSyncErr]  = useState(null);
@@ -11359,6 +11382,7 @@
           setPlayers(d.players || []);
           setSaldo(d.saldo || 0);
           setSettings(loadedSettings);
+          setLineup(d.lineup || null);
           setLoading(false);
           // Auto-sync if credentials are present
           const { userId, leagueId, token, version } = loadedSettings;
@@ -11386,33 +11410,38 @@
                 };
               });
               setPlayers(next); setSaldo(newSaldo);
-              bwSave(profileId, { players: next, saldo: newSaldo, settings: loadedSettings });
+              bwSave(profileId, { players: next, saldo: newSaldo, settings: loadedSettings, lineup: d.lineup || null });
               setSyncing(false);
             }).catch(() => setSyncing(false));
           }
         });
       }, [profileId]);
 
-      const persist = async (newPlayers, newSaldo, newSettings) => {
-        const p = newPlayers ?? players;
-        const s = newSaldo   ?? saldo;
+      const persist = async (newPlayers, newSaldo, newSettings, newLineup) => {
+        const p  = newPlayers  ?? players;
+        const s  = newSaldo    ?? saldo;
         const st = newSettings ?? settings;
-        setPlayers(p); setSaldo(s); setSettings(st);
-        await bwSave(profileId, { players: p, saldo: s, settings: st });
+        const ln = newLineup   ?? lineup;
+        setPlayers(p); setSaldo(s); setSettings(st); setLineup(ln);
+        await bwSave(profileId, { players: p, saldo: s, settings: st, lineup: ln });
       };
 
       const handleOfferChange  = (id, offer)  => {
         const next = players.map(p => p.id === id ? { ...p, oferta: offer || null } : p);
-        persist(next, null, null);
+        persist(next, null, null, null);
       };
 
       const handleCompraChange = (id, compra) => {
         const next = players.map(p => p.id === id ? { ...p, compra: compra || 0 } : p);
-        persist(next, null, null);
+        persist(next, null, null, null);
       };
 
       const handleSettingsSave = (newSettings, newSaldo) => {
-        persist(null, newSaldo, newSettings);
+        persist(null, newSaldo, newSettings, null);
+      };
+
+      const handleLineupSave = (ln) => {
+        persist(null, null, null, ln);
       };
 
       // Parse Biwenger CSV and merge into players
@@ -11543,8 +11572,8 @@
               </div>
             ) : (
               <>
-                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} />}
-                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} />}
+                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} lineup={lineup} onLineupSave={handleLineupSave} />}
+                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} />}
                 {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} />}
               </>
             )}
