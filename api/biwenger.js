@@ -25,12 +25,12 @@ export default async function handler(req, res) {
   if (endpoint === "market") {
     try {
       const marketRes = await fetch(
-        "https://biwenger.as.com/api/v2/market?fields=*,player(*),user(id,name)",
+        "https://biwenger.as.com/api/v2/market",
         { headers: authHeaders }
       );
       if (!marketRes.ok) {
         const text = await marketRes.text();
-        return res.status(marketRes.status).json({ error: `Market API ${marketRes.status}`, detail: text.slice(0, 300) });
+        return res.status(marketRes.status).json({ error: `Market API ${marketRes.status}`, detail: text.slice(0, 500) });
       }
       const marketJson = await marketRes.json();
 
@@ -65,7 +65,11 @@ export default async function handler(req, res) {
         };
       }).filter(p => p.id);
 
-      return res.status(200).json({ status: 200, market: enriched, debug: { raw: marketJson?.data?.length ?? typeof marketJson?.data } });
+      return res.status(200).json({
+        status: 200,
+        market: enriched,
+        debug: { listingsCount: listings.length, rawKeys: Object.keys(marketJson || {}) }
+      });
     } catch (err) {
       return res.status(500).json({ error: "Market fetch error", detail: err.message });
     }
