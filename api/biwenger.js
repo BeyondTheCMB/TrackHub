@@ -44,9 +44,14 @@ export default async function handler(req, res) {
       const catTeams   = catJson?.data?.teams   || {};
       const POS_MAP    = { 1: "POR", 2: "DEF", 3: "MC", 4: "DEL" };
 
-      // Parse — try multiple shapes Biwenger might return
-      const raw = marketJson?.data || marketJson?.players || marketJson || [];
-      const listings = Array.isArray(raw) ? raw : Object.values(raw);
+      // Parse — data can be array or object keyed by id
+      const dataRaw = marketJson?.data;
+      let listings = [];
+      if (Array.isArray(dataRaw)) {
+        listings = dataRaw;
+      } else if (dataRaw && typeof dataRaw === "object") {
+        listings = Object.values(dataRaw);
+      }
 
       const enriched = listings.map(item => {
         const pid    = item.playerID || item.player?.id || item.id;
@@ -68,7 +73,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         status: 200,
         market: enriched,
-        debug: { listingsCount: listings.length, rawKeys: Object.keys(marketJson || {}) }
+        debug: { listingsCount: listings.length, rawSample: listings[0] || null }
       });
     } catch (err) {
       return res.status(500).json({ error: "Market fetch error", detail: err.message });
