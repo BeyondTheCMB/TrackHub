@@ -10812,103 +10812,102 @@
 
       return (
         <>
-        <div style={{ padding: "16px 20px 0" }}>
-          {/* Filter bar */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar jugador…"
-              style={{ ...inp, flex: 1, minWidth: 140 }}
-              onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
-            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...inp, cursor: "pointer" }}>
-              <option value="pos">Posición</option>
-              <option value="valor">Valor ↓</option>
-              <option value="oferta">Oferta ↓</option>
-              <option value="ganancia">Ganancia ↓</option>
-            </select>
-          </div>
+        <div style={{ display: "flex", gap: 0, alignItems: "flex-start", padding: "16px 20px 60px" }}>
+          {/* Left: filter + player list */}
+          <div style={{ flex: 1, minWidth: 0, marginRight: 20 }}>
+            {/* Filter bar */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar jugador…"
+                style={{ ...inp, flex: 1, minWidth: 140 }}
+                onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+              <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...inp, cursor: "pointer" }}>
+                <option value="pos">Posición</option>
+                <option value="valor">Valor ↓</option>
+                <option value="oferta">Oferta ↓</option>
+                <option value="ganancia">Ganancia ↓</option>
+              </select>
+            </div>
 
-          {/* Player list */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {sorted.map(p => {
-              const ganancia = (p.oferta || p.precio) - p.compra;
-              const isEditing = editOffer === p.id;
-              return (
-                <div key={p.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "11px 14px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {/* Player photo */}
-                    <BwAvatar id={p.id} nombre={p.nombre} pos={p.pos} size={44} />
-                    <BwPosBadge pos={p.pos} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{p.nombre}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-                        {p.teamSlug && bwTeamBadge(p.teamSlug) && (
-                          <img src={bwTeamBadge(p.teamSlug)} alt={p.equipo}
-                            style={{ width: 14, height: 14, objectFit: "contain" }}
-                            onError={e => e.target.style.display = "none"} />
+            {/* Player list */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {sorted.map(p => {
+                const ganancia = (p.oferta || p.precio) - p.compra;
+                const isEditing = editOffer === p.id;
+                return (
+                  <div key={p.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "11px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <BwAvatar id={p.id} nombre={p.nombre} pos={p.pos} size={44} />
+                      <BwPosBadge pos={p.pos} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{p.nombre}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                          {p.teamSlug && bwTeamBadge(p.teamSlug) && (
+                            <img src={bwTeamBadge(p.teamSlug)} alt={p.equipo}
+                              style={{ width: 14, height: 14, objectFit: "contain" }}
+                              onError={e => e.target.style.display = "none"} />
+                          )}
+                          <span style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</span>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ fontSize: 13, color: "#c8d8e8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(p.precio)}</div>
+                        {editCompra === p.id ? (
+                          <input type="number" min="0" defaultValue={p.compra || ""}
+                            autoFocus
+                            style={{ ...inp, width: 120, fontSize: 11, padding: "3px 8px" }}
+                            onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") { onCompraChange(p.id, Number(e.target.value)); setEditCompra(null); }
+                              if (e.key === "Escape") setEditCompra(null);
+                            }}
+                            onBlur={e => { onCompraChange(p.id, Number(e.target.value)); setEditCompra(null); }} />
+                        ) : (
+                          <button onClick={() => setEditCompra(p.id)}
+                            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "right" }}
+                            title="Editar precio de compra">
+                            <div style={{ fontSize: 10, color: "#5a7080" }}>comprado: <span style={{ textDecoration: "underline dotted", color: "#7a90a8" }}>{bwFmt(p.compra)}</span></div>
+                          </button>
                         )}
-                        <span style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</span>
+                      </div>
+                      <div style={{ textAlign: "right", flexShrink: 0, minWidth: 80 }}>
+                        <BwDelta value={ganancia} />
                       </div>
                     </div>
-                    {/* Prices */}
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ fontSize: 13, color: "#c8d8e8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(p.precio)}</div>
-                      {editCompra === p.id ? (
-                        <input type="number" min="0" defaultValue={p.compra || ""}
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 11, color: "#7a90a8", flexShrink: 0 }}>Oferta recibida:</span>
+                      {isEditing ? (
+                        <input type="number" min="0" defaultValue={p.oferta || ""}
                           autoFocus
-                          style={{ ...inp, width: 120, fontSize: 11, padding: "3px 8px" }}
-                          onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
+                          style={{ ...inp, width: 140, fontSize: 12 }}
+                          onFocus={e => e.target.style.borderColor = BW_A + "66"}
                           onKeyDown={e => {
-                            if (e.key === "Enter") { onCompraChange(p.id, Number(e.target.value)); setEditCompra(null); }
-                            if (e.key === "Escape") setEditCompra(null);
+                            if (e.key === "Enter")  { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }
+                            if (e.key === "Escape") setEditOffer(null);
                           }}
-                          onBlur={e => { onCompraChange(p.id, Number(e.target.value)); setEditCompra(null); }} />
+                          onBlur={e => { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }} />
                       ) : (
-                        <button onClick={() => setEditCompra(p.id)}
-                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "right" }}
-                          title="Editar precio de compra">
-                          <div style={{ fontSize: 10, color: "#5a7080" }}>comprado: <span style={{ textDecoration: "underline dotted", color: "#7a90a8" }}>{bwFmt(p.compra)}</span></div>
+                        <button onClick={() => setEditOffer(p.id)}
+                          style={{ background: p.oferta ? BW_A + "18" : "transparent", border: `1px solid ${p.oferta ? BW_A + "44" : "#1a2535"}`, borderRadius: 7, padding: "4px 12px", cursor: "pointer", color: p.oferta ? BW_A : "#5a7080", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                          {p.oferta ? bwFmt(p.oferta) : "+ Añadir oferta"}
                         </button>
                       )}
-                    </div>
-                    {/* Ganancia */}
-                    <div style={{ textAlign: "right", flexShrink: 0, minWidth: 80 }}>
-                      <BwDelta value={ganancia} />
+                      {p.oferta && !isEditing && (
+                        <BwDelta value={p.oferta - p.precio} style={{ marginLeft: 4 }} />
+                      )}
                     </div>
                   </div>
-                  {/* Oferta row */}
-                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 11, color: "#7a90a8", flexShrink: 0 }}>Oferta recibida:</span>
-                    {isEditing ? (
-                      <input type="number" min="0" defaultValue={p.oferta || ""}
-                        autoFocus
-                        style={{ ...inp, width: 140, fontSize: 12 }}
-                        onFocus={e => e.target.style.borderColor = BW_A + "66"}
-                        onKeyDown={e => {
-                          if (e.key === "Enter")  { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }
-                          if (e.key === "Escape") setEditOffer(null);
-                        }}
-                        onBlur={e => { onOfferChange(p.id, Number(e.target.value)); setEditOffer(null); }} />
-                    ) : (
-                      <button onClick={() => setEditOffer(p.id)}
-                        style={{ background: p.oferta ? BW_A + "18" : "transparent", border: `1px solid ${p.oferta ? BW_A + "44" : "#1a2535"}`, borderRadius: 7, padding: "4px 12px", cursor: "pointer", color: p.oferta ? BW_A : "#5a7080", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
-                        {p.oferta ? bwFmt(p.oferta) : "+ Añadir oferta"}
-                      </button>
-                    )}
-                    {p.oferta && !isEditing && (
-                      <BwDelta value={p.oferta - p.precio} style={{ marginLeft: 4 }} />
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        </div>
 
-        {/* Mi Once */}
-        <div style={{ padding: "0 20px 60px" }}>
-          <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12, fontWeight: 700, paddingTop: 24, borderTop: "1px solid #0d1825" }}>
-            Mi Once
+          {/* Right: Mi Once pitch */}
+          <div style={{ width: 300, flexShrink: 0, position: "sticky", top: 16 }}>
+            <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
+              Mi Once
+            </div>
+            <BwPitch players={players} savedLineup={lineup} onSaveLineup={onLineupSave} />
           </div>
-          <BwPitch players={players} savedLineup={lineup} onSaveLineup={onLineupSave} />
         </div>
         </>
       );
@@ -10941,12 +10940,22 @@
       const [slotMap,    setSlotMap]    = useState(initSlotMap);
       const [dragging,   setDragging]   = useState(null);
       const [dragTarget, setDragTarget] = useState(null);
+      const [pitchSize,  setPitchSize]  = useState(savedLineup?.pitchSize || "medium");
+
+      const PITCH_SIZES = {
+        small:    180,
+        medium:   260,
+        large:    360,
+        "x-large": 480,
+      };
+      const pitchH = PITCH_SIZES[pitchSize] || 260;
 
       // Sync from saved lineup when it loads
       useEffect(() => {
         if (savedLineup) {
           setFormation(savedLineup.formation || "4-3-3");
           setSlotMap(savedLineup.slotMap || {});
+          if (savedLineup.pitchSize) setPitchSize(savedLineup.pitchSize);
         }
       }, [savedLineup]);
 
@@ -10992,7 +11001,7 @@
         setFormation(f);
       };
 
-      const save = () => { if (onSaveLineup) onSaveLineup({ formation, slotMap }); };
+      const save = () => { if (onSaveLineup) onSaveLineup({ formation, slotMap, pitchSize }); };
 
       const usedIds = new Set(Object.values(slotMap));
       const bench   = availablePlayers.filter(p => !usedIds.has(p.id));
@@ -11025,7 +11034,7 @@
 
       return (
         <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
-          {/* Formation pills */}
+          {/* Formation pills + size selector */}
           <div style={{ padding: "10px 14px", borderBottom: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, flexShrink: 0 }}>Formación</span>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
@@ -11033,6 +11042,15 @@
                 <button key={f} onClick={() => !readOnly && handleFormationChange(f)}
                   style={{ padding: "3px 9px", borderRadius: 6, border: `1px solid ${formation === f ? BW_A : "#1a2535"}`, background: formation === f ? BW_A + "22" : "transparent", color: formation === f ? BW_A : "#7a90a8", cursor: readOnly ? "default" : "pointer", fontSize: 11, fontWeight: formation === f ? 700 : 400 }}>
                   {f}
+                </button>
+              ))}
+            </div>
+            {/* Size selector */}
+            <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+              {[["S","small"],["M","medium"],["L","large"],["XL","x-large"]].map(([label, val]) => (
+                <button key={val} onClick={() => setPitchSize(val)}
+                  style={{ padding: "3px 7px", borderRadius: 6, border: `1px solid ${pitchSize === val ? BW_B : "#1a2535"}`, background: pitchSize === val ? BW_B + "22" : "transparent", color: pitchSize === val ? BW_B : "#5a7080", cursor: "pointer", fontSize: 11, fontWeight: pitchSize === val ? 700 : 400 }}>
+                  {label}
                 </button>
               ))}
             </div>
@@ -11044,8 +11062,8 @@
             )}
           </div>
 
-          {/* Pitch — fixed aspect ratio 68:105 (standard football pitch) */}
-          <div style={{ position: "relative", width: "100%", height: 380, background: "linear-gradient(180deg, #0f3318 0%, #134020 25%, #0f3318 50%, #134020 75%, #0f3318 100%)" }}>
+          {/* Pitch */}
+          <div style={{ position: "relative", width: "100%", height: pitchH, background: "linear-gradient(180deg, #0f3318 0%, #134020 25%, #0f3318 50%, #134020 75%, #0f3318 100%)" }}>
             {/* Field markings */}
             <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.25 }} viewBox="0 0 68 105" preserveAspectRatio="none">
               <rect x="1" y="1" width="66" height="103" fill="none" stroke="white" strokeWidth="0.5"/>
