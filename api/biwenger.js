@@ -24,43 +24,48 @@ export default async function handler(req, res) {
   // ── Market endpoint ───────────────────────────────────────────────────────
   if (endpoint === "market") {
     try {
-      // Fetch league market (players listed for sale by other managers)
       const marketRes = await fetch(
-        `https://biwenger.as.com/api/v2/league/${leagueId}/market?status=selling`,
+        "https://biwenger.as.com/api/v2/market?fields=*,player(*),user(id,name)",
         { headers: authHeaders }
       );
+      if (!marketRes.ok) {
+        const text = await marketRes.text();
+        return res.status(marketRes.status).json({ error: `Market API ${marketRes.status}`, detail: text.slice(0, 300) });
+      }
       const marketJson = await marketRes.json();
 
-      // Also fetch catalogue for player names/positions
+      // Fetch catalogue for names/positions/teams
       const catRes = await fetch(
         "https://cf.biwenger.com/api/v2/competitions/la-liga/data?lang=es&score=2",
         { headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" } }
       );
-      const catJson = await catRes.json();
+      const catJson    = await catRes.json();
       const catPlayers = catJson?.data?.players || {};
       const catTeams   = catJson?.data?.teams   || {};
-      const POS_MAP = { 1: "POR", 2: "DEF", 3: "MC", 4: "DEL" };
+      const POS_MAP    = { 1: "POR", 2: "DEF", 3: "MC", 4: "DEL" };
 
-      // Parse market listings
-      const listings = marketJson?.data || marketJson?.players || [];
-      const enriched = (Array.isArray(listings) ? listings : Object.values(listings)).map(item => {
-        const pid    = item.playerID || item.id || item.player?.id;
+      // Parse — try multiple shapes Biwenger might return
+      const raw = marketJson?.data || marketJson?.players || marketJson || [];
+      const listings = Array.isArray(raw) ? raw : Object.values(raw);
+
+      const enriched = listings.map(item => {
+        const pid    = item.playerID || item.player?.id || item.id;
         const cat    = catPlayers[pid] || {};
-        const price  = item.price || item.amount || cat.price || 0;
-        const seller = item.user?.name || item.owner?.name || "";
+        const price  = item.price || item.amount || item.player?.price || cat.price || 0;
+        const seller = item.user?.name || item.seller?.name || item.owner?.name || "";
         return {
-          id:       pid,
-          nombre:   cat.name || item.name || `Jugador ${pid}`,
-          pos:      POS_MAP[cat.position] || "MC",
-          equipo:   catTeams[cat.teamID]?.name || "",
-          teamSlug: catTeams[cat.teamID]?.slug || "",
-          precio:   price,
+          id:            pid,
+          nombre:        item.player?.name || cat.name || `Jugador ${pid}`,
+          pos:           POS_MAP[item.player?.position || cat.position] || "MC",
+          equipo:        catTeams[item.player?.teamID || cat.teamID]?.name || "",
+          teamSlug:      catTeams[item.player?.teamID || cat.teamID]?.slug || "",
+          precio:        price,
           precioMercado: cat.price || 0,
-          vendedor: seller,
+          vendedor:      seller,
         };
       }).filter(p => p.id);
 
-      return res.status(200).json({ status: 200, market: enriched, raw: marketJson });
+      return res.status(200).json({ status: 200, market: enriched, debug: { raw: marketJson?.data?.length ?? typeof marketJson?.data } });
     } catch (err) {
       return res.status(500).json({ error: "Market fetch error", detail: err.message });
     }
