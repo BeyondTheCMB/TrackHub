@@ -11171,11 +11171,13 @@
       );
     }
 
-    function BwSimular({ players, saldo, valorEquipo, token, savedLineup }) {
-      const [sellIds,    setSellIds]    = useState(new Set());
-      const [buys,       setBuys]       = useState([]); // { id, nombre, precio }
-      const [newBuyName, setNewBuyName] = useState("");
-      const [newBuyPrice,setNewBuyPrice]= useState("");
+    function BwSimular({ players, saldo, valorEquipo, token, savedLineup, settings }) {
+      const [sellIds,      setSellIds]      = useState(new Set());
+      const [targets,      setTargets]      = useState([]); // buy targets — for checking only
+      const [newBuyName,   setNewBuyName]   = useState("");
+      const [newBuyPrice,  setNewBuyPrice]  = useState("");
+      const [marketData,   setMarketData]   = useState(null); // null | [] | "loading" | "error"
+      const [marketSearch, setMarketSearch] = useState("");
       const isMob = useIsMobile();
 
       const toggleSell = (id) => setSellIds(prev => {
@@ -11184,41 +11186,61 @@
         return next;
       });
 
-      const addBuy = () => {
+      const addTarget = () => {
         if (!newBuyName.trim() || !newBuyPrice) return;
-        setBuys(b => [...b, { id: "buy_" + Date.now(), nombre: newBuyName.trim(), precio: Number(newBuyPrice) }]);
+        setTargets(t => [...t, { id: "tgt_" + Date.now(), nombre: newBuyName.trim(), precio: Number(newBuyPrice) }]);
         setNewBuyName(""); setNewBuyPrice("");
       };
-      const removeBuy = (id) => setBuys(b => b.filter(x => x.id !== id));
+      const removeTarget = (id) => setTargets(t => t.filter(x => x.id !== id));
+      const addFromMarket = (p) => {
+        if (targets.find(t => t.marketId === p.id)) return;
+        setTargets(t => [...t, { id: "tgt_" + Date.now(), marketId: p.id, nombre: p.nombre, precio: p.precio, pos: p.pos }]);
+      };
 
-      // Simulation
+      // Simulation — sell side only, targets don't affect numbers
       const simSaldo = useMemo(() => {
         let s = saldo;
         players.forEach(p => { if (sellIds.has(p.id)) s += (p.oferta || p.precio); });
-        buys.forEach(b => { s -= b.precio; });
         return s;
-      }, [saldo, players, sellIds, buys]);
+      }, [saldo, players, sellIds]);
 
       const simValor = useMemo(() => {
         let v = valorEquipo;
         players.forEach(p => { if (sellIds.has(p.id)) v -= p.precio; });
-        buys.forEach(b => { v += b.precio; });
         return v;
-      }, [valorEquipo, players, sellIds, buys]);
+      }, [valorEquipo, players, sellIds]);
 
       const simPuja  = bwPuja(simSaldo, simValor);
       const origPuja = bwPuja(saldo, valorEquipo);
-
+      const hasChanges = sellIds.size > 0;
       const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box" };
 
-      const hasChanges = sellIds.size > 0 || buys.length > 0;
+      // Load market
+      const loadMarket = async () => {
+        setMarketData("loading");
+        try {
+          const { userId, leagueId, token: tok, version } = settings || {};
+          const res = await fetch(`/api/biwenger?endpoint=market&userId=${encodeURIComponent((userId||"").trim())}&leagueId=${encodeURIComponent((leagueId||"").trim())}&token=${encodeURIComponent((tok||"").trim())}&version=${encodeURIComponent((version||"").trim())}`);
+          const d   = await res.json();
+          if (d.market) setMarketData(d.market);
+          else setMarketData("error:" + (d.error || "Unknown"));
+        } catch (e) {
+          setMarketData("error:" + e.message);
+        }
+      };
+
+      const filteredMarket = useMemo(() => {
+        if (!Array.isArray(marketData)) return [];
+        const q = marketSearch.toLowerCase();
+        return marketData.filter(p => !q || p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q));
+      }, [marketData, marketSearch]);
 
       return (
         <div style={{ padding: "16px 20px 60px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Simulation result */}
+          {/* Simulation result — sell side only */}
           <div style={{ background: "#080f18", border: `1px solid ${hasChanges ? BW_A + "44" : "#1a2535"}`, borderRadius: 12, padding: "16px 18px" }}>
-            <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Resultado simulación</div>
+            <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Resultado simulación (ventas)</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
               {[
                 { label: "Valor equipo", orig: valorEquipo, sim: simValor, color: BW_B },
@@ -11229,9 +11251,7 @@
                 return (
                   <div key={s.label} style={{ background: "#0d1825", borderRadius: 10, padding: "12px 14px" }}>
                     <div style={{ fontSize: 10, color: "#7a90a8", marginBottom: 6 }}>{s.label}</div>
-                    <div style={{ fontSize: s.bold ? 18 : 15, fontWeight: 800, color: s.color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.01em" }}>
-                      {bwFmt(s.sim)}
-                    </div>
+                    <div style={{ fontSize: s.bold ? 18 : 15, fontWeight: 800, color: s.color, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.01em" }}>{bwFmt(s.sim)}</div>
                     {hasChanges && diff !== 0 && (
                       <div style={{ fontSize: 11, color: diff > 0 ? "#34d399" : "#f87171", marginTop: 4 }}>
                         {diff > 0 ? "▲" : "▼"} {bwFmt(Math.abs(diff))}
@@ -11242,7 +11262,7 @@
               })}
             </div>
             {hasChanges && (
-              <button onClick={() => { setSellIds(new Set()); setBuys([]); }}
+              <button onClick={() => setSellIds(new Set())}
                 style={{ marginTop: 12, background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 12, padding: 0 }}
                 onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>
                 ↺ Reiniciar simulación
@@ -11277,79 +11297,144 @@
                         )}
                       </div>
                       <span style={{ fontSize: 12, color: selected ? BW_A : "#7a90a8", fontVariantNumeric: "tabular-nums" }}>{bwFmt(saleVal)}</span>
-                      {p.oferta && (
-                        <BwDelta value={p.oferta - p.precio} style={{ fontSize: 11 }} />
-                      )}
+                      {p.oferta && <BwDelta value={p.oferta - p.precio} style={{ fontSize: 11 }} />}
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            {/* Right side: Buy + Pitch */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Right: targets + market + pitch */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
-              {/* Buy side */}
+              {/* Buy targets — check only, don't affect simulation */}
               <div>
                 <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
-                  Objetivo de compra ({buys.length})
+                  Objetivos de compra ({targets.length})
                 </div>
                 <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#5a7080", marginBottom: 8 }}>Los objetivos no modifican la simulación — solo comprueban si puedes permitírtelos.</div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <input value={newBuyName} onChange={e => setNewBuyName(e.target.value)} placeholder="Nombre del jugador"
                       style={{ ...inp, flex: 1 }} onFocus={e => e.target.style.borderColor = BW_B + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
-                      onKeyDown={e => e.key === "Enter" && addBuy()} />
+                      onKeyDown={e => e.key === "Enter" && addTarget()} />
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input type="number" min="0" value={newBuyPrice} onChange={e => setNewBuyPrice(e.target.value)} placeholder="Precio objetivo (€)"
                       style={{ ...inp, flex: 1 }} onFocus={e => e.target.style.borderColor = BW_B + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
-                      onKeyDown={e => e.key === "Enter" && addBuy()} />
-                    <button onClick={addBuy} disabled={!newBuyName.trim() || !newBuyPrice}
+                      onKeyDown={e => e.key === "Enter" && addTarget()} />
+                    <button onClick={addTarget} disabled={!newBuyName.trim() || !newBuyPrice}
                       style={{ background: newBuyName.trim() && newBuyPrice ? BW_B : "#1a2535", color: newBuyName.trim() && newBuyPrice ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 7, padding: "7px 14px", cursor: newBuyName.trim() && newBuyPrice ? "pointer" : "default", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
                       + Añadir
                     </button>
                   </div>
                 </div>
-                {buys.length > 0 ? (
+                {targets.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {buys.map(b => {
-                      const canAffordPuja  = simPuja  >= b.precio;
-                      const canAffordSaldo = simSaldo >= b.precio;
-                      const feasible = canAffordPuja;
+                    {targets.map(b => {
+                      const canPuja  = simPuja  >= b.precio;
+                      const canSaldo = simSaldo >= b.precio;
                       return (
-                        <div key={b.id} style={{ background: feasible ? BW_B + "0f" : "#f8717110", border: `1px solid ${feasible ? BW_B + "44" : "#f8717144"}`, borderRadius: 9, padding: "10px 12px" }}>
+                        <div key={b.id} style={{ background: canPuja ? BW_B + "0f" : "#f8717110", border: `1px solid ${canPuja ? BW_B + "44" : "#f8717144"}`, borderRadius: 9, padding: "10px 12px" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                            {b.pos && <BwPosBadge pos={b.pos} />}
                             <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{b.nombre}</span>
                             <span style={{ fontSize: 13, color: BW_B, fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{bwFmt(b.precio)}</span>
-                            <button onClick={() => removeBuy(b.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 14 }}
-                              onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>✕</button>
+                            <button onClick={() => removeTarget(b.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 14 }}
+                              onMouseEnter={e => e.currentTarget.style.color="#f87171"} onMouseLeave={e => e.currentTarget.style.color="#5a7080"}>✕</button>
                           </div>
-                          {/* Feasibility checks */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-                              <span style={{ color: canAffordPuja ? "#34d399" : "#f87171" }}>{canAffordPuja ? "✓" : "✗"}</span>
+                              <span style={{ color: canPuja ? "#34d399" : "#f87171" }}>{canPuja ? "✓" : "✗"}</span>
                               <span style={{ color: "#9aaabb" }}>Puja máxima:</span>
-                              <span style={{ color: canAffordPuja ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simPuja)}</span>
-                              {!canAffordPuja && <span style={{ color: "#f87171" }}>— faltan {bwFmt(b.precio - simPuja)}</span>}
+                              <span style={{ color: canPuja ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simPuja)}</span>
+                              {!canPuja && <span style={{ color: "#f87171" }}>— faltan {bwFmt(b.precio - simPuja)}</span>}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-                              <span style={{ color: canAffordSaldo ? "#34d399" : "#f59e0b" }}>{canAffordSaldo ? "✓" : "⚠"}</span>
-                              <span style={{ color: "#9aaabb" }}>Saldo disponible:</span>
-                              <span style={{ color: canAffordSaldo ? "#34d399" : "#f59e0b", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simSaldo)}</span>
-                              {!canAffordSaldo && canAffordPuja && <span style={{ color: "#f59e0b" }}>— necesitas vender más</span>}
+                              <span style={{ color: canSaldo ? "#34d399" : "#f59e0b" }}>{canSaldo ? "✓" : "⚠"}</span>
+                              <span style={{ color: "#9aaabb" }}>Saldo:</span>
+                              <span style={{ color: canSaldo ? "#34d399" : "#f59e0b", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simSaldo)}</span>
+                              {!canSaldo && canPuja && <span style={{ color: "#f59e0b" }}>— necesitas vender más para tener saldo</span>}
                             </div>
                           </div>
                         </div>
                       );
                     })}
                   </div>
-                ) : (
-                  <div style={{ fontSize: 13, color: "#3a5060", padding: "4px 0 8px" }}>Añade un objetivo de compra para ver si puedes permitírtelo.</div>
                 )}
               </div>
 
-              {/* Tactical pitch — starts from saved lineup, local changes only */}
-              <BwPitch players={players} sellIds={sellIds} buys={buys} savedLineup={savedLineup} />
+              {/* Market explorer */}
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
+                    Mercado de la liga
+                  </div>
+                  {marketData === null && (
+                    <button onClick={loadMarket}
+                      style={{ background: BW_A + "22", border: `1px solid ${BW_A}44`, color: BW_A, borderRadius: 7, padding: "4px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                      Cargar mercado
+                    </button>
+                  )}
+                  {Array.isArray(marketData) && (
+                    <button onClick={loadMarket}
+                      style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 12 }}>↻ Actualizar</button>
+                  )}
+                </div>
+
+                {marketData === null && (
+                  <div style={{ fontSize: 13, color: "#3a5060", padding: "8px 0" }}>Carga el mercado para ver los jugadores disponibles en tu liga.</div>
+                )}
+                {marketData === "loading" && (
+                  <div style={{ fontSize: 13, color: "#7a90a8", padding: "8px 0" }}>Cargando mercado…</div>
+                )}
+                {typeof marketData === "string" && marketData.startsWith("error:") && (
+                  <div style={{ fontSize: 12, color: "#f87171", background: "#f8717110", borderRadius: 8, padding: "8px 12px" }}>
+                    Error: {marketData.slice(6)}
+                  </div>
+                )}
+                {Array.isArray(marketData) && (
+                  <div>
+                    <input value={marketSearch} onChange={e => setMarketSearch(e.target.value)} placeholder="Filtrar mercado…"
+                      style={{ ...inp, width: "100%", marginBottom: 8 }}
+                      onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
+                    {filteredMarket.length === 0
+                      ? <div style={{ fontSize: 13, color: "#5a7080" }}>Sin resultados.</div>
+                      : <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+                          {filteredMarket.map(p => {
+                            const canPuja = simPuja >= p.precio;
+                            const alreadyTarget = targets.some(t => t.marketId === p.id);
+                            return (
+                              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#0d1825", border: `1px solid ${canPuja ? "#1a2535" : "#1a2535"}`, borderRadius: 8, padding: "8px 12px" }}>
+                                <div style={{ width: 28, height: 28, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+                                  <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+                                </div>
+                                <BwPosBadge pos={p.pos} />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{p.nombre}</div>
+                                  <div style={{ fontSize: 11, color: "#5a7080" }}>{p.equipo}{p.vendedor ? ` · ${p.vendedor}` : ""}</div>
+                                </div>
+                                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                                  <div style={{ fontSize: 13, color: canPuja ? BW_A : "#f87171", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{bwFmt(p.precio)}</div>
+                                  {p.precioMercado > 0 && p.precio !== p.precioMercado && (
+                                    <div style={{ fontSize: 10, color: "#5a7080" }}>mercado: {bwFmt(p.precioMercado)}</div>
+                                  )}
+                                </div>
+                                <button onClick={() => addFromMarket(p)} disabled={alreadyTarget}
+                                  style={{ background: alreadyTarget ? "transparent" : BW_B + "22", border: `1px solid ${alreadyTarget ? "#1a2535" : BW_B + "44"}`, color: alreadyTarget ? "#3a5060" : BW_B, borderRadius: 7, padding: "4px 10px", cursor: alreadyTarget ? "default" : "pointer", fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+                                  {alreadyTarget ? "✓" : "+ Objetivo"}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                    }
+                  </div>
+                )}
+              </div>
+
+              {/* Tactical pitch */}
+              <BwPitch players={players} sellIds={sellIds} buys={[]} savedLineup={savedLineup} />
             </div>
           </div>
         </div>
@@ -11660,7 +11745,7 @@
             ) : (
               <>
                 {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} lineup={lineup} onLineupSave={handleLineupSave} />}
-                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} />}
+                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} settings={settings} />}
                 {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} />}
               </>
             )}
