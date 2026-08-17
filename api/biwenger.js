@@ -44,37 +44,33 @@ export default async function handler(req, res) {
       const catTeams   = catJson?.data?.teams   || {};
       const POS_MAP    = { 1: "POR", 2: "DEF", 3: "MC", 4: "DEL" };
 
-      // Parse — data can be array or object keyed by id
-      const dataRaw = marketJson?.data;
-      let listings = [];
-      if (Array.isArray(dataRaw)) {
-        listings = dataRaw;
-      } else if (dataRaw && typeof dataRaw === "object") {
-        listings = Object.values(dataRaw);
-      }
+      // Data is in data.sales — array of listings
+      // user: null = Biwenger auto-market, user.id = your userId = your own listing
+      const listings = marketJson?.data?.sales || [];
 
       const enriched = listings.map(item => {
-        const pid    = item.playerID || item.player?.id || item.id;
+        const pid    = item.player?.id;
         const cat    = catPlayers[pid] || {};
-        const price  = item.price || item.amount || item.player?.price || cat.price || 0;
-        const seller = item.user?.name || item.seller?.name || item.owner?.name || "";
+        const price  = item.price || 0;
+        const isOwn  = item.user?.id === Number(userId);
+        const isBiwenger = item.user === null;
+        const seller = isBiwenger ? "Biwenger" : isOwn ? "Tú" : (item.user?.name || "");
         return {
           id:            pid,
-          nombre:        item.player?.name || cat.name || `Jugador ${pid}`,
-          pos:           POS_MAP[item.player?.position || cat.position] || "MC",
-          equipo:        catTeams[item.player?.teamID || cat.teamID]?.name || "",
-          teamSlug:      catTeams[item.player?.teamID || cat.teamID]?.slug || "",
+          nombre:        cat.name || `Jugador ${pid}`,
+          pos:           POS_MAP[cat.position] || "MC",
+          equipo:        catTeams[cat.teamID]?.name || "",
+          teamSlug:      catTeams[cat.teamID]?.slug || "",
           precio:        price,
           precioMercado: cat.price || 0,
           vendedor:      seller,
+          isOwn,
+          isBiwenger,
+          until:         item.until || null,
         };
       }).filter(p => p.id);
 
-      return res.status(200).json({
-        status: 200,
-        market: enriched,
-        debug: { listingsCount: listings.length, fullRaw: marketJson }
-      });
+      return res.status(200).json({ status: 200, market: enriched });
     } catch (err) {
       return res.status(500).json({ error: "Market fetch error", detail: err.message });
     }
