@@ -11176,8 +11176,9 @@
       const [targets,      setTargets]      = useState([]); // buy targets — for checking only
       const [newBuyName,   setNewBuyName]   = useState("");
       const [newBuyPrice,  setNewBuyPrice]  = useState("");
-      const [marketData,   setMarketData]   = useState(null); // null | [] | "loading" | "error"
+      const [marketData,   setMarketData]   = useState(null);
       const [marketSearch, setMarketSearch] = useState("");
+      const [marketFilter, setMarketFilter] = useState("all"); // all | biwenger | others | own
       const isMob = useIsMobile();
 
       const toggleSell = (id) => setSellIds(prev => {
@@ -11231,9 +11232,13 @@
 
       const filteredMarket = useMemo(() => {
         if (!Array.isArray(marketData)) return [];
+        let list = marketData;
+        if (marketFilter === "biwenger") list = list.filter(p => p.isBiwenger);
+        if (marketFilter === "others")   list = list.filter(p => !p.isBiwenger && !p.isOwn);
+        if (marketFilter === "own")      list = list.filter(p => p.isOwn);
         const q = marketSearch.toLowerCase();
-        return marketData.filter(p => !q || p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q));
-      }, [marketData, marketSearch]);
+        return q ? list.filter(p => p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q)) : list;
+      }, [marketData, marketSearch, marketFilter]);
 
       return (
         <div style={{ padding: "16px 20px 60px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -11368,7 +11373,7 @@
               <div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                   <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
-                    Mercado de la liga
+                    Mercado de la liga {Array.isArray(marketData) && <span style={{ color: "#5a7080", fontWeight: 400 }}>({marketData.length})</span>}
                   </div>
                   {marketData === null && (
                     <button onClick={loadMarket}
@@ -11395,35 +11400,61 @@
                 )}
                 {Array.isArray(marketData) && (
                   <div>
-                    <input value={marketSearch} onChange={e => setMarketSearch(e.target.value)} placeholder="Filtrar mercado…"
+                    {/* Filter pills */}
+                    <div style={{ display: "flex", gap: 5, marginBottom: 8, flexWrap: "wrap" }}>
+                      {[
+                        { id: "all",      label: "Todos" },
+                        { id: "biwenger", label: "Biwenger" },
+                        { id: "others",   label: "Rivales" },
+                        { id: "own",      label: "Tuyos" },
+                      ].map(f => (
+                        <button key={f.id} onClick={() => setMarketFilter(f.id)}
+                          style={{ padding: "3px 10px", borderRadius: 20, border: `1px solid ${marketFilter === f.id ? BW_A : "#1a2535"}`, background: marketFilter === f.id ? BW_A + "18" : "transparent", color: marketFilter === f.id ? BW_A : "#7a90a8", cursor: "pointer", fontSize: 11, fontWeight: marketFilter === f.id ? 700 : 400 }}>
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input value={marketSearch} onChange={e => setMarketSearch(e.target.value)} placeholder="Buscar jugador, equipo, posición…"
                       style={{ ...inp, width: "100%", marginBottom: 8 }}
                       onFocus={e => e.target.style.borderColor = BW_A + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"} />
                     {filteredMarket.length === 0
                       ? <div style={{ fontSize: 13, color: "#5a7080" }}>Sin resultados.</div>
-                      : <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 280, overflowY: "auto" }}>
+                      : <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 340, overflowY: "auto" }}>
                           {filteredMarket.map(p => {
-                            const canPuja = simPuja >= p.precio;
+                            const canPuja       = simPuja >= p.precio;
                             const alreadyTarget = targets.some(t => t.marketId === p.id);
+                            const priceDiff     = p.precio - p.precioMercado;
                             return (
-                              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#0d1825", border: `1px solid ${canPuja ? "#1a2535" : "#1a2535"}`, borderRadius: 8, padding: "8px 12px" }}>
+                              <div key={p.player?.id || p.id || Math.random()} style={{ display: "flex", alignItems: "center", gap: 8, background: p.isOwn ? BW_A + "08" : "#0d1825", border: `1px solid ${p.isOwn ? BW_A + "33" : canPuja ? "#1a2535" : "#1a2535"}`, borderRadius: 8, padding: "8px 12px" }}>
                                 <div style={{ width: 28, height: 28, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
                                   <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
                                 </div>
                                 <BwPosBadge pos={p.pos} />
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{p.nombre}</div>
-                                  <div style={{ fontSize: 11, color: "#5a7080" }}>{p.equipo}{p.vendedor ? ` · ${p.vendedor}` : ""}</div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                    <span style={{ fontSize: 11, color: "#5a7080" }}>{p.equipo}</span>
+                                    {p.vendedor && (
+                                      <span style={{ fontSize: 10, background: p.isBiwenger ? "#1a3550" : p.isOwn ? BW_A + "22" : "#3a2050", color: p.isBiwenger ? BW_B : p.isOwn ? BW_A : "#c084fc", borderRadius: 10, padding: "1px 6px" }}>
+                                        {p.vendedor}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                                 <div style={{ textAlign: "right", flexShrink: 0 }}>
-                                  <div style={{ fontSize: 13, color: canPuja ? BW_A : "#f87171", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{bwFmt(p.precio)}</div>
-                                  {p.precioMercado > 0 && p.precio !== p.precioMercado && (
-                                    <div style={{ fontSize: 10, color: "#5a7080" }}>mercado: {bwFmt(p.precioMercado)}</div>
+                                  <div style={{ fontSize: 13, color: canPuja ? "#e2e8f0" : "#f87171", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{bwFmt(p.precio)}</div>
+                                  {p.precioMercado > 0 && priceDiff !== 0 && (
+                                    <div style={{ fontSize: 10, color: priceDiff > 0 ? "#f87171" : "#34d399" }}>
+                                      {priceDiff > 0 ? "▲" : "▼"} {bwFmt(Math.abs(priceDiff))} vs mercado
+                                    </div>
                                   )}
                                 </div>
-                                <button onClick={() => addFromMarket(p)} disabled={alreadyTarget}
-                                  style={{ background: alreadyTarget ? "transparent" : BW_B + "22", border: `1px solid ${alreadyTarget ? "#1a2535" : BW_B + "44"}`, color: alreadyTarget ? "#3a5060" : BW_B, borderRadius: 7, padding: "4px 10px", cursor: alreadyTarget ? "default" : "pointer", fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
-                                  {alreadyTarget ? "✓" : "+ Objetivo"}
-                                </button>
+                                {!p.isOwn && (
+                                  <button onClick={() => addFromMarket(p)} disabled={alreadyTarget}
+                                    style={{ background: alreadyTarget ? "transparent" : BW_B + "22", border: `1px solid ${alreadyTarget ? "#1a2535" : BW_B + "44"}`, color: alreadyTarget ? "#3a5060" : BW_B, borderRadius: 7, padding: "4px 10px", cursor: alreadyTarget ? "default" : "pointer", fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+                                    {alreadyTarget ? "✓" : "+ Obj."}
+                                  </button>
+                                )}
                               </div>
                             );
                           })}
