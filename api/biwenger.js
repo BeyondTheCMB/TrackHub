@@ -73,7 +73,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         status: 200,
         market: enriched,
-        debug: { listingsCount: listings.length, rawSample: listings[0] || null }
+        debug: { listingsCount: listings.length, fullRaw: marketJson }
       });
     } catch (err) {
       return res.status(500).json({ error: "Market fetch error", detail: err.message });
