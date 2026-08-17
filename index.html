@@ -11045,7 +11045,7 @@
           </div>
 
           {/* Pitch — fixed aspect ratio 68:105 (standard football pitch) */}
-          <div style={{ position: "relative", width: "100%", paddingBottom: "154%", background: "linear-gradient(180deg, #0f3318 0%, #134020 25%, #0f3318 50%, #134020 75%, #0f3318 100%)" }}>
+          <div style={{ position: "relative", width: "100%", paddingBottom: "110%", background: "linear-gradient(180deg, #0f3318 0%, #134020 25%, #0f3318 50%, #134020 75%, #0f3318 100%)" }}>
             {/* Field markings */}
             <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.25 }} viewBox="0 0 68 105" preserveAspectRatio="none">
               <rect x="1" y="1" width="66" height="103" fill="none" stroke="white" strokeWidth="0.5"/>
@@ -11227,7 +11227,7 @@
               {/* Buy side */}
               <div>
                 <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
-                  Comprar ({buys.length} fichajes)
+                  Objetivo de compra ({buys.length})
                 </div>
                 <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
@@ -11236,7 +11236,7 @@
                       onKeyDown={e => e.key === "Enter" && addBuy()} />
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <input type="number" min="0" value={newBuyPrice} onChange={e => setNewBuyPrice(e.target.value)} placeholder="Precio (€)"
+                    <input type="number" min="0" value={newBuyPrice} onChange={e => setNewBuyPrice(e.target.value)} placeholder="Precio objetivo (€)"
                       style={{ ...inp, flex: 1 }} onFocus={e => e.target.style.borderColor = BW_B + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
                       onKeyDown={e => e.key === "Enter" && addBuy()} />
                     <button onClick={addBuy} disabled={!newBuyName.trim() || !newBuyPrice}
@@ -11246,18 +11246,40 @@
                   </div>
                 </div>
                 {buys.length > 0 ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    {buys.map(b => (
-                      <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 10, background: BW_B + "12", border: `1px solid ${BW_B}33`, borderRadius: 9, padding: "9px 12px" }}>
-                        <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8" }}>{b.nombre}</span>
-                        <span style={{ fontSize: 12, color: BW_B, fontVariantNumeric: "tabular-nums" }}>-{bwFmt(b.precio)}</span>
-                        <button onClick={() => removeBuy(b.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 14 }}
-                          onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>✕</button>
-                      </div>
-                    ))}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {buys.map(b => {
+                      const canAffordPuja  = simPuja  >= b.precio;
+                      const canAffordSaldo = simSaldo >= b.precio;
+                      const feasible = canAffordPuja;
+                      return (
+                        <div key={b.id} style={{ background: feasible ? BW_B + "0f" : "#f8717110", border: `1px solid ${feasible ? BW_B + "44" : "#f8717144"}`, borderRadius: 9, padding: "10px 12px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                            <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{b.nombre}</span>
+                            <span style={{ fontSize: 13, color: BW_B, fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{bwFmt(b.precio)}</span>
+                            <button onClick={() => removeBuy(b.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 14 }}
+                              onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>✕</button>
+                          </div>
+                          {/* Feasibility checks */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                              <span style={{ color: canAffordPuja ? "#34d399" : "#f87171" }}>{canAffordPuja ? "✓" : "✗"}</span>
+                              <span style={{ color: "#9aaabb" }}>Puja máxima:</span>
+                              <span style={{ color: canAffordPuja ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simPuja)}</span>
+                              {!canAffordPuja && <span style={{ color: "#f87171" }}>— faltan {bwFmt(b.precio - simPuja)}</span>}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                              <span style={{ color: canAffordSaldo ? "#34d399" : "#f59e0b" }}>{canAffordSaldo ? "✓" : "⚠"}</span>
+                              <span style={{ color: "#9aaabb" }}>Saldo disponible:</span>
+                              <span style={{ color: canAffordSaldo ? "#34d399" : "#f59e0b", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simSaldo)}</span>
+                              {!canAffordSaldo && canAffordPuja && <span style={{ color: "#f59e0b" }}>— necesitas vender más</span>}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
-                  <div style={{ fontSize: 13, color: "#3a5060", padding: "4px 0 8px" }}>Añade fichajes hipotéticos para simular su coste.</div>
+                  <div style={{ fontSize: 13, color: "#3a5060", padding: "4px 0 8px" }}>Añade un objetivo de compra para ver si puedes permitírtelo.</div>
                 )}
               </div>
 
