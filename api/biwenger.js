@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const { userId, leagueId, token, version } = req.query;
+  const { endpoint = "user", userId, leagueId, token, version } = req.query;
   if (!userId || !leagueId || !token || !version) {
     return res.status(400).json({ error: "Missing userId, leagueId, token or version" });
   }
@@ -21,7 +21,52 @@ export default async function handler(req, res) {
     "Accept":        "application/json",
   };
 
-  // ── Call 1: user team ─────────────────────────────────────────────────────
+  // ── Market endpoint ───────────────────────────────────────────────────────
+  if (endpoint === "market") {
+    try {
+      // Fetch league market (players listed for sale by other managers)
+      const marketRes = await fetch(
+        `https://biwenger.as.com/api/v2/league/${leagueId}/market?status=selling`,
+        { headers: authHeaders }
+      );
+      const marketJson = await marketRes.json();
+
+      // Also fetch catalogue for player names/positions
+      const catRes = await fetch(
+        "https://cf.biwenger.com/api/v2/competitions/la-liga/data?lang=es&score=2",
+        { headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" } }
+      );
+      const catJson = await catRes.json();
+      const catPlayers = catJson?.data?.players || {};
+      const catTeams   = catJson?.data?.teams   || {};
+      const POS_MAP = { 1: "POR", 2: "DEF", 3: "MC", 4: "DEL" };
+
+      // Parse market listings
+      const listings = marketJson?.data || marketJson?.players || [];
+      const enriched = (Array.isArray(listings) ? listings : Object.values(listings)).map(item => {
+        const pid    = item.playerID || item.id || item.player?.id;
+        const cat    = catPlayers[pid] || {};
+        const price  = item.price || item.amount || cat.price || 0;
+        const seller = item.user?.name || item.owner?.name || "";
+        return {
+          id:       pid,
+          nombre:   cat.name || item.name || `Jugador ${pid}`,
+          pos:      POS_MAP[cat.position] || "MC",
+          equipo:   catTeams[cat.teamID]?.name || "",
+          teamSlug: catTeams[cat.teamID]?.slug || "",
+          precio:   price,
+          precioMercado: cat.price || 0,
+          vendedor: seller,
+        };
+      }).filter(p => p.id);
+
+      return res.status(200).json({ status: 200, market: enriched, raw: marketJson });
+    } catch (err) {
+      return res.status(500).json({ error: "Market fetch error", detail: err.message });
+    }
+  }
+
+  // ── User team endpoint (default) ──────────────────────────────────────────
   let teamData;
   try {
     const teamRes = await fetch(
@@ -42,7 +87,7 @@ export default async function handler(req, res) {
   const myOffers  = teamData.offers  || [];
   const balance   = teamData.balance  ?? 0;
 
-  // ── Call 2: La Liga catalogue ─────────────────────────────────────────────
+  // ── La Liga catalogue ─────────────────────────────────────────────────────
   let catalogue = {};
   try {
     const catRes = await fetch(
@@ -83,17 +128,17 @@ export default async function handler(req, res) {
     const cat    = catalogue[p.id] || {};
     const compra = p.owner?.price || 0;
     return {
-      id:          p.id,
-      nombre:      cat.name     || `Jugador ${p.id}`,
-      slug:        cat.slug     || "",
-      pos:         cat.pos      || "MC",
-      equipo:      cat.teamName || "",
-      teamSlug:    cat.teamSlug || "",
-      precio:         cat.precio          || 0,
-      priceIncrement: cat.priceIncrement  || 0,
+      id:             p.id,
+      nombre:         cat.name     || `Jugador ${p.id}`,
+      slug:           cat.slug     || "",
+      pos:            cat.pos      || "MC",
+      equipo:         cat.teamName || "",
+      teamSlug:       cat.teamSlug || "",
+      precio:         cat.precio   || 0,
+      priceIncrement: cat.priceIncrement || 0,
       compra,
-      oferta:      offerMap[p.id] || null,
-      fechaCompra: p.owner?.date  || null,
+      oferta:         offerMap[p.id] || null,
+      fechaCompra:    p.owner?.date  || null,
     };
   });
 
