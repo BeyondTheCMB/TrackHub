@@ -10902,7 +10902,7 @@
           </div>
 
           {/* Right: Mi Once pitch */}
-          <div style={{ width: 600, flexShrink: 0, position: "sticky", top: 16 }}>
+          <div style={{ width: 900, flexShrink: 0, position: "sticky", top: 16 }}>
             <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
               Mi Once
             </div>
@@ -10941,6 +10941,15 @@
       const [dragging,   setDragging]   = useState(null);
       const [dragTarget, setDragTarget] = useState(null);
       const [pitchSize,  setPitchSize]  = useState(savedLineup?.pitchSize || "medium");
+      const [pickerSlot, setPickerSlot] = useState(null); // slotKey of open picker
+
+      // Map line index → accepted positions
+      const linePosMap = (li, totalLines) => {
+        if (li === 0) return ["POR"];
+        if (li === totalLines - 1) return ["DEL"];
+        if (li === 1) return ["DEF"];
+        return ["MC", "DEF", "DEL"]; // intermediate lines = midfield (flexible)
+      };
 
       const PITCH_SIZES = {
         small:    180,
@@ -11003,31 +11012,68 @@
 
       const save = () => { if (onSaveLineup) onSaveLineup({ formation, slotMap, pitchSize }); };
 
-      const usedIds = new Set(Object.values(slotMap));
-      const bench   = availablePlayers.filter(p => !usedIds.has(p.id));
+      const usedIds   = new Set(Object.values(slotMap));
+      const bench     = availablePlayers.filter(p => !usedIds.has(p.id));
+      const totalLines = lines.length;
 
-      const SlotCircle = ({ slotKey }) => {
+      const SlotCircle = ({ slotKey, lineIdx }) => {
         const pid      = slotMap[slotKey];
         const player   = pid ? availablePlayers.find(p => p.id === pid) : null;
         const over     = dragTarget === slotKey;
         const posColor = player ? (BW_POS_COLOR[player.pos] || "#9aaabb") : "#2a4060";
+        const isPickerOpen = pickerSlot === slotKey;
+
+        const handlePlusClick = () => {
+          if (readOnly) return;
+          setPickerSlot(isPickerOpen ? null : slotKey);
+        };
+
+        // Accepted positions for this line
+        const accepted = linePosMap(lineIdx, totalLines);
+        const eligible = bench.filter(p => accepted.includes(p.pos) || p.pos === "?" );
+
         return (
-          <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
-            onDragLeave={() => setDragTarget(null)}
-            onDrop={() => handleDrop(slotKey)}
-            onClick={() => { if (player && !readOnly) assignSlot(slotKey, null); }}
-            style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: player && !readOnly ? "pointer" : "default", minWidth: 54 }}>
-            <div style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 54, position: "relative" }}>
+            <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
+              onDragLeave={() => setDragTarget(null)}
+              onDrop={() => handleDrop(slotKey)}
+              onClick={() => player && !readOnly ? assignSlot(slotKey, null) : !player && handlePlusClick()}
+              style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s", cursor: readOnly ? "default" : "pointer" }}>
               {player
                 ? (player.isBuy
                     ? <span style={{ fontSize: 10, color: BW_B, fontWeight: 700 }}>{player.nombre.slice(0,3).toUpperCase()}</span>
                     : <img src={bwPlayerPhoto(player.id)} alt={player.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />)
-                : <span style={{ fontSize: 18, color: over ? BW_A : "#ffffff22" }}>+</span>
+                : <span style={{ fontSize: 18, color: over ? BW_A : isPickerOpen ? BW_A : "#ffffff44" }}>+</span>
               }
             </div>
             <span style={{ fontSize: 10, color: player ? "#e2e8f0" : "#ffffff33", fontWeight: 600, maxWidth: 54, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", textShadow: "0 1px 3px #000" }}>
               {player ? player.nombre.split(" ").slice(-1)[0] : ""}
             </span>
+
+            {/* Position-filtered picker dropdown */}
+            {isPickerOpen && !readOnly && (
+              <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, minWidth: 180, maxHeight: 220, overflowY: "auto", boxShadow: "0 16px 40px rgba(0,0,0,0.8)", marginTop: 4 }}
+                onClick={e => e.stopPropagation()}>
+                <div style={{ padding: "6px 10px 4px", fontSize: 10, color: "#5a7080", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid #0d1825" }}>
+                  {accepted.join(" / ")}
+                </div>
+                {eligible.length === 0
+                  ? <div style={{ padding: "10px 12px", fontSize: 12, color: "#5a7080" }}>Sin jugadores disponibles</div>
+                  : eligible.map(p => (
+                      <button key={p.id} onClick={() => { assignSlot(slotKey, p.id); setPickerSlot(null); }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#1a2535"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <div style={{ width: 24, height: 24, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+                          <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+                        </div>
+                        <BwPosBadge pos={p.pos} />
+                        <span style={{ fontSize: 12, color: "#c8d8e8" }}>{p.nombre}</span>
+                      </button>
+                    ))
+                }
+              </div>
+            )}
           </div>
         );
       };
@@ -11079,14 +11125,15 @@
             </svg>
 
             {/* Player lines — absolute positioned */}
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "space-around", padding: "6% 4%" }}>
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "space-around", padding: "6% 4%" }}
+              onClick={() => setPickerSlot(null)}>
               {[...lines].reverse().map((line, ri) => {
                 const li = lines.length - 1 - ri;
                 if (line[0] === 0) return null;
                 return (
                   <div key={li} style={{ display: "flex", justifyContent: "space-evenly", alignItems: "center" }}>
                     {Array.from({ length: line[0] }).map((_, si) => (
-                      <SlotCircle key={si} slotKey={`${li}-${si}`} />
+                      <SlotCircle key={si} slotKey={`${li}-${si}`} lineIdx={li} />
                     ))}
                   </div>
                 );
