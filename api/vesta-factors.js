@@ -31,13 +31,40 @@ export default async function handler(req, res) {
       return await handleECB(req, res);
     } else if (source === "yahoo") {
       return await handleYahoo(req, res);
+    } else if (source === "yahoo-search") {
+      return await handleYahooSearch(req, res);
     } else {
-      return res.status(400).json({ error: "Missing or invalid 'source'. Use 'ecb' or 'yahoo'." });
+      return res.status(400).json({ error: "Missing or invalid 'source'. Use 'ecb', 'yahoo', or 'yahoo-search'." });
     }
   } catch (e) {
     console.error("[vesta-factors] error:", e);
     return res.status(502).json({ error: e.message || "Upstream fetch failed" });
   }
+}
+
+const YAHOO_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36";
+
+async function handleYahooSearch(req, res) {
+  const { q } = req.query;
+  if (!q || !q.trim()) return res.status(400).json({ error: "Missing 'q' (search query)" });
+
+  const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=12&newsCount=0`;
+  const upstream = await fetch(url, {
+    headers: { "User-Agent": YAHOO_USER_AGENT, "Accept": "application/json" },
+  });
+  if (!upstream.ok) {
+    return res.status(upstream.status).json({ error: `Yahoo search returned ${upstream.status}` });
+  }
+  const data = await upstream.json();
+  const quotes = (data.quotes || [])
+    .filter(q => q.symbol) // descarta entradas sin ticker (a veces incluye noticias/otros)
+    .map(q => ({
+      symbol: q.symbol,
+      name: q.shortname || q.longname || q.symbol,
+      exchange: q.exchange || q.exchDisp || "",
+      type: q.quoteType || q.typeDisp || "",
+    }));
+  return res.status(200).json({ results: quotes });
 }
 
 async function handleECB(req, res) {
@@ -89,16 +116,16 @@ function splitCsvLine(line) {
 }
 
 async function handleYahoo(req, res) {
-  const { ticker, range = "3mo" } = req.query;
+  const { ticker, range = "3mo", interval = "1d" } = req.query;
   if (!ticker) return res.status(400).json({ error: "Missing 'ticker' (e.g. URTH, ACWV, ^IBEX)" });
 
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=${encodeURIComponent(range)}&interval=1d&events=div,splits`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}&events=div,splits`;
 
   const upstream = await fetch(url, {
     headers: {
       // Yahoo's unofficial endpoint tends to reject requests with no
       // browser-like User-Agent.
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+      "User-Agent": YAHOO_USER_AGENT,
       "Accept": "application/json",
     },
   });
