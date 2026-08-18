@@ -11968,6 +11968,67 @@
       const [updatingName, setUpdatingName] = useState(null); // nombre del factor en proceso, o "ALL"
       const [updateMsg, setUpdateMsg] = useState("");
 
+      // ── Buscar e importar (Yahoo) ──────────────────────────────────────────
+      const [addMode, setAddMode] = useState("csv"); // "csv" | "search"
+      const [searchQuery, setSearchQuery] = useState("");
+      const [searchResults, setSearchResults] = useState([]);
+      const [searching, setSearching] = useState(false);
+      const [searchErr, setSearchErr] = useState("");
+      const [selected, setSelected] = useState(null); // { symbol, name, exchange, type }
+      const [importName, setImportName] = useState("");
+      const [importCategory, setImportCategory] = useState("equity");
+      const [importing, setImporting] = useState(false);
+      const [importStatus, setImportStatus] = useState("");
+
+      const runSearch = async () => {
+        if (!searchQuery.trim()) return;
+        setSearching(true); setSearchErr(""); setSearchResults([]); setSelected(null);
+        try {
+          const res = await fetch(`/api/vesta-factors?source=yahoo-search&q=${encodeURIComponent(searchQuery.trim())}`);
+          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
+          const data = await res.json();
+          setSearchResults(data.results || []);
+          if ((data.results || []).length === 0) setSearchErr("Sin resultados.");
+        } catch (e) {
+          setSearchErr(e.message);
+        }
+        setSearching(false);
+      };
+
+      const pickResult = (r) => {
+        setSelected(r);
+        setImportName(r.symbol.replace(/[\^=]/g, "").replace(/\s+/g, "_"));
+        setImportStatus("");
+      };
+
+      const runImport = async () => {
+        if (!selected || !importName.trim()) return;
+        setImporting(true); setImportStatus("importando histórico completo…");
+        try {
+          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(selected.symbol)}&range=max&interval=1mo`);
+          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
+          const data = await res.json();
+          if (!data.series || data.series.length < 3) throw new Error("El proveedor no devolvió suficiente histórico.");
+          const priceSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
+          const returns = vsToMonthlyReturns(priceSeries);
+          if (returns.length < 3) throw new Error("Muy pocas observaciones mensuales resultantes.");
+
+          await onAdd(importName.trim(), {
+            category: importCategory,
+            sourceType: "yahoo-search",
+            description: `Importado de Yahoo Finance (${selected.symbol} — ${selected.name})`,
+            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
+            autoUpdate: { type: "yahoo", ticker: selected.symbol },
+          });
+
+          setImportStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})`);
+          setSelected(null); setSearchResults([]); setSearchQuery(""); setImportName("");
+        } catch (e) {
+          setImportStatus("Error: " + e.message);
+        }
+        setImporting(false);
+      };
+
       const names = Object.keys(factors).sort();
       const updatableNames = names.filter(n => factors[n].autoUpdate);
 
@@ -12033,10 +12094,83 @@
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir un factor</div>
-            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 6 }}>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
               El pool ya viene con {Object.keys(VS_BUNDLED_FACTORS).length} factores de fábrica. Usa esto solo para ampliar la cesta.
             </div>
 
+            <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+              <button onClick={()=>setAddMode("search")}
+                style={{ flex: 1, background: addMode==="search" ? VS_A+"18" : "none", border: `1px solid ${addMode==="search" ? VS_A : "#1a2535"}`, color: addMode==="search" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                🔍 Buscar índice
+              </button>
+              <button onClick={()=>setAddMode("csv")}
+                style={{ flex: 1, background: addMode==="csv" ? VS_A+"18" : "none", border: `1px solid ${addMode==="csv" ? VS_A : "#1a2535"}`, color: addMode==="csv" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                📄 Subir CSV
+              </button>
+            </div>
+
+            {addMode === "search" ? (
+              <div>
+                <label style={labelStyle}>Buscar por nombre o ticker</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input style={inputStyle} type="text" value={searchQuery}
+                    onChange={e=>setSearchQuery(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter" && runSearch()}
+                    placeholder="ej: MSCI World, VIX, IBEX 35" />
+                  <button onClick={runSearch} disabled={searching || !searchQuery.trim()}
+                    style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (searching||!searchQuery.trim())?0.4:1 }}>
+                    {searching ? "…" : "Buscar"}
+                  </button>
+                </div>
+                {searchErr && <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{searchErr}</div>}
+
+                {searchResults.length > 0 && !selected && (
+                  <div style={{ marginTop: 10, maxHeight: 240, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
+                    {searchResults.map(r => (
+                      <button key={r.symbol} onClick={()=>pickResult(r)}
+                        style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #1a2535", padding: "9px 10px", cursor: "pointer" }}
+                        onMouseEnter={e=>e.currentTarget.style.background="#12181f"}
+                        onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600 }}>{r.symbol} <span style={{ color: "#7a90a8", fontWeight: 400 }}>— {r.name}</span></div>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{r.exchange} · {r.type}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selected && (
+                  <div style={{ marginTop: 12, padding: 12, background: "#060d14", border: "1px solid #1a2535", borderRadius: 8 }}>
+                    <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, marginBottom: 2 }}>{selected.symbol}</div>
+                    <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 10 }}>{selected.name} · {selected.exchange}</div>
+
+                    <label style={labelStyle}>Nombre para el pool</label>
+                    <input style={inputStyle} type="text" value={importName} onChange={e=>setImportName(e.target.value)} />
+
+                    <label style={labelStyle}>Categoría</label>
+                    <select style={inputStyle} value={importCategory} onChange={e=>setImportCategory(e.target.value)}>
+                      {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+
+                    <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+                      <button onClick={runImport} disabled={importing || !importName.trim()}
+                        style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (importing||!importName.trim())?0.4:1 }}>
+                        {importing ? "importando…" : "Importar histórico completo"}
+                      </button>
+                      <button onClick={()=>setSelected(null)} disabled={importing}
+                        style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 12px", fontSize: 12, cursor: "pointer" }}>
+                        volver
+                      </button>
+                    </div>
+                    {importStatus && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>{importStatus}</div>}
+                  </div>
+                )}
+
+                <div style={{ marginTop: 12, fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                  Usa el endpoint no oficial de Yahoo Finance. El factor queda marcado para auto-actualización con este mismo ticker.
+                </div>
+              </div>
+            ) : (
+              <div>
             <label style={labelStyle}>Nombre</label>
             <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: VIX" />
 
@@ -12063,6 +12197,8 @@
               Registrar factor
             </button>
             {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>{status}</div>}
+              </div>
+            )}
           </div>
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
