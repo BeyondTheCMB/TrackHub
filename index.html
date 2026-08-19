@@ -11837,7 +11837,11 @@
       const rets = [];
       for(let i=1;i<monthly.length;i++){
         const r = monthly[i].value/monthly[i-1].value - 1;
-        rets.push({date: monthly[i].date, value:r});
+        // startDate = fecha real de la observación anterior (puede ser de
+        // varios meses atrás si hay huecos). Se usa para alinear factores
+        // por ventana compuesta en vez de por mes de calendario — ver
+        // vsCompoundFactorInWindow.
+        rets.push({date: monthly[i].date, startDate: monthly[i-1].date, value:r});
       }
       return rets;
     }
@@ -11857,6 +11861,42 @@
         out.push({date: new Date(Date.UTC(y,m,0)), value: (avgRate/100) * (dim/360)});
       }
       return out;
+    }
+
+    // Detecta series con huecos: compara nº de retornos mensuales obtenidos
+    // contra los meses de calendario que abarca su rango. Es informativo,
+    // no bloqueante — el RBSA ahora alinea por ventana real (ver más abajo),
+    // no asume mensualidad regular. Aun así, menos observaciones = menos
+    // potencia estadística, así que merece la pena mostrarlo.
+    function vsDensityWarning(returns) {
+      if (!returns.length) return null;
+      const start = returns[0].date, end = returns[returns.length - 1].date;
+      const calendarMonths = (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth()) + 1;
+      const density = returns.length / calendarMonths;
+      if (density < 0.7) {
+        return `ℹ Dato irregular: ${returns.length} observaciones reales en ~${calendarMonths} meses del rango (${Math.round(density*100)}% de densidad). Vesta alinea cada una contra la ventana real de los factores, así que sigue siendo válido — pero con menos observaciones el ajuste es menos fiable.`;
+      }
+      return null;
+    }
+
+    // Agrega (compone) los retornos mensuales de un factor dentro de una
+    // ventana real [startDate, endDate] — es decir, "¿cuánto se movió este
+    // factor exactamente en el mismo periodo que abarca esta observación
+    // real del fondo?", en vez de forzar una comparación mes a mes que no
+    // tiene sentido cuando el fondo tiene huecos. No inventa ningún dato:
+    // si el factor no tiene ninguna observación dentro de la ventana,
+    // devuelve null y esa fila se descarta del ajuste.
+    function vsCompoundFactorInWindow(factorReturns, startDate, endDate) {
+      let compound = 1;
+      let count = 0;
+      for (const p of factorReturns) {
+        if (p.date > startDate && p.date <= endDate) {
+          compound *= (1 + p.value);
+          count++;
+        }
+      }
+      if (count === 0) return null;
+      return compound - 1;
     }
 
     // ── RBSA solver — proyección euclídea sobre el símplex + descenso de
@@ -12016,7 +12056,7 @@
             autoUpdate: { type: "yahoo", ticker: selected.symbol },
           });
 
-          setImportStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})`);
+          setImportStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
           setSelected(null); setSearchResults([]); setSearchQuery(""); setImportName("");
         } catch (e) {
           setImportStatus("Error: " + e.message);
@@ -12073,7 +12113,7 @@
             returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
           });
 
-          setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})`);
+          setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
           setName(""); setDescription(""); setFile(null);
           if (fileRef.current) fileRef.current.value = "";
         } catch (e) {
@@ -12157,7 +12197,7 @@
                         volver
                       </button>
                     </div>
-                    {importStatus && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>{importStatus}</div>}
+                    {importStatus && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{importStatus}</div>}
                   </div>
                 )}
 
@@ -12192,7 +12232,7 @@
               style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!name.trim()||!file) ? "not-allowed" : "pointer", opacity: (busy||!name.trim()||!file) ? 0.4 : 1 }}>
               Registrar factor
             </button>
-            {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>{status}</div>}
+            {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
               </div>
             )}
           </div>
@@ -12339,7 +12379,7 @@
           if (rets.length < 3) throw new Error("Muy pocas observaciones mensuales resultantes.");
           setFundReturns(rets);
           setFundName(r.symbol);
-          setImportFundStatus(`Importado: ${rets.length} retornos mensuales (${rets[0].date.toISOString().slice(0,10)} → ${rets[rets.length-1].date.toISOString().slice(0,10)})`);
+          setImportFundStatus(`Importado: ${rets.length} retornos mensuales (${rets[0].date.toISOString().slice(0,10)} → ${rets[rets.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(rets); return w ? "\n" + w : ""; })()}`);
         } catch (e) {
           setImportFundStatus("Error: " + e.message);
         }
@@ -12363,22 +12403,38 @@
           }
 
           const selNames = [...selected];
-          const fundMap = new Map(fReturns.map(p=>[vsMonthKey(p.date), p.value]));
-          const factorMaps = {};
+          const factorSeries = {};
           for (const nm of selNames) {
-            factorMaps[nm] = new Map(factors[nm].returns.map(p=>[vsMonthKey(new Date(p.date)), p.value]));
+            factorSeries[nm] = factors[nm].returns.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
           }
-          const commonKeys = [...fundMap.keys()].filter(k => selNames.every(nm => factorMaps[nm].has(k))).sort((a,b)=>a-b);
 
-          if (commonKeys.length < 6) {
-            setStatus(`Error: solo ${commonKeys.length} meses solapan entre el fondo y los factores elegidos.`);
+          // Alineación por ventana real: cada observación del fondo (por
+          // irregular que sea) se compara contra el retorno COMPUESTO de
+          // cada factor en esa misma ventana exacta [startDate, date] — no
+          // por coincidencia de mes de calendario. Con datos densos esto da
+          // el mismo resultado que el emparejamiento mes-a-mes de antes;
+          // con datos con huecos, es lo que hace la comparación válida sin
+          // inventar ningún dato.
+          const r = [];
+          const X = [];
+          for (const fr of fReturns) {
+            const row = [];
+            let usable = true;
+            for (const nm of selNames) {
+              const compounded = vsCompoundFactorInWindow(factorSeries[nm], fr.startDate, fr.date);
+              if (compounded === null) { usable = false; break; }
+              row.push(compounded);
+            }
+            if (usable) { r.push(fr.value); X.push(row); }
+          }
+
+          if (r.length < 6) {
+            setStatus(`Error: solo ${r.length} observaciones del fondo caen dentro de la cobertura de los factores elegidos.`);
             setBusy(false); return;
           }
 
-          const r = commonKeys.map(k => fundMap.get(k));
-          const X = commonKeys.map(k => selNames.map(nm => factorMaps[nm].get(k)));
           const res = vsRunRBSA(r, X, selNames);
-          setResult(res); setNObs(commonKeys.length);
+          setResult(res); setNObs(r.length);
           setStatus(`Ajuste completado con ${commonKeys.length} observaciones mensuales.`);
         } catch (e) {
           setStatus("Error: " + e.message);
@@ -12448,7 +12504,7 @@
                       style={{ marginTop: 10, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>
                       volver a buscar
                     </button>
-                    {importFundStatus && <div style={{ marginTop: 8, fontSize: 11, color: importingFund ? "#7a90a8" : (fundReturns ? "#4ade80" : "#f87171"), fontFamily: "'DM Mono',monospace" }}>{importFundStatus}</div>}
+                    {importFundStatus && <div style={{ marginTop: 8, fontSize: 11, color: importingFund ? "#7a90a8" : (fundReturns ? "#4ade80" : "#f87171"), fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{importFundStatus}</div>}
                   </div>
                 )}
                 <div style={{ marginTop: 12, fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
