@@ -11729,6 +11729,39 @@
     // retornos mensuales con las mismas funciones que el resto del pipeline,
     // y devuelve solo esos retornos recientes — el merge (qué meses
     // reemplazar vs añadir) se decide fuera, en handleAutoUpdate.
+    // Importación de histórico completo, con reintento en cascada de
+    // detalle: diario → semanal → mensual. Algunos tickers (sobre todo
+    // fondos mutuos/OTC) no devuelven suficiente detalle diario para rangos
+    // muy largos, aunque sí tengan datos a menor resolución. Como la
+    // alineación del RBSA ahora usa ventanas reales (vsCompoundFactorInWindow)
+    // en vez de asumir mensualidad regular, es seguro caer a una resolución
+    // más gruesa sin perder validez estadística — solo perdemos precisión
+    // de la fecha exacta dentro del periodo, no corrección.
+    async function vsFetchFullHistory(ticker) {
+      const attempts = [];
+      for (const interval of ["1d", "1wk", "1mo"]) {
+        try {
+          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(ticker)}&range=max&interval=${interval}`);
+          if (!res.ok) {
+            const err = await res.json().catch(()=>({}));
+            attempts.push(`${interval}: ${err.error || `HTTP ${res.status}`}`);
+            continue;
+          }
+          const data = await res.json();
+          if (data.series && data.series.length >= 3) {
+            return {
+              series: data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value })),
+              intervalUsed: interval,
+            };
+          }
+          attempts.push(`${interval}: solo ${data.series ? data.series.length : 0} puntos`);
+        } catch (e) {
+          attempts.push(`${interval}: ${e.message}`);
+        }
+      }
+      throw new Error(`El proveedor no devolvió histórico suficiente en ningún nivel de detalle (${attempts.join(" · ")}).`);
+    }
+
     async function vsFetchFactorUpdate(factorData) {
       const cfg = factorData.autoUpdate;
       if (!cfg) throw new Error("Este factor no tiene actualización automática configurada.");
@@ -12040,13 +12073,9 @@
         if (!selected || !importName.trim()) return;
         setImporting(true); setImportStatus("importando histórico completo…");
         try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(selected.symbol)}&range=max&interval=1d`);
-          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
-          const data = await res.json();
-          if (!data.series || data.series.length < 3) throw new Error("El proveedor no devolvió suficiente histórico.");
-          const priceSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
+          const { series: priceSeries, intervalUsed } = await vsFetchFullHistory(selected.symbol);
           const returns = vsToMonthlyReturns(priceSeries);
-          if (returns.length < 3) throw new Error("Muy pocas observaciones mensuales resultantes.");
+          if (returns.length < 3) throw new Error("Muy pocas observaciones resultantes.");
 
           await onAdd(importName.trim(), {
             category: importCategory,
@@ -12056,7 +12085,8 @@
             autoUpdate: { type: "yahoo", ticker: selected.symbol },
           });
 
-          setImportStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
+          const detailNote = intervalUsed !== "1d" ? ` (detalle: ${intervalUsed === "1wk" ? "semanal" : "mensual"})` : "";
+          setImportStatus(`Registrado: ${returns.length} retornos${detailNote} (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
           setSelected(null); setSearchResults([]); setSearchQuery(""); setImportName("");
         } catch (e) {
           setImportStatus("Error: " + e.message);
@@ -12370,16 +12400,13 @@
         setSelectedFund(r); setFundReturns(null);
         setImportingFund(true); setImportFundStatus("importando histórico completo…");
         try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(r.symbol)}&range=max&interval=1d`);
-          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
-          const data = await res.json();
-          if (!data.series || data.series.length < 3) throw new Error("El proveedor no devolvió suficiente histórico.");
-          const priceSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
+          const { series: priceSeries, intervalUsed } = await vsFetchFullHistory(r.symbol);
           const rets = vsToMonthlyReturns(priceSeries);
-          if (rets.length < 3) throw new Error("Muy pocas observaciones mensuales resultantes.");
+          if (rets.length < 3) throw new Error("Muy pocas observaciones resultantes.");
           setFundReturns(rets);
           setFundName(r.symbol);
-          setImportFundStatus(`Importado: ${rets.length} retornos mensuales (${rets[0].date.toISOString().slice(0,10)} → ${rets[rets.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(rets); return w ? "\n" + w : ""; })()}`);
+          const detailNote = intervalUsed !== "1d" ? ` (detalle: ${intervalUsed === "1wk" ? "semanal" : "mensual"})` : "";
+          setImportFundStatus(`Importado: ${rets.length} retornos${detailNote} (${rets[0].date.toISOString().slice(0,10)} → ${rets[rets.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(rets); return w ? "\n" + w : ""; })()}`);
         } catch (e) {
           setImportFundStatus("Error: " + e.message);
         }
