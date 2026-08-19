@@ -12000,7 +12000,7 @@
         if (!selected || !importName.trim()) return;
         setImporting(true); setImportStatus("importando histórico completo…");
         try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(selected.symbol)}&range=max&interval=1mo`);
+          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(selected.symbol)}&range=max&interval=1d`);
           if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
           const data = await res.json();
           if (!data.series || data.series.length < 3) throw new Error("El proveedor no devolvió suficiente histórico.");
@@ -12330,7 +12330,7 @@
         setSelectedFund(r); setFundReturns(null);
         setImportingFund(true); setImportFundStatus("importando histórico completo…");
         try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(r.symbol)}&range=max&interval=1mo`);
+          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(r.symbol)}&range=max&interval=1d`);
           if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
           const data = await res.json();
           if (!data.series || data.series.length < 3) throw new Error("El proveedor no devolvió suficiente histórico.");
