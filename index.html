@@ -86,7 +86,8 @@
       { id: "figurelog",  label: "FigureLog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa" },
       { id: "meallog",    label: "MealLog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16" },
       { id: "biwenger",   label: "BiwengerLog",icon: "⚽", accentA: "#34d399", accentB: "#60a5fa" },
-      { id: "vesta",      label: "Vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee" },
+      // Vesta temporalmente oculto — ver nota junto a la tarjeta del home.
+      // { id: "vesta",   label: "Vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee" },
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
@@ -381,7 +382,8 @@
         { id: "figurelog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa", label: "FigureLog",  labelSplit: 6, desc: "Anime figure collection & wishlist" },
         { id: "meallog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16", label: "MealLog",    labelSplit: 4, desc: "Calories, macros & meal planning" },
         { id: "biwenger",   icon: "⚽", accentA: "#34d399", accentB: "#60a5fa", label: "BiwengerLog", labelSplit: 8, desc: "Fantasy Biwenger simulator" },
-        { id: "vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee", label: "Vesta",      labelSplit: 3, desc: "Fund style analysis & backtesting" },
+        // Vesta temporalmente oculto mientras se resuelven problemas de alineación de datos en el buscador Yahoo.
+        // { id: "vesta",   icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee", label: "Vesta",      labelSplit: 3, desc: "Fund style analysis & backtesting" },
       ];
       const [creating,   setCreating]   = React.useState(profiles.length === 0);
       const [newName,    setNewName]    = React.useState("");
