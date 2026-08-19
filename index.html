@@ -12112,11 +12112,12 @@
                     onChange={e=>setSearchQuery(e.target.value)}
                     onKeyDown={e=>e.key==="Enter" && runSearch()}
                     placeholder="ej: MSCI World, VIX, IBEX 35" />
-                  <button onClick={runSearch} disabled={searching || !searchQuery.trim()}
+                  <button onClick={()=>runSearch()} disabled={searching || !searchQuery.trim()}
                     style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (searching||!searchQuery.trim())?0.4:1 }}>
                     {searching ? "…" : "Buscar"}
                   </button>
                 </div>
+
                 {searchErr && <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{searchErr}</div>}
 
                 {searchResults.length > 0 && !selected && (
@@ -12282,6 +12283,7 @@
     }
 
     function VsAnalyze({ factors }) {
+      const [mode, setMode] = useState("csv"); // "csv" | "search"
       const [fundName, setFundName] = useState("");
       const [file, setFile] = useState(null);
       const [selected, setSelected] = useState(new Set());
@@ -12291,6 +12293,16 @@
       const [nObs, setNObs] = useState(0);
       const fileRef = useRef(null);
 
+      // ── Buscar fondo (Yahoo) ────────────────────────────────────────────────
+      const [searchQuery, setSearchQuery] = useState("");
+      const [searching, setSearching] = useState(false);
+      const [searchResults, setSearchResults] = useState([]);
+      const [searchErr, setSearchErr] = useState("");
+      const [selectedFund, setSelectedFund] = useState(null); // { symbol, name, exchange, type }
+      const [fundReturns, setFundReturns] = useState(null);   // [{date:Date, value}] ya calculado, si mode==="search"
+      const [importingFund, setImportingFund] = useState(false);
+      const [importFundStatus, setImportFundStatus] = useState("");
+
       const names = Object.keys(factors).sort();
 
       const toggle = (nm) => {
@@ -12299,17 +12311,59 @@
         setSelected(next);
       };
 
+      const runFundSearch = async () => {
+        if (!searchQuery.trim()) return;
+        setSearching(true); setSearchErr(""); setSearchResults([]); setSelectedFund(null); setFundReturns(null);
+        try {
+          const res = await fetch(`/api/vesta-factors?source=yahoo-search&q=${encodeURIComponent(searchQuery.trim())}`);
+          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
+          const data = await res.json();
+          setSearchResults(data.results || []);
+          if ((data.results || []).length === 0) setSearchErr("Sin resultados.");
+        } catch (e) {
+          setSearchErr(e.message);
+        }
+        setSearching(false);
+      };
+
+      const pickFund = async (r) => {
+        setSelectedFund(r); setFundReturns(null);
+        setImportingFund(true); setImportFundStatus("importando histórico completo…");
+        try {
+          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(r.symbol)}&range=max&interval=1mo`);
+          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
+          const data = await res.json();
+          if (!data.series || data.series.length < 3) throw new Error("El proveedor no devolvió suficiente histórico.");
+          const priceSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
+          const rets = vsToMonthlyReturns(priceSeries);
+          if (rets.length < 3) throw new Error("Muy pocas observaciones mensuales resultantes.");
+          setFundReturns(rets);
+          setFundName(r.symbol);
+          setImportFundStatus(`Importado: ${rets.length} retornos mensuales (${rets[0].date.toISOString().slice(0,10)} → ${rets[rets.length-1].date.toISOString().slice(0,10)})`);
+        } catch (e) {
+          setImportFundStatus("Error: " + e.message);
+        }
+        setImportingFund(false);
+      };
+
       const run = async () => {
-        if (!fundName.trim() || !file || selected.size === 0) return;
+        if (!fundName.trim() || selected.size === 0) return;
+        if (mode === "csv" && !file) return;
+        if (mode === "search" && !fundReturns) return;
         setBusy(true); setStatus("procesando…"); setResult(null);
         try {
-          const text = await file.text();
-          const raw = vsParseInvestingCSV(text);
-          if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV del fondo."); setBusy(false); return; }
-          const fundReturns = vsToMonthlyReturns(raw);
+          let fReturns;
+          if (mode === "csv") {
+            const text = await file.text();
+            const raw = vsParseInvestingCSV(text);
+            if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV del fondo."); setBusy(false); return; }
+            fReturns = vsToMonthlyReturns(raw);
+          } else {
+            fReturns = fundReturns;
+          }
 
           const selNames = [...selected];
-          const fundMap = new Map(fundReturns.map(p=>[vsMonthKey(p.date), p.value]));
+          const fundMap = new Map(fReturns.map(p=>[vsMonthKey(p.date), p.value]));
           const factorMaps = {};
           for (const nm of selNames) {
             factorMaps[nm] = new Map(factors[nm].returns.map(p=>[vsMonthKey(new Date(p.date)), p.value]));
@@ -12337,17 +12391,79 @@
 
       const sortedWeights = result ? Object.entries(result.weights).sort((a,b)=>b[1]-a[1]) : [];
       const rsqColor = !result ? "#7a90a8" : result.rSquared >= 0.7 ? "#4ade80" : result.rSquared >= 0.5 ? "#f59e0b" : "#f87171";
+      const canRun = mode === "csv" ? (!!fundName.trim() && !!file && selected.size>0) : (!!fundName.trim() && !!fundReturns && selected.size>0);
 
       return (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Fondo a analizar</div>
 
-            <label style={labelStyle}>Nombre del fondo</label>
-            <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} placeholder="ej: Gamma Global" />
+            <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+              <button onClick={()=>setMode("search")}
+                style={{ flex: 1, background: mode==="search" ? VS_A+"18" : "none", border: `1px solid ${mode==="search" ? VS_A : "#1a2535"}`, color: mode==="search" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                🔍 Buscar fondo
+              </button>
+              <button onClick={()=>setMode("csv")}
+                style={{ flex: 1, background: mode==="csv" ? VS_A+"18" : "none", border: `1px solid ${mode==="csv" ? VS_A : "#1a2535"}`, color: mode==="csv" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                📄 Subir CSV
+              </button>
+            </div>
 
-            <label style={labelStyle}>Archivo CSV (Investing.com)</label>
-            <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+            {mode === "search" ? (
+              <div>
+                <label style={labelStyle}>Buscar por nombre o ticker</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input style={inputStyle} type="text" value={searchQuery}
+                    onChange={e=>setSearchQuery(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter" && runFundSearch()}
+                    placeholder="ej: Janus Henderson, Gamma Global" />
+                  <button onClick={runFundSearch} disabled={searching || !searchQuery.trim()}
+                    style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (searching||!searchQuery.trim())?0.4:1 }}>
+                    {searching ? "…" : "Buscar"}
+                  </button>
+                </div>
+                {searchErr && <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{searchErr}</div>}
+
+                {searchResults.length > 0 && !selectedFund && (
+                  <div style={{ marginTop: 10, maxHeight: 240, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
+                    {searchResults.map(r => (
+                      <button key={r.symbol} onClick={()=>pickFund(r)}
+                        style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #1a2535", padding: "9px 10px", cursor: "pointer" }}
+                        onMouseEnter={e=>e.currentTarget.style.background="#12181f"}
+                        onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600 }}>{r.symbol} <span style={{ color: "#7a90a8", fontWeight: 400 }}>— {r.name}</span></div>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{r.exchange} · {r.type}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selectedFund && (
+                  <div style={{ marginTop: 12, padding: 12, background: "#060d14", border: "1px solid #1a2535", borderRadius: 8 }}>
+                    <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, marginBottom: 2 }}>{selectedFund.symbol}</div>
+                    <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 10 }}>{selectedFund.name} · {selectedFund.exchange}</div>
+                    <label style={labelStyle}>Nombre para el análisis</label>
+                    <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} />
+                    <button onClick={()=>{ setSelectedFund(null); setFundReturns(null); setImportFundStatus(""); }} disabled={importingFund}
+                      style={{ marginTop: 10, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>
+                      volver a buscar
+                    </button>
+                    {importFundStatus && <div style={{ marginTop: 8, fontSize: 11, color: importingFund ? "#7a90a8" : (fundReturns ? "#4ade80" : "#f87171"), fontFamily: "'DM Mono',monospace" }}>{importFundStatus}</div>}
+                  </div>
+                )}
+                <div style={{ marginTop: 12, fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                  Usa el endpoint no oficial de Yahoo Finance. Para fondos nicho que no aparezcan aquí, usa "Subir CSV".
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label style={labelStyle}>Nombre del fondo</label>
+                <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} placeholder="ej: Gamma Global" />
+
+                <label style={labelStyle}>Archivo CSV (Investing.com)</label>
+                <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+              </div>
+            )}
 
             <label style={labelStyle}>Factores a incluir</label>
             {names.length === 0 ? (
@@ -12368,8 +12484,8 @@
               </div>
             )}
 
-            <button onClick={run} disabled={busy || !fundName.trim() || !file || selected.size===0}
-              style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!fundName.trim()||!file||selected.size===0) ? "not-allowed" : "pointer", opacity: (busy||!fundName.trim()||!file||selected.size===0) ? 0.4 : 1 }}>
+            <button onClick={run} disabled={busy || !canRun}
+              style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!canRun) ? "not-allowed" : "pointer", opacity: (busy||!canRun) ? 0.4 : 1 }}>
               Ejecutar RBSA
             </button>
             {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>{status}</div>}
