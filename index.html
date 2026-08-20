@@ -86,8 +86,7 @@
       { id: "figurelog",  label: "FigureLog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa" },
       { id: "meallog",    label: "MealLog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16" },
       { id: "biwenger",   label: "BiwengerLog",icon: "⚽", accentA: "#34d399", accentB: "#60a5fa" },
-      // Vesta temporalmente oculto — ver nota junto a la tarjeta del home.
-      // { id: "vesta",   label: "Vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee" },
+      { id: "vesta",      label: "Vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee" },
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
@@ -382,8 +381,7 @@
         { id: "figurelog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa", label: "FigureLog",  labelSplit: 6, desc: "Anime figure collection & wishlist" },
         { id: "meallog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16", label: "MealLog",    labelSplit: 4, desc: "Calories, macros & meal planning" },
         { id: "biwenger",   icon: "⚽", accentA: "#34d399", accentB: "#60a5fa", label: "BiwengerLog", labelSplit: 8, desc: "Fantasy Biwenger simulator" },
-        // Vesta temporalmente oculto mientras se resuelven problemas de alineación de datos en el buscador Yahoo.
-        // { id: "vesta",   icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee", label: "Vesta",      labelSplit: 3, desc: "Fund style analysis & backtesting" },
+        { id: "vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee", label: "Vesta",      labelSplit: 3, desc: "Fund style analysis & backtesting" },
       ];
       const [creating,   setCreating]   = React.useState(profiles.length === 0);
       const [newName,    setNewName]    = React.useState("");
@@ -11726,74 +11724,6 @@
       await _sb.from("vs_factors").upsert({ user_id: _sbUser.id, profile_id: profileId, data: factorsObj }, { onConflict: "user_id,profile_id" });
     };
 
-    // ── Actualización automática de factores (ECB / Yahoo, vía proxy /api) ──
-    // Trae una ventana reciente (~3 meses / ~100 días), la convierte a
-    // retornos mensuales con las mismas funciones que el resto del pipeline,
-    // y devuelve solo esos retornos recientes — el merge (qué meses
-    // reemplazar vs añadir) se decide fuera, en handleAutoUpdate.
-    // Importación de histórico completo, con reintento en cascada de
-    // detalle: diario → semanal → mensual. Algunos tickers (sobre todo
-    // fondos mutuos/OTC) no devuelven suficiente detalle diario para rangos
-    // muy largos, aunque sí tengan datos a menor resolución. Como la
-    // alineación del RBSA ahora usa ventanas reales (vsCompoundFactorInWindow)
-    // en vez de asumir mensualidad regular, es seguro caer a una resolución
-    // más gruesa sin perder validez estadística — solo perdemos precisión
-    // de la fecha exacta dentro del periodo, no corrección.
-    async function vsFetchFullHistory(ticker) {
-      const attempts = [];
-      for (const interval of ["1d", "1wk", "1mo"]) {
-        try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(ticker)}&range=max&interval=${interval}`);
-          if (!res.ok) {
-            const err = await res.json().catch(()=>({}));
-            attempts.push(`${interval}: ${err.error || `HTTP ${res.status}`}`);
-            continue;
-          }
-          const data = await res.json();
-          if (data.series && data.series.length >= 3) {
-            return {
-              series: data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value })),
-              intervalUsed: interval,
-            };
-          }
-          attempts.push(`${interval}: solo ${data.series ? data.series.length : 0} puntos`);
-        } catch (e) {
-          attempts.push(`${interval}: ${e.message}`);
-        }
-      }
-      throw new Error(`El proveedor no devolvió histórico suficiente en ningún nivel de detalle (${attempts.join(" · ")}).`);
-    }
-
-    async function vsFetchFactorUpdate(factorData) {
-      const cfg = factorData.autoUpdate;
-      if (!cfg) throw new Error("Este factor no tiene actualización automática configurada.");
-
-      if (cfg.type === "yahoo") {
-        const url = `/api/vesta-factors?source=yahoo&ticker=${encodeURIComponent(cfg.ticker)}&range=3mo`;
-        const res = await fetch(url);
-        if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status} consultando Yahoo`); }
-        const data = await res.json();
-        if (!data.series || data.series.length < 2) throw new Error("El proveedor no devolvió suficientes datos.");
-        const priceSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
-        const monthly = vsToMonthlyReturns(priceSeries);
-        return monthly.map(r => ({ date: r.date.toISOString().slice(0,10), value: r.value }));
-      }
-
-      if (cfg.type === "ecb") {
-        const startPeriod = new Date(Date.now() - 100*24*3600*1000).toISOString().slice(0,10);
-        const url = `/api/vesta-factors?source=ecb&flowRef=${encodeURIComponent(cfg.flowRef)}&key=${encodeURIComponent(cfg.key)}&startPeriod=${startPeriod}`;
-        const res = await fetch(url);
-        if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status} consultando ECB`); }
-        const data = await res.json();
-        if (!data.series || data.series.length < 2) throw new Error("El proveedor no devolvió suficientes datos.");
-        const rateSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
-        const monthly = vsRateToMonthlyReturn(rateSeries);
-        return monthly.map(r => ({ date: r.date.toISOString().slice(0,10), value: r.value }));
-      }
-
-      throw new Error("Tipo de autoUpdate desconocido: " + cfg.type);
-    }
-
     // ── Parsers de CSV ────────────────────────────────────────────────────────
     function vsSplitCSVLine(line){
       const out = []; let cur=''; let inQ=false;
@@ -11896,6 +11826,33 @@
         out.push({date: new Date(Date.UTC(y,m,0)), value: (avgRate/100) * (dim/360)});
       }
       return out;
+    }
+
+    // ── Factor de caja automático (€STR, BCE) ────────────────────────────────
+    // El tipo de interés libre de riesgo en EUR es infraestructura que casi
+    // cualquier cesta de RBSA necesita — a diferencia de un índice de
+    // mercado (elección discrecional), este no depende de qué fondo estés
+    // analizando. Se trae directamente de la API oficial del BCE (€STR,
+    // publicado a diario desde octubre de 2019) y se mantiene solo, sin
+    // que el usuario tenga que saber qué es "ECB Data Portal" ni subir nada.
+    const VS_BUILTIN_CASH_NAME = "Cash_ESTR_EUR";
+    const VS_BUILTIN_CASH_MAXAGE_MS = 24 * 3600 * 1000; // refrescar si tiene más de 1 día
+
+    async function vsFetchBuiltinCashFactor() {
+      const res = await fetch(`/api/vesta-factors?source=ecb&flowRef=EST&key=B.EU000A2X2A25.WT`);
+      if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status} consultando BCE`); }
+      const data = await res.json();
+      if (!data.series || data.series.length < 2) throw new Error("El BCE no devolvió suficientes datos.");
+      const rateSeries = data.series.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
+      const returns = vsRateToMonthlyReturn(rateSeries);
+      return {
+        category: "cash",
+        sourceType: "ecb_auto",
+        description: "Tipo €STR (Banco Central Europeo) — automático, sin acción del usuario",
+        returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
+        builtin: true,
+        lastFetched: new Date().toISOString(),
+      };
     }
 
     // Detecta series con huecos: compara nº de retornos mensuales obtenidos
@@ -12017,6 +11974,17 @@
 
     // ── Componentes de UI ────────────────────────────────────────────────────
 
+    // Abre una búsqueda de Google acotada a investing.com. No hacemos
+    // scraping ni llamamos a investing.com desde nuestro servidor (bloqueado
+    // por Cloudflare) — esto simplemente abre el propio navegador del
+    // usuario en una búsqueda de Google que encuentra directamente su página
+    // de "Historical Data", que el usuario visita y descarga a mano.
+    function vsOpenInvestingSearch(query) {
+      if (!query || !query.trim()) return;
+      const q = `site:investing.com "historical data" ${query.trim()}`;
+      window.open(`https://www.google.com/search?q=${encodeURIComponent(q)}`, "_blank", "noopener");
+    }
+
     function VsCatTag({ category }) {
       const c = VS_CAT_COLOR[category] || "#7a90a8";
       return (
@@ -12026,7 +11994,7 @@
       );
     }
 
-    function VsFactorPool({ factors, onAdd, onRemove, onAutoUpdate }) {
+    function VsFactorPool({ factors, onAdd, onRemove }) {
       const [name, setName] = useState("");
       const [category, setCategory] = useState("equity");
       const [sourceType, setSourceType] = useState("investing");
@@ -12035,95 +12003,8 @@
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
       const fileRef = useRef(null);
-      const [updatingName, setUpdatingName] = useState(null); // nombre del factor en proceso, o "ALL"
-      const [updateMsg, setUpdateMsg] = useState("");
-
-      // ── Buscar e importar (Yahoo) ──────────────────────────────────────────
-      const [addMode, setAddMode] = useState("csv"); // "csv" | "search"
-      const [searchQuery, setSearchQuery] = useState("");
-      const [searchResults, setSearchResults] = useState([]);
-      const [searching, setSearching] = useState(false);
-      const [searchErr, setSearchErr] = useState("");
-      const [selected, setSelected] = useState(null); // { symbol, name, exchange, type }
-      const [importName, setImportName] = useState("");
-      const [importCategory, setImportCategory] = useState("equity");
-      const [importing, setImporting] = useState(false);
-      const [importStatus, setImportStatus] = useState("");
-
-      const runSearch = async () => {
-        if (!searchQuery.trim()) return;
-        setSearching(true); setSearchErr(""); setSearchResults([]); setSelected(null);
-        try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo-search&q=${encodeURIComponent(searchQuery.trim())}`);
-          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
-          const data = await res.json();
-          setSearchResults(data.results || []);
-          if ((data.results || []).length === 0) setSearchErr("Sin resultados.");
-        } catch (e) {
-          setSearchErr(e.message);
-        }
-        setSearching(false);
-      };
-
-      const pickResult = (r) => {
-        setSelected(r);
-        setImportName(r.symbol.replace(/[\^=]/g, "").replace(/\s+/g, "_"));
-        setImportStatus("");
-      };
-
-      const runImport = async () => {
-        if (!selected || !importName.trim()) return;
-        setImporting(true); setImportStatus("importando histórico completo…");
-        try {
-          const { series: priceSeries, intervalUsed } = await vsFetchFullHistory(selected.symbol);
-          const returns = vsToMonthlyReturns(priceSeries);
-          if (returns.length < 3) throw new Error("Muy pocas observaciones resultantes.");
-
-          await onAdd(importName.trim(), {
-            category: importCategory,
-            sourceType: "yahoo-search",
-            description: `Importado de Yahoo Finance (${selected.symbol} — ${selected.name})`,
-            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
-            autoUpdate: { type: "yahoo", ticker: selected.symbol },
-          });
-
-          const detailNote = intervalUsed !== "1d" ? ` (detalle: ${intervalUsed === "1wk" ? "semanal" : "mensual"})` : "";
-          setImportStatus(`Registrado: ${returns.length} retornos${detailNote} (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
-          setSelected(null); setSearchResults([]); setSearchQuery(""); setImportName("");
-        } catch (e) {
-          setImportStatus("Error: " + e.message);
-        }
-        setImporting(false);
-      };
 
       const names = Object.keys(factors).sort();
-      const updatableNames = names.filter(n => factors[n].autoUpdate);
-
-      const runUpdate = async (nm) => {
-        setUpdatingName(nm); setUpdateMsg("");
-        try {
-          const added = await onAutoUpdate(nm);
-          setUpdateMsg(`${nm}: ${added} mes${added===1?"":"es"} actualizado${added===1?"":"s"}.`);
-        } catch (e) {
-          setUpdateMsg(`${nm}: error — ${e.message}`);
-        }
-        setUpdatingName(null);
-      };
-
-      const runUpdateAll = async () => {
-        setUpdatingName("ALL"); setUpdateMsg("");
-        const results = [];
-        for (const nm of updatableNames) {
-          try {
-            const added = await onAutoUpdate(nm);
-            results.push(`${nm}: +${added}`);
-          } catch (e) {
-            results.push(`${nm}: error`);
-          }
-        }
-        setUpdateMsg(results.join("  ·  "));
-        setUpdatingName(null);
-      };
 
       const handleRegister = async () => {
         if (!name.trim() || !file) return;
@@ -12162,83 +12043,9 @@
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir un factor</div>
             <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
-              Busca un índice o sube un CSV para empezar a construir tu pool de factores.
+              Sube un CSV de Investing.com (o ECB / FRED para tipos de interés).
             </div>
 
-            <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-              <button onClick={()=>setAddMode("search")}
-                style={{ flex: 1, background: addMode==="search" ? VS_A+"18" : "none", border: `1px solid ${addMode==="search" ? VS_A : "#1a2535"}`, color: addMode==="search" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                🔍 Buscar índice
-              </button>
-              <button onClick={()=>setAddMode("csv")}
-                style={{ flex: 1, background: addMode==="csv" ? VS_A+"18" : "none", border: `1px solid ${addMode==="csv" ? VS_A : "#1a2535"}`, color: addMode==="csv" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                📄 Subir CSV
-              </button>
-            </div>
-
-            {addMode === "search" ? (
-              <div>
-                <label style={labelStyle}>Buscar por nombre o ticker</label>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input style={inputStyle} type="text" value={searchQuery}
-                    onChange={e=>setSearchQuery(e.target.value)}
-                    onKeyDown={e=>e.key==="Enter" && runSearch()}
-                    placeholder="ej: MSCI World, VIX, IBEX 35" />
-                  <button onClick={()=>runSearch()} disabled={searching || !searchQuery.trim()}
-                    style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (searching||!searchQuery.trim())?0.4:1 }}>
-                    {searching ? "…" : "Buscar"}
-                  </button>
-                </div>
-
-                {searchErr && <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{searchErr}</div>}
-
-                {searchResults.length > 0 && !selected && (
-                  <div style={{ marginTop: 10, maxHeight: 240, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
-                    {searchResults.map(r => (
-                      <button key={r.symbol} onClick={()=>pickResult(r)}
-                        style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #1a2535", padding: "9px 10px", cursor: "pointer" }}
-                        onMouseEnter={e=>e.currentTarget.style.background="#12181f"}
-                        onMouseLeave={e=>e.currentTarget.style.background="none"}>
-                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600 }}>{r.symbol} <span style={{ color: "#7a90a8", fontWeight: 400 }}>— {r.name}</span></div>
-                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{r.exchange} · {r.type}</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {selected && (
-                  <div style={{ marginTop: 12, padding: 12, background: "#060d14", border: "1px solid #1a2535", borderRadius: 8 }}>
-                    <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, marginBottom: 2 }}>{selected.symbol}</div>
-                    <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 10 }}>{selected.name} · {selected.exchange}</div>
-
-                    <label style={labelStyle}>Nombre para el pool</label>
-                    <input style={inputStyle} type="text" value={importName} onChange={e=>setImportName(e.target.value)} />
-
-                    <label style={labelStyle}>Categoría</label>
-                    <select style={inputStyle} value={importCategory} onChange={e=>setImportCategory(e.target.value)}>
-                      {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-
-                    <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-                      <button onClick={runImport} disabled={importing || !importName.trim()}
-                        style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (importing||!importName.trim())?0.4:1 }}>
-                        {importing ? "importando…" : "Importar histórico completo"}
-                      </button>
-                      <button onClick={()=>setSelected(null)} disabled={importing}
-                        style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 12px", fontSize: 12, cursor: "pointer" }}>
-                        volver
-                      </button>
-                    </div>
-                    {importStatus && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{importStatus}</div>}
-                  </div>
-                )}
-
-                <div style={{ marginTop: 12, fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
-                  Usa el endpoint no oficial de Yahoo Finance. El factor queda marcado para auto-actualización con este mismo ticker.
-                </div>
-              </div>
-            ) : (
-              <div>
             <label style={labelStyle}>Nombre</label>
             <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: VIX" />
 
@@ -12250,12 +12057,18 @@
             <label style={labelStyle}>Formato de fuente</label>
             <select style={inputStyle} value={sourceType} onChange={e=>setSourceType(e.target.value)}>
               <option value="investing">Investing.com (Fecha, Último)</option>
-              <option value="ecb_rate">ECB Data Portal (tipo de interés)</option>
-              <option value="fred_rate">FRED (tipo de interés)</option>
+              <option value="fred_rate">FRED (tipo de interés, otra divisa)</option>
             </select>
+            <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
+              El tipo libre de riesgo en EUR (€STR/BCE) ya está incluido automáticamente en el pool.
+            </small>
 
             <label style={labelStyle}>Archivo CSV</label>
             <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+            <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
+              style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+              🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
+            </button>
 
             <label style={labelStyle}>Descripción <span style={{fontWeight:400}}>(opcional)</span></label>
             <input style={inputStyle} type="text" value={description} onChange={e=>setDescription(e.target.value)} placeholder="breve nota" />
@@ -12265,31 +12078,20 @@
               Registrar factor
             </button>
             {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
-              </div>
-            )}
           </div>
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Pool actual</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{names.length} factor{names.length===1?"":"es"}</span>
-                {updatableNames.length > 0 && (
-                  <button onClick={runUpdateAll} disabled={updatingName !== null}
-                    style={{ background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: updatingName ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace", opacity: updatingName ? 0.5 : 1 }}>
-                    {updatingName === "ALL" ? "actualizando…" : `↻ actualizar todos (${updatableNames.length})`}
-                  </button>
-                )}
-              </div>
+              <span style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{names.length} factor{names.length===1?"":"es"}</span>
             </div>
-            {updateMsg && <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>{updateMsg}</div>}
             {names.length === 0 ? (
               <div style={{ textAlign: "center", padding: "30px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin factores aún.</div>
             ) : (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr>
-                    {["Nombre","Categoría","Fuente","Cobertura","Obs","",""].map((h,i) => (
+                    {["Nombre","Categoría","Fuente","Cobertura","Obs",""].map((h,i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
@@ -12298,36 +12100,27 @@
                   {names.map(nm => {
                     const f = factors[nm];
                     const rs = f.returns;
-                    const au = f.autoUpdate;
                     return (
                       <tr key={nm}>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>
-                          {nm}
-                          {au?.unverified && <span title="Ticker sin verificar del todo — comprueba que los datos tengan sentido" style={{ marginLeft: 6, color: "#f59e0b" }}>⚠</span>}
+                          {nm}{f.builtin && <span title="Automático — se refresca solo" style={{ marginLeft: 6, color: VS_A, fontSize: 10 }}>⚡</span>}
                         </td>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}><VsCatTag category={f.category} /></td>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#5a7080", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
-                          {{investing:"CSV", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", "yahoo-search":"Yahoo"}[f.sourceType] || f.sourceType}
+                          {{investing:"CSV", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", ecb_auto:"BCE (auto)"}[f.sourceType] || f.sourceType}
                         </td>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#7a90a8", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>{rs[0]?.date} → {rs[rs.length-1]?.date}</td>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>{rs.length}</td>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}>
-                          {au ? (
-                            <button onClick={()=>runUpdate(nm)} disabled={updatingName !== null}
-                              title={au.type === "yahoo" ? `Yahoo: ${au.ticker}` : `ECB: ${au.flowRef}/${au.key}`}
-                              style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: updatingName ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace", opacity: updatingName ? 0.5 : 1 }}>
-                              {updatingName === nm ? "…" : "↻ actualizar"}
-                            </button>
+                          {f.builtin ? (
+                            <span style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace" }}>automático</span>
                           ) : (
-                            <span style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace" }}>manual</span>
+                            <button onClick={()=>onRemove(nm)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                              onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
+                              onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
+                              quitar
+                            </button>
                           )}
-                        </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}>
-                          <button onClick={()=>onRemove(nm)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
-                            onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
-                            onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
-                            quitar
-                          </button>
                         </td>
                       </tr>
                     );
@@ -12355,7 +12148,6 @@
     }
 
     function VsAnalyze({ factors }) {
-      const [mode, setMode] = useState("csv"); // "csv" | "search"
       const [fundName, setFundName] = useState("");
       const [file, setFile] = useState(null);
       const [selected, setSelected] = useState(new Set());
@@ -12365,16 +12157,6 @@
       const [nObs, setNObs] = useState(0);
       const fileRef = useRef(null);
 
-      // ── Buscar fondo (Yahoo) ────────────────────────────────────────────────
-      const [searchQuery, setSearchQuery] = useState("");
-      const [searching, setSearching] = useState(false);
-      const [searchResults, setSearchResults] = useState([]);
-      const [searchErr, setSearchErr] = useState("");
-      const [selectedFund, setSelectedFund] = useState(null); // { symbol, name, exchange, type }
-      const [fundReturns, setFundReturns] = useState(null);   // [{date:Date, value}] ya calculado, si mode==="search"
-      const [importingFund, setImportingFund] = useState(false);
-      const [importFundStatus, setImportFundStatus] = useState("");
-
       const names = Object.keys(factors).sort();
 
       const toggle = (nm) => {
@@ -12383,53 +12165,14 @@
         setSelected(next);
       };
 
-      const runFundSearch = async () => {
-        if (!searchQuery.trim()) return;
-        setSearching(true); setSearchErr(""); setSearchResults([]); setSelectedFund(null); setFundReturns(null);
-        try {
-          const res = await fetch(`/api/vesta-factors?source=yahoo-search&q=${encodeURIComponent(searchQuery.trim())}`);
-          if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Error ${res.status}`); }
-          const data = await res.json();
-          setSearchResults(data.results || []);
-          if ((data.results || []).length === 0) setSearchErr("Sin resultados.");
-        } catch (e) {
-          setSearchErr(e.message);
-        }
-        setSearching(false);
-      };
-
-      const pickFund = async (r) => {
-        setSelectedFund(r); setFundReturns(null);
-        setImportingFund(true); setImportFundStatus("importando histórico completo…");
-        try {
-          const { series: priceSeries, intervalUsed } = await vsFetchFullHistory(r.symbol);
-          const rets = vsToMonthlyReturns(priceSeries);
-          if (rets.length < 3) throw new Error("Muy pocas observaciones resultantes.");
-          setFundReturns(rets);
-          setFundName(r.symbol);
-          const detailNote = intervalUsed !== "1d" ? ` (detalle: ${intervalUsed === "1wk" ? "semanal" : "mensual"})` : "";
-          setImportFundStatus(`Importado: ${rets.length} retornos${detailNote} (${rets[0].date.toISOString().slice(0,10)} → ${rets[rets.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(rets); return w ? "\n" + w : ""; })()}`);
-        } catch (e) {
-          setImportFundStatus("Error: " + e.message);
-        }
-        setImportingFund(false);
-      };
-
       const run = async () => {
-        if (!fundName.trim() || selected.size === 0) return;
-        if (mode === "csv" && !file) return;
-        if (mode === "search" && !fundReturns) return;
+        if (!fundName.trim() || !file || selected.size === 0) return;
         setBusy(true); setStatus("procesando…"); setResult(null);
         try {
-          let fReturns;
-          if (mode === "csv") {
-            const text = await file.text();
-            const raw = vsParseInvestingCSV(text);
-            if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV del fondo."); setBusy(false); return; }
-            fReturns = vsToMonthlyReturns(raw);
-          } else {
-            fReturns = fundReturns;
-          }
+          const text = await file.text();
+          const raw = vsParseInvestingCSV(text);
+          if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV del fondo."); setBusy(false); return; }
+          const fReturns = vsToMonthlyReturns(raw);
 
           const selNames = [...selected];
           const factorSeries = {};
@@ -12464,7 +12207,7 @@
 
           const res = vsRunRBSA(r, X, selNames);
           setResult(res); setNObs(r.length);
-          setStatus(`Ajuste completado con ${commonKeys.length} observaciones mensuales.`);
+          setStatus(`Ajuste completado con ${r.length} observaciones.`);
         } catch (e) {
           setStatus("Error: " + e.message);
         }
@@ -12476,79 +12219,22 @@
 
       const sortedWeights = result ? Object.entries(result.weights).sort((a,b)=>b[1]-a[1]) : [];
       const rsqColor = !result ? "#7a90a8" : result.rSquared >= 0.7 ? "#4ade80" : result.rSquared >= 0.5 ? "#f59e0b" : "#f87171";
-      const canRun = mode === "csv" ? (!!fundName.trim() && !!file && selected.size>0) : (!!fundName.trim() && !!fundReturns && selected.size>0);
+      const canRun = !!fundName.trim() && !!file && selected.size>0;
 
       return (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Fondo a analizar</div>
 
-            <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-              <button onClick={()=>setMode("search")}
-                style={{ flex: 1, background: mode==="search" ? VS_A+"18" : "none", border: `1px solid ${mode==="search" ? VS_A : "#1a2535"}`, color: mode==="search" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                🔍 Buscar fondo
-              </button>
-              <button onClick={()=>setMode("csv")}
-                style={{ flex: 1, background: mode==="csv" ? VS_A+"18" : "none", border: `1px solid ${mode==="csv" ? VS_A : "#1a2535"}`, color: mode==="csv" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                📄 Subir CSV
-              </button>
-            </div>
+            <label style={labelStyle}>Nombre del fondo</label>
+            <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} placeholder="ej: Gamma Global" />
 
-            {mode === "search" ? (
-              <div>
-                <label style={labelStyle}>Buscar por nombre o ticker</label>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input style={inputStyle} type="text" value={searchQuery}
-                    onChange={e=>setSearchQuery(e.target.value)}
-                    onKeyDown={e=>e.key==="Enter" && runFundSearch()}
-                    placeholder="ej: Janus Henderson, Gamma Global" />
-                  <button onClick={runFundSearch} disabled={searching || !searchQuery.trim()}
-                    style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: (searching||!searchQuery.trim())?0.4:1 }}>
-                    {searching ? "…" : "Buscar"}
-                  </button>
-                </div>
-                {searchErr && <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{searchErr}</div>}
-
-                {searchResults.length > 0 && !selectedFund && (
-                  <div style={{ marginTop: 10, maxHeight: 240, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
-                    {searchResults.map(r => (
-                      <button key={r.symbol} onClick={()=>pickFund(r)}
-                        style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: "1px solid #1a2535", padding: "9px 10px", cursor: "pointer" }}
-                        onMouseEnter={e=>e.currentTarget.style.background="#12181f"}
-                        onMouseLeave={e=>e.currentTarget.style.background="none"}>
-                        <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600 }}>{r.symbol} <span style={{ color: "#7a90a8", fontWeight: 400 }}>— {r.name}</span></div>
-                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{r.exchange} · {r.type}</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {selectedFund && (
-                  <div style={{ marginTop: 12, padding: 12, background: "#060d14", border: "1px solid #1a2535", borderRadius: 8 }}>
-                    <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600, marginBottom: 2 }}>{selectedFund.symbol}</div>
-                    <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 10 }}>{selectedFund.name} · {selectedFund.exchange}</div>
-                    <label style={labelStyle}>Nombre para el análisis</label>
-                    <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} />
-                    <button onClick={()=>{ setSelectedFund(null); setFundReturns(null); setImportFundStatus(""); }} disabled={importingFund}
-                      style={{ marginTop: 10, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>
-                      volver a buscar
-                    </button>
-                    {importFundStatus && <div style={{ marginTop: 8, fontSize: 11, color: importingFund ? "#7a90a8" : (fundReturns ? "#4ade80" : "#f87171"), fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{importFundStatus}</div>}
-                  </div>
-                )}
-                <div style={{ marginTop: 12, fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
-                  Usa el endpoint no oficial de Yahoo Finance. Para fondos nicho que no aparezcan aquí, usa "Subir CSV".
-                </div>
-              </div>
-            ) : (
-              <div>
-                <label style={labelStyle}>Nombre del fondo</label>
-                <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} placeholder="ej: Gamma Global" />
-
-                <label style={labelStyle}>Archivo CSV (Investing.com)</label>
-                <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
-              </div>
-            )}
+            <label style={labelStyle}>Archivo CSV (Investing.com)</label>
+            <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+            <button onClick={()=>vsOpenInvestingSearch(fundName)} disabled={!fundName.trim()} type="button"
+              style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: fundName.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: fundName.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+              🔎 Buscar "{fundName.trim() || "…"}" en Investing.com ↗
+            </button>
 
             <label style={labelStyle}>Factores a incluir</label>
             {names.length === 0 ? (
@@ -12634,9 +12320,30 @@
       useEffect(() => {
         if (!profileId) return;
         setLoading(true);
-        vsLoadFactors(profileId).then((stored) => {
+        vsLoadFactors(profileId).then(async (stored) => {
           setFactors(stored);
           setLoading(false);
+
+          // Factor de caja automático: si falta o está desactualizado
+          // (>1 día), se refresca en segundo plano sin bloquear la carga
+          // del resto del pool. Fallos aquí no rompen nada — si el BCE no
+          // responde, el usuario simplemente sigue sin ese factor hasta el
+          // siguiente intento.
+          const existing = stored[VS_BUILTIN_CASH_NAME];
+          const isStale = !existing || !existing.lastFetched ||
+            (Date.now() - new Date(existing.lastFetched).getTime()) > VS_BUILTIN_CASH_MAXAGE_MS;
+          if (isStale) {
+            try {
+              const fresh = await vsFetchBuiltinCashFactor();
+              setFactors(prev => {
+                const next = { ...prev, [VS_BUILTIN_CASH_NAME]: fresh };
+                vsSaveFactors(profileId, next);
+                return next;
+              });
+            } catch (e) {
+              console.warn("No se pudo refrescar el factor de caja automático:", e.message);
+            }
+          }
         });
       }, [profileId]);
 
@@ -12650,31 +12357,6 @@
         delete next[name];
         setFactors(next);
         await vsSaveFactors(profileId, next);
-      };
-
-      // Actualiza un factor: trae la ventana reciente, sustituye los meses
-      // que se solapen (por si el último mes estaba incompleto la última
-      // vez) y añade los meses nuevos. Usa el estado más reciente de
-      // `factors` vía closure sobre setFactors con función, para evitar
-      // condiciones de carrera si se lanza "actualizar todos" en paralelo.
-      const handleAutoUpdate = async (name) => {
-        const current = factors[name];
-        if (!current || !current.autoUpdate) throw new Error("Sin autoactualización configurada.");
-        const newReturns = await vsFetchFactorUpdate(current);
-        if (!newReturns.length) return 0;
-        const newMonthKeys = new Set(newReturns.map(r => r.date.slice(0,7)));
-        let addedCount = 0;
-        setFactors(prev => {
-          const f = prev[name];
-          if (!f) return prev;
-          const kept = f.returns.filter(r => !newMonthKeys.has(r.date.slice(0,7)));
-          addedCount = f.returns.length - kept.length + newReturns.length;
-          const merged = [...kept, ...newReturns].sort((a,b)=>a.date.localeCompare(b.date));
-          const next = { ...prev, [name]: { ...f, returns: merged, lastAutoUpdate: new Date().toISOString() } };
-          vsSaveFactors(profileId, next);
-          return next;
-        });
-        return newReturns.length;
       };
 
       const TABS = [
@@ -12723,7 +12405,7 @@
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Cargando…</div>
             ) : (
               <>
-                {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} onAutoUpdate={handleAutoUpdate} />}
+                {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} />}
                 {tab === "test" && <VsAnalyze factors={factors} />}
               </>
             )}
