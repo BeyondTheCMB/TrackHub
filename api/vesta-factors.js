@@ -1,27 +1,24 @@
 // /api/vesta-factors.js
 //
-// Server-side proxy for Vesta's factor auto-update. Exists because neither
-// source allows direct calls from browser JS (CORS), same reason /api/bgg
-// and /api/biwenger exist for their respective modules.
+// Server-side proxy for Vesta's factor data. Exists because the ECB Data
+// Portal doesn't reliably allow direct calls from browser JS for this use
+// (and to keep a consistent server-side error format), same reason
+// /api/bgg and /api/biwenger exist for their respective modules.
 //
-// Two sources, selected via ?source=:
+// Yahoo Finance support was removed: its export format didn't match
+// Investing.com CSVs consistently, and its free/unofficial endpoint was
+// unreliable for niche mutual funds. Vesta now sources price data
+// exclusively from Investing.com CSV exports (imported manually, with a
+// search-assist button in the UI), keeping only this one source:
 //
-//   source=ecb     — European Central Bank Data Portal (official, free,
-//                    no key). Used for the cash/rate factor (EONIA/ESTR).
-//                    params: flowRef (default "EST"), key (required),
-//                            startPeriod (optional, YYYY-MM-DD)
-//                    example: /api/vesta-factors?source=ecb&flowRef=EST&key=B.EU000A2X2A25.WT
+//   source=ecb   — European Central Bank Data Portal (official, free,
+//                  no key). Used for the cash/rate factor (EONIA/ESTR).
+//                  params: flowRef (default "EST"), key (required),
+//                          startPeriod (optional, YYYY-MM-DD)
+//                  example: /api/vesta-factors?source=ecb&flowRef=EST&key=B.EU000A2X2A25.WT
 //
-//   source=yahoo   — Yahoo Finance's unofficial "v8/finance/chart" endpoint.
-//                    Not an official API — Yahoo shut theirs down in 2017.
-//                    This is the same endpoint yfinance and similar tools
-//                    use; it can change or start blocking without notice.
-//                    params: ticker (required), range (default "3mo")
-//                    example: /api/vesta-factors?source=yahoo&ticker=URTH&range=3mo
-//
-// Both return: { series: [ { date: "YYYY-MM-DD", value: number }, ... ] }
-//   - ecb:   value = the published rate, in percent (e.g. 1.93 = 1.93%)
-//   - yahoo: value = adjusted close price, in the ticker's native currency
+// Returns: { series: [ { date: "YYYY-MM-DD", value: number }, ... ] }
+//   value = the published rate, in percent (e.g. 1.93 = 1.93%)
 
 export default async function handler(req, res) {
   const { source } = req.query;
@@ -29,42 +26,13 @@ export default async function handler(req, res) {
   try {
     if (source === "ecb") {
       return await handleECB(req, res);
-    } else if (source === "yahoo") {
-      return await handleYahoo(req, res);
-    } else if (source === "yahoo-search") {
-      return await handleYahooSearch(req, res);
     } else {
-      return res.status(400).json({ error: "Missing or invalid 'source'. Use 'ecb', 'yahoo', or 'yahoo-search'." });
+      return res.status(400).json({ error: "Missing or invalid 'source'. Only 'ecb' is supported." });
     }
   } catch (e) {
     console.error("[vesta-factors] error:", e);
     return res.status(502).json({ error: e.message || "Upstream fetch failed" });
   }
-}
-
-const YAHOO_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36";
-
-async function handleYahooSearch(req, res) {
-  const { q } = req.query;
-  if (!q || !q.trim()) return res.status(400).json({ error: "Missing 'q' (search query)" });
-
-  const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=12&newsCount=0`;
-  const upstream = await fetch(url, {
-    headers: { "User-Agent": YAHOO_USER_AGENT, "Accept": "application/json" },
-  });
-  if (!upstream.ok) {
-    return res.status(upstream.status).json({ error: `Yahoo search returned ${upstream.status}` });
-  }
-  const data = await upstream.json();
-  const quotes = (data.quotes || [])
-    .filter(q => q.symbol) // descarta entradas sin ticker (a veces incluye noticias/otros)
-    .map(q => ({
-      symbol: q.symbol,
-      name: q.shortname || q.longname || q.symbol,
-      exchange: q.exchange || q.exchDisp || "",
-      type: q.quoteType || q.typeDisp || "",
-    }));
-  return res.status(200).json({ results: quotes });
 }
 
 async function handleECB(req, res) {
@@ -113,43 +81,4 @@ function splitCsvLine(line) {
   }
   out.push(cur);
   return out;
-}
-
-async function handleYahoo(req, res) {
-  const { ticker, range = "3mo", interval = "1d" } = req.query;
-  if (!ticker) return res.status(400).json({ error: "Missing 'ticker' (e.g. URTH, ACWV, ^IBEX)" });
-
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}&events=div,splits`;
-
-  const upstream = await fetch(url, {
-    headers: {
-      // Yahoo's unofficial endpoint tends to reject requests with no
-      // browser-like User-Agent.
-      "User-Agent": YAHOO_USER_AGENT,
-      "Accept": "application/json",
-    },
-  });
-
-  if (!upstream.ok) {
-    return res.status(upstream.status).json({ error: `Yahoo endpoint returned ${upstream.status}` });
-  }
-
-  const data = await upstream.json();
-  const result = data?.chart?.result?.[0];
-  if (!result) {
-    const errMsg = data?.chart?.error?.description || "No data returned for this ticker";
-    return res.status(404).json({ error: errMsg });
-  }
-
-  const timestamps = result.timestamp || [];
-  const adjclose = result.indicators?.adjclose?.[0]?.adjclose;
-  const close = result.indicators?.quote?.[0]?.close;
-  const prices = adjclose || close || [];
-
-  const series = timestamps
-    .map((ts, i) => ({ ts, value: prices[i] }))
-    .filter(p => p.value != null)
-    .map(p => ({ date: new Date(p.ts * 1000).toISOString().slice(0, 10), value: p.value }));
-
-  return res.status(200).json({ series });
 }
