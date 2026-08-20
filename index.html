@@ -11741,6 +11741,38 @@
       for(const p of series) map.set(p.date.getTime(), p.value);
       return [...map.entries()].map(([t,v])=>({date:new Date(t), value:v})).sort((a,b)=>a.date-b.date);
     }
+    // Investing.com usa formatos de fecha distintos según la frecuencia
+    // exportada: diario/semanal → "17.08.2026" (DD.MM.YYYY); mensual →
+    // "Ago 2026" (mes abreviado + año, sin puntos, en el idioma de la
+    // cuenta — cubrimos español e inglés). vsParseInvestingDate reconoce
+    // ambos y devuelve un objeto Date en UTC, o null si no reconoce nada.
+    const VS_MONTH_MAP = {
+      ene:0, feb:1, mar:2, abr:3, may:4, jun:5, jul:6, ago:7, sep:8, oct:9, nov:10, dic:11,
+      jan:0, apr:3, aug:7, dec:11, // equivalentes en inglés que difieren del español
+    };
+    function vsParseInvestingDate(dateStr){
+      // Formato diario/semanal: "DD.MM.YYYY"
+      if (dateStr.includes('.')) {
+        const [d,m,y] = dateStr.split('.');
+        if (d && m && y && !isNaN(+d) && !isNaN(+m) && !isNaN(+y)) {
+          return new Date(Date.UTC(+y, +m-1, +d));
+        }
+      }
+      // Formato mensual: "Mon YYYY" (ej. "Ago 2026", "Aug 2026")
+      const m = dateStr.match(/^([A-Za-zÀ-ÿ]{3})[a-zA-Zà-ÿ]*\s+(\d{4})$/);
+      if (m) {
+        const monthKey = m[1].toLowerCase();
+        const monthIdx = VS_MONTH_MAP[monthKey];
+        const year = +m[2];
+        if (monthIdx !== undefined && year) {
+          // Se ancla al último día del mes, igual que el resto de series
+          // mensuales del pipeline (ej. conversión de tipos de interés).
+          return new Date(Date.UTC(year, monthIdx + 1, 0));
+        }
+      }
+      return null;
+    }
+
     function vsParseInvestingCSV(text){
       const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim().length);
       const rows = lines.slice(1);
@@ -11750,9 +11782,8 @@
         if(cols.length < 2) continue;
         const dateStr = cols[0].replace(/"/g,'');
         const valStr = cols[1].replace(/"/g,'');
-        const [d,m,y] = dateStr.split('.');
-        if(!d||!m||!y) continue;
-        const date = new Date(Date.UTC(+y, +m-1, +d));
+        const date = vsParseInvestingDate(dateStr);
+        if(!date) continue;
         const value = parseFloat(valStr.replace(/\./g,'').replace(',', '.'));
         if(isNaN(value)) continue;
         series.push({date, value});
@@ -11979,9 +12010,16 @@
     // por Cloudflare) — esto simplemente abre el propio navegador del
     // usuario en una búsqueda de Google que encuentra directamente su página
     // de "Historical Data", que el usuario visita y descarga a mano.
+    //
+    // inurl:historical-data en vez de buscar la frase en el texto de la
+    // página: las páginas de datos históricos de Investing.com siguen el
+    // patrón .../funds/{slug}-historical-data o .../etfs/{slug}-historical-data
+    // — exigir que la cadena esté en la URL filtra artículos/noticias que
+    // solo mencionan "historical data" de pasada, y suele dejar el
+    // resultado correcto en primera posición.
     function vsOpenInvestingSearch(query) {
       if (!query || !query.trim()) return;
-      const q = `site:investing.com "historical data" ${query.trim()}`;
+      const q = `site:investing.com inurl:historical-data ${query.trim()}`;
       window.open(`https://www.google.com/search?q=${encodeURIComponent(q)}`, "_blank", "noopener");
     }
 
