@@ -11951,8 +11951,9 @@
       }
       return 2*eig;
     }
-    function vsSolveRBSA(r, X){
-      const maxIter = 5000, tol = 1e-10;
+    function vsSolveRBSA(r, X, maxIter){
+      maxIter = maxIter || 5000;
+      const tol = 1e-10;
       const nF = X[0].length;
       const L = vsEstimateLipschitz(X); const step = 1/L;
       let w = new Array(nF).fill(1/nF); let prevObj = Infinity; let converged=false; let iter=0;
@@ -11968,10 +11969,10 @@
       w = w.map(wi => Math.abs(wi)<1e-6 ? 0 : wi);
       const wSum = w.reduce((a,b)=>a+b,0);
       w = w.map(wi=>wi/wSum);
-      return {weights:w, iterations:iter, converged};
+      return {weights:w, iterations:iter, converged, maxIter};
     }
-    function vsRunRBSA(r, X, factorNames){
-      const {weights, iterations, converged} = vsSolveRBSA(r,X);
+    function vsRunRBSA(r, X, factorNames, maxIter){
+      const {weights, iterations, converged, maxIter: usedMaxIter} = vsSolveRBSA(r, X, maxIter);
       const fitted = vsMatVec(X,weights); const resid = r.map((ri,i)=>ri-fitted[i]);
       const rMean = r.reduce((a,b)=>a+b,0)/r.length;
       const ssRes = resid.reduce((a,e)=>a+e*e,0);
@@ -11985,7 +11986,7 @@
       if(nObs < 36) warnings.push(`Solo ${nObs} observaciones mensuales (<36 recomendado). Los pesos pueden ser inestables.`);
       if(rSquared < 0.6) warnings.push(`R² bajo (${rSquared.toFixed(2)}). Es posible que estos factores no representen bien la estrategia del fondo. No uses estos pesos para extrapolar hacia atrás.`);
       if(nObs < nFactors*8) warnings.push(`Solo ${nObs} observaciones para ${nFactors} factores (${(nObs/nFactors).toFixed(1)} obs/factor). Considera reducir el número de factores.`);
-      if(!converged) warnings.push(`El optimizador no convergió completamente en ${iterations} iteraciones.`);
+      if(!converged) warnings.push(`El optimizador no convergió en el límite de ${usedMaxIter} iteraciones. Prueba a subir "Iteraciones máximas" en el panel de análisis.`);
       for(let a=0; a<nFactors; a++){
         for(let b=a+1; b<nFactors; b++){
           const colA = X.map(row=>row[a]), colB = X.map(row=>row[b]);
@@ -12000,7 +12001,7 @@
       }
       const weightsByFactor = {};
       factorNames.forEach((name,i)=> weightsByFactor[name] = weights[i]);
-      return {weights:weightsByFactor, rSquared, trackingErrorAnnual, nObs, nFactors, warnings, converged};
+      return {weights:weightsByFactor, rSquared, trackingErrorAnnual, nObs, nFactors, warnings, converged, iterations, maxIter: usedMaxIter};
     }
 
     // ── Componentes de UI ────────────────────────────────────────────────────
@@ -12193,6 +12194,7 @@
       const [busy, setBusy] = useState(false);
       const [result, setResult] = useState(null);
       const [nObs, setNObs] = useState(0);
+      const [maxIter, setMaxIter] = useState(5000);
       const fileRef = useRef(null);
 
       const names = Object.keys(factors).sort();
@@ -12243,9 +12245,9 @@
             setBusy(false); return;
           }
 
-          const res = vsRunRBSA(r, X, selNames);
+          const res = vsRunRBSA(r, X, selNames, maxIter);
           setResult(res); setNObs(r.length);
-          setStatus(`Ajuste completado con ${r.length} observaciones.`);
+          setStatus(`Ajuste completado con ${r.length} observaciones (${res.iterations}/${maxIter} iteraciones${res.converged ? ", convergió" : ", NO convergió"}).`);
         } catch (e) {
           setStatus("Error: " + e.message);
         }
@@ -12292,6 +12294,13 @@
                 })}
               </div>
             )}
+
+            <label style={labelStyle}>
+              Iteraciones máximas
+              <span style={{ fontWeight: 400, color: "#5a7080" }}> — sube esto si el ajuste avisa de que no convergió</span>
+            </label>
+            <input style={inputStyle} type="number" min={100} step={500} value={maxIter}
+              onChange={e=>setMaxIter(Math.max(100, parseInt(e.target.value) || 5000))} />
 
             <button onClick={run} disabled={busy || !canRun}
               style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!canRun) ? "not-allowed" : "pointer", opacity: (busy||!canRun) ? 0.4 : 1 }}>
