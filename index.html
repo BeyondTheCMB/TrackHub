@@ -10485,6 +10485,7 @@
           _sb.from("meallog_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("bw_data").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("vs_factors").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("vs_analyses").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
         if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
@@ -11724,6 +11725,22 @@
       await _sb.from("vs_factors").upsert({ user_id: _sbUser.id, profile_id: profileId, data: factorsObj }, { onConflict: "user_id,profile_id" });
     };
 
+    // ── Análisis guardados (vs_analyses) ─────────────────────────────────────
+    // A diferencia de vs_factors (una fila por perfil), aquí cada análisis
+    // guardado es su propia fila — puedes guardar tantos como quieras.
+    const vsLoadAnalyses = async (profileId) => {
+      if (!profileId) return [];
+      const { data } = await _sb.from("vs_analyses").select("id, data, created_at").eq("user_id", _sbUser.id).eq("profile_id", profileId).order("created_at", { ascending: false });
+      return data || [];
+    };
+    const vsSaveAnalysis = async (profileId, analysisObj) => {
+      const { data } = await _sb.from("vs_analyses").insert({ user_id: _sbUser.id, profile_id: profileId, data: analysisObj }).select("id, data, created_at").single();
+      return data;
+    };
+    const vsDeleteAnalysis = async (id) => {
+      await _sb.from("vs_analyses").delete().eq("id", id).eq("user_id", _sbUser.id);
+    };
+
     // ── Parsers de CSV ────────────────────────────────────────────────────────
     function vsSplitCSVLine(line){
       const out = []; let cur=''; let inQ=false;
@@ -12186,7 +12203,7 @@
       );
     }
 
-    function VsAnalyze({ factors }) {
+    function VsAnalyze({ factors, onSaveAnalysis }) {
       const [fundName, setFundName] = useState("");
       const [file, setFile] = useState(null);
       const [selected, setSelected] = useState(new Set());
@@ -12195,6 +12212,8 @@
       const [result, setResult] = useState(null);
       const [nObs, setNObs] = useState(0);
       const [maxIter, setMaxIter] = useState(5000);
+      const [saving, setSaving] = useState(false);
+      const [saveMsg, setSaveMsg] = useState("");
       const fileRef = useRef(null);
 
       const names = Object.keys(factors).sort();
@@ -12205,9 +12224,30 @@
         setSelected(next);
       };
 
+      const saveThisAnalysis = async () => {
+        if (!result) return;
+        setSaving(true); setSaveMsg("");
+        try {
+          await onSaveAnalysis({
+            fundName: fundName.trim(),
+            weights: result.weights,
+            rSquared: result.rSquared,
+            trackingErrorAnnual: result.trackingErrorAnnual,
+            nObs: result.nObs,
+            nFactors: result.nFactors,
+            warnings: result.warnings,
+            savedAt: new Date().toISOString(),
+          });
+          setSaveMsg("Guardado ✓");
+        } catch (e) {
+          setSaveMsg("Error al guardar: " + e.message);
+        }
+        setSaving(false);
+      };
+
       const run = async () => {
         if (!fundName.trim() || !file || selected.size === 0) return;
-        setBusy(true); setStatus("procesando…"); setResult(null);
+        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg("");
         try {
           const text = await file.text();
           const raw = vsParseInvestingCSV(text);
@@ -12351,9 +12391,116 @@
                     {result.warnings.length ? result.warnings.map((w,i)=><li key={i}>{w}</li>) : <li>No se han disparado alertas de fiabilidad para este ajuste.</li>}
                   </ul>
                 </div>
+
+                <button onClick={saveThisAnalysis} disabled={saving}
+                  style={{ marginTop: 14, width: "100%", background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+                  💾 {saving ? "guardando…" : "Guardar este análisis"}
+                </button>
+                {saveMsg && <div style={{ marginTop: 6, fontSize: 11, color: saveMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveMsg}</div>}
               </div>
             )}
+
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+              <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                cuándo tomarse en serio el resultado
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {["Métrica","Poco fiable","Aceptable","Bueno"].map(h => (
+                      <th key={h} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: "uppercase", padding: "4px 6px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ["Observaciones", "< 36", "36–60", "> 60"],
+                    ["Obs. por factor", "< 8", "8–15", "> 15"],
+                    ["R²", "< 0.50", "0.50–0.70", "> 0.70"],
+                    ["Correlación entre factores", "> 0.85 (aviso)", "—", "< 0.70"],
+                  ].map(row => (
+                    <tr key={row[0]}>
+                      <td style={{ padding: "5px 6px", color: "#9aaabb", borderBottom: "1px solid #1a2535" }}>{row[0]}</td>
+                      <td style={{ padding: "5px 6px", color: "#f87171", fontFamily: "'DM Mono',monospace", borderBottom: "1px solid #1a2535" }}>{row[1]}</td>
+                      <td style={{ padding: "5px 6px", color: "#f59e0b", fontFamily: "'DM Mono',monospace", borderBottom: "1px solid #1a2535" }}>{row[2]}</td>
+                      <td style={{ padding: "5px 6px", color: "#4ade80", fontFamily: "'DM Mono',monospace", borderBottom: "1px solid #1a2535" }}>{row[3]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
+        </div>
+      );
+    }
+
+    function VsSavedAnalyses({ analyses, onDelete }) {
+      const [expanded, setExpanded] = useState(null); // id del análisis abierto, o null
+      const [deletingId, setDeletingId] = useState(null);
+
+      const handleDelete = async (id) => {
+        setDeletingId(id);
+        await onDelete(id);
+        setDeletingId(null);
+      };
+
+      if (!analyses.length) {
+        return (
+          <div style={{ padding: 20 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 320, color: "#3a4550", gap: 8 }}>
+              <div style={{ fontSize: 32, opacity: 0.4 }}>💾</div>
+              <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace" }}>aún no has guardado ningún análisis</div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div style={{ padding: 20, maxWidth: 760 }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Análisis guardados</div>
+          <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 16 }}>{analyses.length} guardado{analyses.length===1?"":"s"}</div>
+
+          {analyses.map(a => {
+            const d = a.data;
+            const isOpen = expanded === a.id;
+            const sortedWeights = Object.entries(d.weights || {}).sort((x,y)=>y[1]-x[1]);
+            const rsqColor = d.rSquared >= 0.7 ? "#4ade80" : d.rSquared >= 0.5 ? "#f59e0b" : "#f87171";
+            return (
+              <div key={a.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 16, marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }} onClick={()=>setExpanded(isOpen ? null : a.id)}>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: rsqColor, minWidth: 46 }}>{d.rSquared?.toFixed(2)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.fundName || "(sin nombre)"}</div>
+                    <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                      {new Date(a.created_at).toLocaleDateString()} · {d.nObs} obs · {sortedWeights.slice(0,2).map(([nm,w])=>`${nm} ${(w*100).toFixed(0)}%`).join(", ")}{sortedWeights.length>2 ? "…" : ""}
+                    </div>
+                  </div>
+                  <button onClick={(e)=>{ e.stopPropagation(); handleDelete(a.id); }} disabled={deletingId===a.id}
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
+                    {deletingId===a.id ? "…" : "quitar"}
+                  </button>
+                  <span style={{ color: "#5a7080", fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+
+                {isOpen && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
+                    <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 12 }}>
+                      <div><span style={{ color: "#7a90a8" }}>Observaciones: </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{d.nObs}</span></div>
+                      <div><span style={{ color: "#7a90a8" }}>Tracking error: </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{(d.trackingErrorAnnual*100).toFixed(2)}%</span></div>
+                    </div>
+                    {sortedWeights.map(([nm,w]) => <VsWeightBar key={nm} name={nm} weight={w} />)}
+                    {d.warnings && d.warnings.length > 0 && (
+                      <div style={{ marginTop: 10, fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>
+                        {d.warnings.length} aviso{d.warnings.length===1?"":"s"} de fiabilidad en el momento de guardar
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       );
     }
@@ -12362,6 +12509,7 @@
       const [tab, setTab] = useState("pool");
       const [factors, setFactors] = useState({});
       const [loading, setLoading] = useState(true);
+      const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
 
       useEffect(() => {
@@ -12392,6 +12540,7 @@
             }
           }
         });
+        vsLoadAnalyses(profileId).then(setSavedAnalyses);
       }, [profileId]);
 
       const handleAdd = async (name, data) => {
@@ -12406,9 +12555,20 @@
         await vsSaveFactors(profileId, next);
       };
 
+      const handleSaveAnalysis = async (analysisObj) => {
+        const saved = await vsSaveAnalysis(profileId, analysisObj);
+        if (saved) setSavedAnalyses(prev => [saved, ...prev]);
+        return saved;
+      };
+      const handleDeleteAnalysis = async (id) => {
+        await vsDeleteAnalysis(id);
+        setSavedAnalyses(prev => prev.filter(a => a.id !== id));
+      };
+
       const TABS = [
         { id: "pool", label: "Pool de Factores", icon: "🗂" },
         { id: "test", label: "Analizar Fondo", icon: "📈" },
+        { id: "saved", label: "Guardadas", icon: "💾" },
       ];
 
       return (
@@ -12453,7 +12613,8 @@
             ) : (
               <>
                 {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} />}
-                {tab === "test" && <VsAnalyze factors={factors} />}
+                {tab === "test" && <VsAnalyze factors={factors} onSaveAnalysis={handleSaveAnalysis} />}
+                {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
             )}
           </div>
