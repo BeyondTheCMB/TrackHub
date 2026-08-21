@@ -12586,6 +12586,91 @@
       });
     }
 
+    // ── Formulario de edición reutilizable (índices y fondos) ────────────────
+    // Cambiar nombre, categoría, nota, o reemplazar el CSV por completo.
+    // Si no se sube ningún archivo nuevo, se conservan los retornos que ya
+    // había — solo se tocan los metadatos.
+    function VsEditEntryForm({ currentName, category, description, sourceType, currentReturns, sourceTypeOptions, onSave, onCancel }) {
+      const [newName, setNewName] = useState(currentName);
+      const [newCategory, setNewCategory] = useState(category);
+      const [newDescription, setNewDescription] = useState(description || "");
+      const [newSourceType, setNewSourceType] = useState(sourceType);
+      const [file, setFile] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const [status, setStatus] = useState("");
+      const fileRef = useRef(null);
+
+      const inputStyle = { width: "100%", background: "#0d1825", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12 };
+      const labelStyle = { display: "block", fontSize: 11, color: "#7a90a8", margin: "10px 0 5px", fontWeight: 500 };
+
+      const handleSave = async () => {
+        if (!newName.trim()) return;
+        setBusy(true); setStatus("procesando…");
+        try {
+          let returns = currentReturns;
+          if (file) {
+            const text = await file.text();
+            let raw;
+            if (newSourceType === "investing") raw = vsParseInvestingCSV(text);
+            else if (newSourceType === "ecb_rate") raw = vsParseECBCSV(text);
+            else raw = vsParseFREDCSV(text);
+            if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV nuevo."); setBusy(false); return; }
+            const parsed = (newSourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
+            if (parsed.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
+            returns = parsed.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value }));
+          }
+          await onSave(currentName, newName.trim(), { category: newCategory, sourceType: newSourceType, description: newDescription, returns });
+          const w = file ? vsDensityWarning(returns.map(r => ({ date: new Date(r.date + "T00:00:00Z"), value: r.value }))) : null;
+          setStatus(`Guardado ✓${w ? "\n" + w : ""}`);
+        } catch (e) {
+          setStatus("Error: " + e.message);
+        }
+        setBusy(false);
+      };
+
+      return (
+        <div style={{ padding: 12, background: "#060d14", border: "1px solid #1a2535", borderRadius: 8, marginTop: 6, marginBottom: 4 }}>
+          {newName.trim() !== currentName && (
+            <div style={{ fontSize: 10, color: "#f59e0b", fontFamily: "'DM Mono',monospace", marginBottom: 8, lineHeight: 1.5 }}>
+              ⚠ Los análisis guardados y el backtest referencian por nombre — si renombras esto, dejarán de encontrarlo.
+            </div>
+          )}
+          <label style={labelStyle}>Nombre</label>
+          <input style={inputStyle} type="text" value={newName} onChange={e=>setNewName(e.target.value)} />
+
+          <label style={labelStyle}>Categoría</label>
+          <select style={inputStyle} value={newCategory} onChange={e=>setNewCategory(e.target.value)}>
+            {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          <label style={labelStyle}>Nota <span style={{fontWeight:400}}>(opcional)</span></label>
+          <input style={inputStyle} type="text" value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="breve nota" />
+
+          <label style={labelStyle}>Reemplazar CSV <span style={{fontWeight:400}}>(opcional — vacío mantiene los datos actuales)</span></label>
+          <select style={inputStyle} value={newSourceType} onChange={e=>setNewSourceType(e.target.value)}>
+            {sourceTypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <input ref={fileRef} style={{...inputStyle, padding: 6, marginTop: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+          <button onClick={()=>vsOpenInvestingSearch(newName)} disabled={!newName.trim()} type="button"
+            style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: newName.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "6px", fontSize: 10, cursor: newName.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+            🔎 Buscar "{newName.trim() || "…"}" en Investing.com ↗
+          </button>
+
+          <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+            <button onClick={handleSave} disabled={busy || !newName.trim()}
+              style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 700, cursor: (busy||!newName.trim())?"not-allowed":"pointer", opacity: (busy||!newName.trim())?0.4:1 }}>
+              {busy ? "guardando…" : "Guardar cambios"}
+            </button>
+            <button onClick={onCancel} disabled={busy}
+              style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px 14px", fontSize: 12, cursor: busy?"not-allowed":"pointer" }}>
+              cancelar
+            </button>
+          </div>
+          {status && <div style={{ marginTop: 8, fontSize: 11, color: status.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
+        </div>
+      );
+    }
+
     function VsCatTag({ category }) {
       const c = VS_CAT_COLOR[category] || "#7a90a8";
       return (
@@ -12595,7 +12680,7 @@
       );
     }
 
-    function VsFactorPool({ factors, onAdd, onRemove }) {
+    function VsFactorPool({ factors, onAdd, onRemove, onUpdate }) {
       const [name, setName] = useState("");
       const [category, setCategory] = useState("equity");
       const [sourceType, setSourceType] = useState("investing");
@@ -12604,6 +12689,7 @@
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
       const [showCorr, setShowCorr] = useState(false);
+      const [editOpenFor, setEditOpenFor] = useState(null);
       const fileRef = useRef(null);
 
       const names = Object.keys(factors).sort();
@@ -12703,7 +12789,8 @@
                     const f = factors[nm];
                     const rs = f.returns;
                     return (
-                      <tr key={nm}>
+                      <React.Fragment key={nm}>
+                      <tr>
                         <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>
                           {nm}{f.builtin && <span title="Automático — se refresca solo" style={{ marginLeft: 6, color: VS_A, fontSize: 10 }}>⚡</span>}
                         </td>
@@ -12717,14 +12804,38 @@
                           {f.builtin ? (
                             <span style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace" }}>automático</span>
                           ) : (
-                            <button onClick={()=>onRemove(nm)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
-                              onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
-                              onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
-                              quitar
-                            </button>
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <button onClick={()=>setEditOpenFor(editOpenFor===nm?null:nm)}
+                                style={{ background: "none", border: "1px solid #1a2535", color: editOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "4px 8px", fontSize: 11, cursor: "pointer" }}>
+                                ✎ editar
+                              </button>
+                              <button onClick={()=>onRemove(nm)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                                onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
+                                onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
+                                quitar
+                              </button>
+                            </div>
                           )}
                         </td>
                       </tr>
+                      {editOpenFor === nm && (
+                        <tr>
+                          <td colSpan={6} style={{ padding: 0, borderBottom: "1px solid #1a2535" }}>
+                            <VsEditEntryForm
+                              currentName={nm} category={f.category} description={f.description} sourceType={f.sourceType}
+                              currentReturns={f.returns}
+                              sourceTypeOptions={[
+                                { value: "investing", label: "Investing.com (Fecha, Último)" },
+                                { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
+                                { value: "fred_rate", label: "FRED (tipo de interés)" },
+                              ]}
+                              onSave={async (oldName, newName, data) => { await onUpdate(oldName, newName, data); }}
+                              onCancel={()=>setEditOpenFor(null)}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -13239,7 +13350,7 @@
       );
     }
 
-    function VsCorrelationTab({ factors, funds, onAddFund, onRemoveFund }) {
+    function VsCorrelationTab({ factors, funds, onAddFund, onRemoveFund, onUpdateFund }) {
       const [name, setName] = useState("");
       const [category, setCategory] = useState("equity");
       const [sourceType, setSourceType] = useState("investing");
@@ -13266,6 +13377,7 @@
       const selectAll = () => setSelected(new Set(allNames));
       const selectNone = () => setSelected(new Set());
       const [chartOpenFor, setChartOpenFor] = useState(null); // nombre del que tiene la gráfica abierta
+      const [editOpenFor, setEditOpenFor] = useState(null);
 
 
       const handleRegister = async () => {
@@ -13385,6 +13497,10 @@
                           style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", marginRight: 4 }}>
                           📈
                         </button>
+                        <button onClick={(e)=>{ e.preventDefault(); setEditOpenFor(editOpenFor===nm?null:nm); }}
+                          style={{ background: "none", border: "1px solid #1a2535", color: editOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", marginRight: 4 }}>
+                          ✎
+                        </button>
                         <button onClick={(e)=>{ e.preventDefault(); onRemoveFund(nm); }}
                           style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
                           onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
@@ -13396,6 +13512,18 @@
                         <div style={{ padding: "8px 4px 12px" }}>
                           <VsLineChart series={vsReturnsToGrowthSeries(funds[nm].returns)} height={180} />
                         </div>
+                      )}
+                      {editOpenFor === nm && (
+                        <VsEditEntryForm
+                          currentName={nm} category={funds[nm].category} description={funds[nm].description} sourceType={funds[nm].sourceType}
+                          currentReturns={funds[nm].returns}
+                          sourceTypeOptions={[
+                            { value: "investing", label: "Investing.com (Fecha, Último)" },
+                            { value: "fred_rate", label: "FRED (tipo de interés)" },
+                          ]}
+                          onSave={async (oldName, newName, data) => { await onUpdateFund(oldName, newName, data); }}
+                          onCancel={()=>setEditOpenFor(null)}
+                        />
                       )}
                     </div>
                   ))}
@@ -13585,6 +13713,16 @@
         setFactors(next);
         await vsSaveFactors(profileId, next);
       };
+      // Operación atómica (rename + reemplazo de datos en una sola escritura)
+      // para no arriesgar una condición de carrera si se hiciera como dos
+      // llamadas separadas (add + remove) sobre el mismo estado.
+      const handleUpdateFactor = async (oldName, newName, data) => {
+        const next = { ...factors };
+        if (oldName !== newName) delete next[oldName];
+        next[newName] = data;
+        setFactors(next);
+        await vsSaveFactors(profileId, next);
+      };
 
       const handleAddFund = async (name, data) => {
         const next = { ...funds, [name]: data };
@@ -13595,6 +13733,13 @@
       const handleRemoveFund = async (name) => {
         const next = { ...funds };
         delete next[name];
+        setFunds(next);
+        await vsSaveFunds(profileId, next);
+      };
+      const handleUpdateFund = async (oldName, newName, data) => {
+        const next = { ...funds };
+        if (oldName !== newName) delete next[oldName];
+        next[newName] = data;
         setFunds(next);
         await vsSaveFunds(profileId, next);
       };
@@ -13658,9 +13803,9 @@
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Cargando…</div>
             ) : (
               <>
-                {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} />}
+                {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} onUpdate={handleUpdateFactor} />}
                 {tab === "test" && <VsAnalyze factors={factors} funds={funds} onAddFund={handleAddFund} onSaveAnalysis={handleSaveAnalysis} />}
-                {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} />}
+                {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} onUpdateFund={handleUpdateFund} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
