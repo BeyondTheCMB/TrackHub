@@ -10486,7 +10486,7 @@
           _sb.from("bw_data").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("vs_factors").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("vs_analyses").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
-          _sb.from("vs_corr_assets").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("vs_funds").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
         if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
@@ -11742,18 +11742,45 @@
       await _sb.from("vs_analyses").delete().eq("id", id).eq("user_id", _sbUser.id);
     };
 
-    // ── Activos para la pestaña de Correlación (vs_corr_assets) ──────────────
-    // Colección separada del pool de factores: aquí se guardan fondos/índices
-    // que quieres comparar entre sí, sin que "contaminen" el pool usado
-    // para RBSA (que tiene su propia noción de qué es un buen factor).
-    const vsLoadCorrAssets = async (profileId) => {
+    // ── Pool de Fondos (vs_funds) ──────────────────────────────────────────
+    // Único pool de fondos, reutilizado tanto en "Analizar Fondo" como en
+    // "Correlación" — se añade una vez, se usa en los dos sitios. Distinto
+    // del pool de Índices (vs_factors), que existe para RBSA.
+    const vsLoadFunds = async (profileId) => {
       if (!profileId) return {};
-      const { data } = await _sb.from("vs_corr_assets").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      const { data } = await _sb.from("vs_funds").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
       return (data && data.data) ? data.data : {};
     };
-    const vsSaveCorrAssets = async (profileId, assetsObj) => {
-      await _sb.from("vs_corr_assets").upsert({ user_id: _sbUser.id, profile_id: profileId, data: assetsObj }, { onConflict: "user_id,profile_id" });
+    const vsSaveFunds = async (profileId, fundsObj) => {
+      await _sb.from("vs_funds").upsert({ user_id: _sbUser.id, profile_id: profileId, data: fundsObj }, { onConflict: "user_id,profile_id" });
     };
+
+    // Reconstruye Date objects (incluido startDate) a partir de retornos de
+    // fondo persistidos. startDate se guarda desde vsToMonthlyReturns para
+    // que la alineación por ventana real siga funcionando aunque el fondo
+    // se cargue del pool en vez de subir el CSV cada vez. Si falta (datos
+    // guardados antes de este campo, o el primer punto de la serie), se
+    // deriva de la fecha del punto anterior — o, si no hay anterior, se
+    // retrocede un mes aproximado.
+    function vsHydrateFundReturns(storedReturns) {
+      const parsed = storedReturns.map(p => ({
+        date: new Date(p.date + "T00:00:00Z"),
+        value: p.value,
+        startDate: p.startDate ? new Date(p.startDate + "T00:00:00Z") : null,
+      }));
+      for (let i = 0; i < parsed.length; i++) {
+        if (!parsed[i].startDate) {
+          if (i > 0) {
+            parsed[i].startDate = parsed[i-1].date;
+          } else {
+            const d = new Date(parsed[i].date);
+            d.setUTCMonth(d.getUTCMonth() - 1);
+            parsed[i].startDate = d;
+          }
+        }
+      }
+      return parsed;
+    }
 
     // ── Parsers de CSV ────────────────────────────────────────────────────────
     function vsSplitCSVLine(line){
@@ -12382,9 +12409,14 @@
       );
     }
 
-    function VsAnalyze({ factors, onSaveAnalysis }) {
-      const [fundName, setFundName] = useState("");
+    function VsAnalyze({ factors, funds, onAddFund, onSaveAnalysis }) {
+      const [mode, setMode] = useState("pool"); // "pool" (elegir de Fondos) | "upload" (subir nuevo)
+      const [selectedFund, setSelectedFund] = useState(null); // nombre en `funds`
+      const [newFundName, setNewFundName] = useState("");
+      const [newFundCategory, setNewFundCategory] = useState("equity");
       const [file, setFile] = useState(null);
+      const [addingFund, setAddingFund] = useState(false);
+      const [addFundStatus, setAddFundStatus] = useState("");
       const [selected, setSelected] = useState(new Set());
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
@@ -12397,6 +12429,8 @@
       const fileRef = useRef(null);
 
       const names = Object.keys(factors).sort();
+      const fundNames = Object.keys(funds).sort();
+      const activeFundName = mode === "pool" ? selectedFund : newFundName.trim();
 
       const toggle = (nm) => {
         const next = new Set(selected);
@@ -12409,7 +12443,7 @@
         setSaving(true); setSaveMsg("");
         try {
           await onSaveAnalysis({
-            fundName: fundName.trim(),
+            fundName: activeFundName,
             weights: result.weights,
             rSquared: result.rSquared,
             trackingErrorAnnual: result.trackingErrorAnnual,
@@ -12429,14 +12463,40 @@
         setSaving(false);
       };
 
-      const run = async () => {
-        if (!fundName.trim() || !file || selected.size === 0) return;
-        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg("");
+      // Sube un CSV nuevo y lo guarda directamente en el pool de Fondos —
+      // así queda disponible para próximas veces (aquí y en Correlación)
+      // sin tener que volver a subirlo.
+      const addFundToPool = async () => {
+        if (!newFundName.trim() || !file) return;
+        setAddingFund(true); setAddFundStatus("procesando…");
         try {
           const text = await file.text();
           const raw = vsParseInvestingCSV(text);
-          if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV del fondo."); setBusy(false); return; }
-          const fReturns = vsToMonthlyReturns(raw);
+          if (raw.length < 2) { setAddFundStatus("Error: no se pudieron leer filas del CSV."); setAddingFund(false); return; }
+          const returns = vsToMonthlyReturns(raw);
+          if (returns.length < 3) { setAddFundStatus("Error: muy pocas observaciones mensuales resultantes."); setAddingFund(false); return; }
+
+          await onAddFund(newFundName.trim(), {
+            category: newFundCategory, sourceType: "investing", description: "",
+            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
+          });
+
+          setAddFundStatus(`Añadido al pool: ${returns.length} retornos (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
+          // Cambiamos a modo "pool" y lo dejamos ya seleccionado, listo para analizar.
+          setMode("pool");
+          setSelectedFund(newFundName.trim());
+        } catch (e) {
+          setAddFundStatus("Error: " + e.message);
+        }
+        setAddingFund(false);
+      };
+
+      const run = async () => {
+        if (!activeFundName || selected.size === 0) return;
+        if (mode === "pool" && !funds[selectedFund]) return;
+        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg("");
+        try {
+          const fReturns = vsHydrateFundReturns(funds[selectedFund].returns);
 
           const selNames = [...selected];
           const factorSeries = {};
@@ -12485,22 +12545,70 @@
 
       const sortedWeights = result ? Object.entries(result.weights).sort((a,b)=>b[1]-a[1]) : [];
       const rsqColor = !result ? "#7a90a8" : result.rSquared >= 0.7 ? "#4ade80" : result.rSquared >= 0.5 ? "#f59e0b" : "#f87171";
-      const canRun = !!fundName.trim() && !!file && selected.size>0;
+      const canRun = mode === "pool" && !!selectedFund && !!funds[selectedFund] && selected.size>0;
 
       return (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Fondo a analizar</div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Fondo a analizar</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
+              El pool de Fondos es compartido con la pestaña Correlación — se sube una vez, se usa en las dos.
+            </div>
 
-            <label style={labelStyle}>Nombre del fondo</label>
-            <input style={inputStyle} type="text" value={fundName} onChange={e=>setFundName(e.target.value)} placeholder="ej: Gamma Global" />
+            <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+              <button onClick={()=>setMode("pool")}
+                style={{ flex: 1, background: mode==="pool" ? VS_A+"18" : "none", border: `1px solid ${mode==="pool" ? VS_A : "#1a2535"}`, color: mode==="pool" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                🗂 Del pool ({fundNames.length})
+              </button>
+              <button onClick={()=>setMode("upload")}
+                style={{ flex: 1, background: mode==="upload" ? VS_A+"18" : "none", border: `1px solid ${mode==="upload" ? VS_A : "#1a2535"}`, color: mode==="upload" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                📄 Subir nuevo
+              </button>
+            </div>
 
-            <label style={labelStyle}>Archivo CSV (Investing.com)</label>
-            <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
-            <button onClick={()=>vsOpenInvestingSearch(fundName)} disabled={!fundName.trim()} type="button"
-              style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: fundName.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: fundName.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
-              🔎 Buscar "{fundName.trim() || "…"}" en Investing.com ↗
-            </button>
+            {mode === "pool" ? (
+              fundNames.length === 0 ? (
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>El pool de Fondos está vacío — sube uno con "Subir nuevo".</div>
+              ) : (
+                <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
+                  {fundNames.map(nm => {
+                    const f = funds[nm];
+                    const rs = f.returns;
+                    return (
+                      <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedFund === nm ? "#171f2c" : "none" }}>
+                        <input type="radio" name="vs-fund-pick" checked={selectedFund === nm} onChange={()=>setSelectedFund(nm)} style={{ accentColor: VS_A }} />
+                        <span style={{ flex: 1 }}>{nm}</span>
+                        <span style={{ color: "#5a7080", fontFamily: "'DM Mono',monospace", fontSize: 10 }}>{rs[0]?.date.slice(0,7)}→{rs[rs.length-1]?.date.slice(0,7)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )
+            ) : (
+              <div>
+                <label style={labelStyle}>Nombre del fondo</label>
+                <input style={inputStyle} type="text" value={newFundName} onChange={e=>setNewFundName(e.target.value)} placeholder="ej: Gamma Global" />
+
+                <label style={labelStyle}>Categoría</label>
+                <select style={inputStyle} value={newFundCategory} onChange={e=>setNewFundCategory(e.target.value)}>
+                  {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                <label style={labelStyle}>Archivo CSV (Investing.com)</label>
+                <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+                <button onClick={()=>vsOpenInvestingSearch(newFundName)} disabled={!newFundName.trim()} type="button"
+                  style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: newFundName.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: newFundName.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+                  🔎 Buscar "{newFundName.trim() || "…"}" en Investing.com ↗
+                </button>
+
+                <button onClick={addFundToPool} disabled={addingFund || !newFundName.trim() || !file}
+                  style={{ marginTop: 12, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 700, cursor: (addingFund||!newFundName.trim()||!file) ? "not-allowed" : "pointer", opacity: (addingFund||!newFundName.trim()||!file) ? 0.4 : 1 }}>
+                  {addingFund ? "añadiendo…" : "Añadir al pool y usar"}
+                </button>
+                {addFundStatus && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{addFundStatus}</div>}
+              </div>
+            )}
+
 
             <label style={labelStyle}>Factores a incluir</label>
             {names.length === 0 ? (
@@ -12577,7 +12685,7 @@
                     <div key={nm} title={`${nm}: ${(w*100).toFixed(1)}%`} style={{ width: `${(w*100).toFixed(1)}%`, background: VS_CAT_COLOR[factors[nm]?.category] || VS_A }} />
                   ))}
                 </div>
-                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 18 }}>composición de estilo efectiva — {fundName}</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 18 }}>composición de estilo efectiva — {activeFundName}</div>
 
                 <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14, marginTop: 20, marginBottom: 10 }}>Pesos por factor</div>
                 {sortedWeights.map(([nm,w]) => <VsWeightBar key={nm} name={nm} weight={w} />)}
@@ -12704,7 +12812,7 @@
       );
     }
 
-    function VsCorrelationTab({ factors, corrAssets, onAddAsset, onRemoveAsset }) {
+    function VsCorrelationTab({ factors, funds, onAddFund, onRemoveFund }) {
       const [name, setName] = useState("");
       const [category, setCategory] = useState("equity");
       const [sourceType, setSourceType] = useState("investing");
@@ -12714,13 +12822,13 @@
       const [busy, setBusy] = useState(false);
       const fileRef = useRef(null);
 
-      const poolNames = Object.keys(factors).sort();
-      const assetNames = Object.keys(corrAssets).sort();
-      const allNames = [...poolNames, ...assetNames];
-      const combinedData = { ...factors, ...corrAssets };
+      const indexNames = Object.keys(factors).sort();
+      const fundNames = Object.keys(funds).sort();
+      const allNames = [...indexNames, ...fundNames];
+      const combinedData = { ...factors, ...funds };
 
-      // Todo seleccionado por defecto al entrar en la pestaña — los del
-      // pool ya disponibles de serie, más lo que hayas añadido aquí antes.
+      // Todo seleccionado por defecto al entrar en la pestaña — los
+      // índices del pool y los fondos ya guardados, disponibles de serie.
       const [selected, setSelected] = useState(() => new Set(allNames));
 
       const toggle = (nm) => {
@@ -12744,9 +12852,9 @@
           const returns = (sourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
           if (returns.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
 
-          await onAddAsset(name.trim(), {
+          await onAddFund(name.trim(), {
             category, sourceType, description,
-            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
+            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
           });
 
           setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
@@ -12768,13 +12876,13 @@
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir fondo o índice</div>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir fondo</div>
               <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
-                No hace falta que sea un buen factor de RBSA — aquí solo se compara correlación pareja a pareja.
+                Va al pool de Fondos — también estará disponible en "Analizar Fondo", sin tener que subirlo dos veces.
               </div>
 
               <label style={labelStyle}>Nombre</label>
-              <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: Otro Fondo Cualquiera" />
+              <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: Gamma Global" />
 
               <label style={labelStyle}>Categoría</label>
               <select style={inputStyle} value={category} onChange={e=>setCategory(e.target.value)}>
@@ -12799,7 +12907,7 @@
 
               <button onClick={handleRegister} disabled={busy || !name.trim() || !file}
                 style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!name.trim()||!file) ? "not-allowed" : "pointer", opacity: (busy||!name.trim()||!file) ? 0.4 : 1 }}>
-                Añadir
+                Añadir al pool de Fondos
               </button>
               {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
             </div>
@@ -12813,10 +12921,10 @@
                 </div>
               </div>
 
-              {poolNames.length > 0 && (
+              {indexNames.length > 0 && (
                 <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>del pool</div>
-                  {poolNames.map(nm => (
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>índices (pool)</div>
+                  {indexNames.map(nm => (
                     <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
                       <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
                       <span>{nm}</span>
@@ -12825,14 +12933,14 @@
                 </div>
               )}
 
-              {assetNames.length > 0 && (
+              {fundNames.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>añadidos aquí</div>
-                  {assetNames.map(nm => (
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>fondos (pool)</div>
+                  {fundNames.map(nm => (
                     <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
                       <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
                       <span style={{ flex: 1 }}>{nm}</span>
-                      <button onClick={(e)=>{ e.preventDefault(); onRemoveAsset(nm); }}
+                      <button onClick={(e)=>{ e.preventDefault(); onRemoveFund(nm); }}
                         style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
                         onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
                         onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
@@ -12844,7 +12952,7 @@
               )}
 
               {allNames.length === 0 && (
-                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Nada disponible todavía — añade factores en Pool o un fondo aquí arriba.</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Nada disponible todavía — añade índices en Pool o un fondo aquí arriba.</div>
               )}
             </div>
           </div>
@@ -12870,7 +12978,7 @@
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const [tab, setTab] = useState("pool");
       const [factors, setFactors] = useState({});
-      const [corrAssets, setCorrAssets] = useState({});
+      const [funds, setFunds] = useState({});
       const [loading, setLoading] = useState(true);
       const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
@@ -12904,7 +13012,7 @@
           }
         });
         vsLoadAnalyses(profileId).then(setSavedAnalyses);
-        vsLoadCorrAssets(profileId).then(setCorrAssets);
+        vsLoadFunds(profileId).then(setFunds);
       }, [profileId]);
 
       const handleAdd = async (name, data) => {
@@ -12919,16 +13027,17 @@
         await vsSaveFactors(profileId, next);
       };
 
-      const handleAddCorrAsset = async (name, data) => {
-        const next = { ...corrAssets, [name]: data };
-        setCorrAssets(next);
-        await vsSaveCorrAssets(profileId, next);
+      const handleAddFund = async (name, data) => {
+        const next = { ...funds, [name]: data };
+        setFunds(next);
+        await vsSaveFunds(profileId, next);
+        return next;
       };
-      const handleRemoveCorrAsset = async (name) => {
-        const next = { ...corrAssets };
+      const handleRemoveFund = async (name) => {
+        const next = { ...funds };
         delete next[name];
-        setCorrAssets(next);
-        await vsSaveCorrAssets(profileId, next);
+        setFunds(next);
+        await vsSaveFunds(profileId, next);
       };
 
       const handleSaveAnalysis = async (analysisObj) => {
@@ -12990,8 +13099,8 @@
             ) : (
               <>
                 {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} />}
-                {tab === "test" && <VsAnalyze factors={factors} onSaveAnalysis={handleSaveAnalysis} />}
-                {tab === "corr" && <VsCorrelationTab factors={factors} corrAssets={corrAssets} onAddAsset={handleAddCorrAsset} onRemoveAsset={handleRemoveCorrAsset} />}
+                {tab === "test" && <VsAnalyze factors={factors} funds={funds} onAddFund={handleAddFund} onSaveAnalysis={handleSaveAnalysis} />}
+                {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
             )}
