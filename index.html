@@ -12374,12 +12374,38 @@
     // crecimiento acumulado (base 100), ya calculado por quien la llame.
     function VsLineChart({ series, splitIndex, height = 260, colorMain = VS_A, colorSynthetic = "#5a7080" }) {
       const [hoverIdx, setHoverIdx] = useState(null);
-      const svgRef = useRef(null);
+      const [width, setWidth] = useState(0);
+      const wrapRef = useRef(null);
+      const gradId = useState(() => "vsgrad-" + Math.random().toString(36).slice(2))[0];
+
+      // Medimos el ancho REAL del contenedor y lo usamos como ancho interno
+      // del viewBox — así 1 unidad de coordenadas = 1 píxel real siempre,
+      // sin necesidad de forzar preserveAspectRatio="none" (que deformaba
+      // círculos/texto cuando la proporción no encajaba) ni de calcular
+      // desplazamientos de letterbox para el ratón. Ambos problemas
+      // desaparecen a la vez al mantener el sistema de coordenadas 1:1 con
+      // los píxeles reales del contenedor.
+      useEffect(() => {
+        if (!wrapRef.current) return;
+        const el = wrapRef.current;
+        const ro = new ResizeObserver(entries => {
+          const w = entries[0]?.contentRect?.width;
+          if (w > 0) setWidth(w);
+        });
+        ro.observe(el);
+        setWidth(el.getBoundingClientRect().width || 0);
+        return () => ro.disconnect();
+      }, []);
+
       if (!series || series.length < 2) {
         return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#3a4550", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>datos insuficientes para graficar</div>;
       }
+      if (!width) {
+        // Primer render: aún no sabemos el ancho real, reservamos el alto para no dar saltos.
+        return <div ref={wrapRef} style={{ height }} />;
+      }
 
-      const W = 760, H = height, padL = 52, padR = 16, padT = 16, padB = 28;
+      const W = width, H = height, padL = 46, padR = 8, padT = 14, padB = 26;
       const values = series.map(p => p.value);
       const vMin = Math.min(...values), vMax = Math.max(...values);
       const vPad = (vMax - vMin) * 0.08 || vMax * 0.05 || 1;
@@ -12387,6 +12413,7 @@
 
       const xForIdx = (i) => padL + (i / (series.length - 1)) * (W - padL - padR);
       const yForVal = (v) => padT + (1 - (v - yMin) / (yMax - yMin)) * (H - padT - padB);
+      const baseline = H - padB;
 
       const pathFor = (fromIdx, toIdx) => {
         let d = "";
@@ -12395,18 +12422,17 @@
         }
         return d;
       };
+      // Misma línea pero cerrada hacia la base, para el relleno degradado.
+      const areaFor = (fromIdx, toIdx) =>
+        pathFor(fromIdx, toIdx) + `L${xForIdx(toIdx).toFixed(1)},${baseline} L${xForIdx(fromIdx).toFixed(1)},${baseline} Z`;
 
       const hasSplit = typeof splitIndex === "number" && splitIndex >= 0 && splitIndex < series.length - 1;
 
-      // Etiquetas del eje X: ~6 repartidas
       const nLabels = Math.min(6, series.length);
       const labelIdxs = Array.from({length: nLabels}, (_, i) => Math.round(i * (series.length - 1) / (nLabels - 1)));
-
-      // Líneas guía del eje Y: 4 niveles
       const yTicks = Array.from({length: 4}, (_, i) => yMin + (i / 3) * (yMax - yMin));
 
-      // Máxima caída acumulada (peak-to-trough) de toda la serie — se
-      // muestra siempre, no solo al pasar el ratón, como referencia rápida.
+      // Máxima caída acumulada (peak-to-trough) — visible siempre, no solo al pasar el ratón.
       let peak = series[0].value, maxDD = 0, maxDDIdx = 0;
       for (let i = 1; i < series.length; i++) {
         if (series[i].value > peak) peak = series[i].value;
@@ -12414,16 +12440,9 @@
         if (dd < maxDD) { maxDD = dd; maxDDIdx = i; }
       }
 
-      // El mapeo ratón→índice se hace en coordenadas de viewBox (0..W),
-      // usando el ancho REAL renderizado del SVG. Para que esto sea exacto
-      // hace falta que el SVG se estire sin "letterbox" — ver
-      // preserveAspectRatio="none" más abajo; sin eso, el navegador puede
-      // centrar el contenido con márgenes cuando la proporción del
-      // contenedor no coincide con la del viewBox, y el cálculo se
-      // desalinea con el cursor real (el "está en Cuenca" de antes).
       const handleMove = (e) => {
-        const rect = svgRef.current.getBoundingClientRect();
-        const relX = ((e.clientX - rect.left) / rect.width) * W;
+        const rect = wrapRef.current.getBoundingClientRect();
+        const relX = e.clientX - rect.left; // 1:1 con W, sin factor de escala
         const frac = (relX - padL) / (W - padL - padR);
         const idx = Math.round(frac * (series.length - 1));
         setHoverIdx(Math.max(0, Math.min(series.length - 1, idx)));
@@ -12432,11 +12451,32 @@
       const hp = hoverIdx !== null ? series[hoverIdx] : null;
       const hpPeriodReturn = hp && hoverIdx > 0 ? (hp.value / series[hoverIdx - 1].value - 1) * 100 : null;
       const hpCumReturn = hp ? (hp.value / series[0].value - 1) * 100 : null;
+      const hpColor = hp ? (hp.isSynthetic ? colorSynthetic : colorMain) : colorMain;
+
+      // Posición del tooltip flotante, evitando que se salga por los bordes.
+      const hx = hp ? xForIdx(hoverIdx) : 0;
+      const hy = hp ? yForVal(hp.value) : 0;
+      const tooltipW = 168;
+      let tipLeft = hx + 12;
+      if (tipLeft + tooltipW > W) tipLeft = hx - tooltipW - 12;
+      let tipTop = hy - 54;
+      if (tipTop < 0) tipTop = hy + 14;
 
       return (
-        <div>
-          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height, display: "block" }}
+        <div ref={wrapRef} style={{ position: "relative" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block" }}
             onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
+            <defs>
+              <linearGradient id={gradId+"-main"} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={colorMain} stopOpacity="0.32" />
+                <stop offset="100%" stopColor={colorMain} stopOpacity="0" />
+              </linearGradient>
+              <linearGradient id={gradId+"-syn"} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={colorSynthetic} stopOpacity="0.22" />
+                <stop offset="100%" stopColor={colorSynthetic} stopOpacity="0" />
+              </linearGradient>
+            </defs>
+
             {yTicks.map((t, i) => (
               <g key={i}>
                 <line x1={padL} x2={W-padR} y1={yForVal(t)} y2={yForVal(t)} stroke="#12181f" strokeWidth="1" />
@@ -12450,10 +12490,20 @@
             ))}
 
             {hasSplit && (
-              <line x1={xForIdx(splitIndex)} x2={xForIdx(splitIndex)} y1={padT} y2={H-padB} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" opacity="0.6" />
+              <line x1={xForIdx(splitIndex)} x2={xForIdx(splitIndex)} y1={padT} y2={baseline} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" opacity="0.6" />
             )}
 
-            {/* Marca de la máxima caída (peak-to-trough) de la serie */}
+            {/* Área degradada bajo la línea */}
+            {hasSplit ? (
+              <>
+                <path d={areaFor(0, splitIndex)} fill={`url(#${gradId}-syn)`} stroke="none" />
+                <path d={areaFor(splitIndex, series.length - 1)} fill={`url(#${gradId}-main)`} stroke="none" />
+              </>
+            ) : (
+              <path d={areaFor(0, series.length - 1)} fill={`url(#${gradId}-main)`} stroke="none" />
+            )}
+
+            {/* Marca de la máxima caída (peak-to-trough) */}
             {maxDD < -0.001 && (
               <circle cx={xForIdx(maxDDIdx)} cy={yForVal(series[maxDDIdx].value)} r="3" fill="none" stroke="#f87171" strokeWidth="1.5" />
             )}
@@ -12469,43 +12519,45 @@
 
             {hp && (
               <>
-                <line x1={xForIdx(hoverIdx)} x2={xForIdx(hoverIdx)} y1={padT} y2={H-padB} stroke="#7a90a8" strokeWidth="1" opacity="0.4" />
-                <circle cx={xForIdx(hoverIdx)} cy={yForVal(hp.value)} r="3.5" fill={hp.isSynthetic ? colorSynthetic : colorMain} stroke="#060d14" strokeWidth="1.5" />
+                <line x1={hx} x2={hx} y1={padT} y2={baseline} stroke="#7a90a8" strokeWidth="1" opacity="0.4" />
+                <circle cx={hx} cy={hy} r="4" fill={hpColor} stroke="#060d14" strokeWidth="1.5" />
               </>
             )}
           </svg>
 
-          <div style={{ minHeight: 34, padding: "4px 4px 0" }}>
-            {hp ? (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
-                <span style={{ color: "#7a90a8" }}>{hp.date}{hp.isSynthetic ? " · sintético" : ""}</span>
-                <span style={{ display: "flex", gap: 14 }}>
-                  {hpPeriodReturn !== null && (
-                    <span title="variación respecto al periodo anterior">
-                      <span style={{ color: "#5a7080" }}>periodo </span>
-                      <span style={{ color: hpPeriodReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
-                        {hpPeriodReturn >= 0 ? "+" : ""}{hpPeriodReturn.toFixed(2)}%
-                      </span>
+          {hp && (
+            <div style={{
+              position: "absolute", left: tipLeft, top: tipTop, width: tooltipW,
+              background: "#12181f", border: "1px solid #1a2535", borderRadius: 8,
+              padding: "8px 10px", pointerEvents: "none", boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
+              fontFamily: "'DM Mono',monospace",
+            }}>
+              <div style={{ fontSize: 10, color: "#7a90a8", marginBottom: 4 }}>{hp.date}{hp.isSynthetic ? " · sintético" : ""}</div>
+              <div style={{ fontSize: 15, color: "#e2e8f0", fontWeight: 700, marginBottom: 4 }}>{hp.value.toFixed(2)}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 10 }}>
+                {hpPeriodReturn !== null && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#5a7080" }}>periodo</span>
+                    <span style={{ color: hpPeriodReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
+                      {hpPeriodReturn >= 0 ? "+" : ""}{hpPeriodReturn.toFixed(2)}%
                     </span>
-                  )}
-                  <span title="variación acumulada desde el inicio de la serie">
-                    <span style={{ color: "#5a7080" }}>acumulado </span>
-                    <span style={{ color: hpCumReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
-                      {hpCumReturn >= 0 ? "+" : ""}{hpCumReturn.toFixed(2)}%
-                    </span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "#5a7080" }}>acumulado</span>
+                  <span style={{ color: hpCumReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
+                    {hpCumReturn >= 0 ? "+" : ""}{hpCumReturn.toFixed(2)}%
                   </span>
-                  <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{hp.value.toFixed(2)}</span>
-                </span>
-              </div>
-            ) : (
-              maxDD < -0.001 && (
-                <div style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>
-                  Máxima caída (pico a valle): <span style={{ color: "#f87171", fontWeight: 600 }}>{(maxDD*100).toFixed(2)}%</span>
-                  <span style={{ marginLeft: 8, color: "#3a4550" }}>· pasa el ratón por la línea para ver el detalle de cada punto</span>
                 </div>
-              )
-            )}
-          </div>
+              </div>
+            </div>
+          )}
+
+          {!hp && maxDD < -0.001 && (
+            <div style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#5a7080", padding: "4px 4px 0" }}>
+              Máxima caída (pico a valle): <span style={{ color: "#f87171", fontWeight: 600 }}>{(maxDD*100).toFixed(2)}%</span>
+            </div>
+          )}
         </div>
       );
     }
