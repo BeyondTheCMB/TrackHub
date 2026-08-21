@@ -12009,6 +12009,68 @@
       }
       return 2*eig;
     }
+    // ── Regresión SIN restricciones (diagnóstico) ────────────────────────────
+    // El RBSA normal restringe los pesos a no-negativos (estilo Sharpe: el
+    // resultado debe poder leerse como "una cartera real que podrías
+    // comprar"). Pero si el fondo tiene una pata corta de verdad (p.ej.
+    // vende volatilidad — gana cuando el VIX baja, pierde cuando sube), esa
+    // restricción le IMPIDE al modelo asignar peso negativo al factor
+    // correcto, aunque esté en la cesta. Esta regresión sin restricciones
+    // (mínimos cuadrados ordinarios vía ecuaciones normales) sirve solo
+    // para diagnosticar eso: si su R² es mucho más alto que el del RBSA
+    // normal, la señal está en los signos, no en que falte un factor.
+    // El resultado NO es una cartera válida ni sirve para extrapolar — los
+    // pesos no suman 1 de forma interpretable y pueden implicar
+    // apalancamiento/cortos que el fondo real quizá no replique así.
+    function vsSolveLinearSystem(A, b) {
+      const n = A.length;
+      const M = A.map((row, i) => [...row, b[i]]);
+      for (let col = 0; col < n; col++) {
+        let pivotRow = col;
+        for (let r = col + 1; r < n; r++) {
+          if (Math.abs(M[r][col]) > Math.abs(M[pivotRow][col])) pivotRow = r;
+        }
+        [M[col], M[pivotRow]] = [M[pivotRow], M[col]];
+        const pivotVal = M[col][col];
+        if (Math.abs(pivotVal) < 1e-10) {
+          throw new Error("Sistema casi singular — probablemente hay factores demasiado colineales para separar con pesos libres.");
+        }
+        for (let j = col; j <= n; j++) M[col][j] /= pivotVal;
+        for (let r = 0; r < n; r++) {
+          if (r === col) continue;
+          const factor = M[r][col];
+          for (let j = col; j <= n; j++) M[r][j] -= factor * M[col][j];
+        }
+      }
+      return M.map(row => row[n]);
+    }
+
+    function vsRunOLS(r, X, factorNames) {
+      const nF = X[0].length, nObs = r.length;
+      const XtX = Array.from({length: nF}, (_, i) =>
+        Array.from({length: nF}, (_, j) => X.reduce((s, row) => s + row[i] * row[j], 0))
+      );
+      const Xtr = Array.from({length: nF}, (_, i) => X.reduce((s, row, k) => s + row[i] * r[k], 0));
+
+      let weights;
+      try {
+        weights = vsSolveLinearSystem(XtX, Xtr);
+      } catch (e) {
+        return { error: e.message };
+      }
+
+      const fitted = vsMatVec(X, weights);
+      const resid = r.map((ri, i) => ri - fitted[i]);
+      const rMean = r.reduce((a, b) => a + b, 0) / nObs;
+      const ssRes = resid.reduce((a, e) => a + e * e, 0);
+      const ssTot = r.reduce((a, ri) => a + (ri - rMean) ** 2, 0);
+      const rSquared = ssTot > 0 ? 1 - ssRes / ssTot : NaN;
+
+      const weightsByFactor = {};
+      factorNames.forEach((name, i) => (weightsByFactor[name] = weights[i]));
+      return { weights: weightsByFactor, rSquared, nObs, nFactors: nF };
+    }
+
     function vsSolveRBSA(r, X, maxIter, tol){
       maxIter = maxIter || 5000;
       tol = tol || 1e-10;
@@ -12422,6 +12484,9 @@
       const [busy, setBusy] = useState(false);
       const [result, setResult] = useState(null);
       const [nObs, setNObs] = useState(0);
+      const [lastRX, setLastRX] = useState(null); // { r, X, selNames } del último ajuste, para el diagnóstico OLS
+      const [olsResult, setOlsResult] = useState(null);
+      const [olsBusy, setOlsBusy] = useState(false);
       const [maxIter, setMaxIter] = useState(5000);
       const [tolInput, setTolInput] = useState("1e-10");
       const [saving, setSaving] = useState(false);
@@ -12463,6 +12528,24 @@
         setSaving(false);
       };
 
+      // Diagnóstico: reusa exactamente el mismo r/X del último RBSA (misma
+      // alineación, mismos factores) pero sin restricción de no-negatividad.
+      // Si su R² es mucho más alto que el del RBSA normal, la causa del
+      // ajuste pobre probablemente sea que el fondo tiene exposición
+      // NEGATIVA a algún factor (p.ej. vende volatilidad), no que falte
+      // cobertura de factores.
+      const runOlsDiagnostic = () => {
+        if (!lastRX) return;
+        setOlsBusy(true);
+        try {
+          const res = vsRunOLS(lastRX.r, lastRX.X, lastRX.selNames);
+          setOlsResult(res);
+        } catch (e) {
+          setOlsResult({ error: e.message });
+        }
+        setOlsBusy(false);
+      };
+
       // Sube un CSV nuevo y lo guarda directamente en el pool de Fondos —
       // así queda disponible para próximas veces (aquí y en Correlación)
       // sin tener que volver a subirlo.
@@ -12494,7 +12577,7 @@
       const run = async () => {
         if (!activeFundName || selected.size === 0) return;
         if (mode === "pool" && !funds[selectedFund]) return;
-        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg("");
+        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg(""); setOlsResult(null); setLastRX(null);
         try {
           const fReturns = vsHydrateFundReturns(funds[selectedFund].returns);
 
@@ -12533,6 +12616,7 @@
           const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
           const res = vsRunRBSA(r, X, selNames, maxIter, effectiveTol);
           setResult(res); setNObs(r.length);
+          setLastRX({ r, X, selNames });
           setStatus(`Ajuste completado con ${r.length} observaciones (${res.iterations}/${maxIter} iteraciones, tol=${effectiveTol.toExponential(0)}${res.converged ? ", convergió" : ", NO convergió"}).`);
         } catch (e) {
           setStatus("Error: " + e.message);
@@ -12704,6 +12788,53 @@
                   💾 {saving ? "guardando…" : "Guardar este análisis"}
                 </button>
                 {saveMsg && <div style={{ marginTop: 6, fontSize: 11, color: saveMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveMsg}</div>}
+
+                {result.rSquared < 0.6 && lastRX && (
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6, marginBottom: 10 }}>
+                      R² bajo con pesos no-negativos. Si el fondo tiene alguna pata corta real (p.ej. vende volatilidad), el RBSA no puede expresarlo aunque el factor correcto esté en la cesta. Esto lo comprueba con pesos libres — no es una cartera válida, es solo diagnóstico.
+                    </div>
+                    <button onClick={runOlsDiagnostic} disabled={olsBusy}
+                      style={{ width: "100%", background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 600, cursor: olsBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
+                      🔬 {olsBusy ? "calculando…" : "¿Ayudan pesos negativos? (diagnóstico)"}
+                    </button>
+
+                    {olsResult && olsResult.error && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{olsResult.error}</div>
+                    )}
+
+                    {olsResult && !olsResult.error && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, color: "#7a90a8" }}>R² con pesos libres:</span>
+                          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, fontWeight: 700, color: olsResult.rSquared - result.rSquared > 0.2 ? "#4ade80" : "#7a90a8" }}>
+                            {olsResult.rSquared.toFixed(2)}
+                          </span>
+                          <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                            (vs {result.rSquared.toFixed(2)} con pesos ≥0)
+                          </span>
+                        </div>
+
+                        {olsResult.rSquared - result.rSquared > 0.2 ? (
+                          <div style={{ fontSize: 11, color: "#4ade80", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                            Mejora notable → probablemente sí hay una pata corta. Mira qué factores salen con signo negativo abajo.
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                            Apenas mejora → el problema no son los signos. El fondo probablemente tiene comportamiento idiosincrático que ningún combo lineal de estos factores explica bien.
+                          </div>
+                        )}
+
+                        {Object.entries(olsResult.weights).sort((a,b)=>b[1]-a[1]).map(([nm,w]) => (
+                          <div key={nm} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12 }}>
+                            <span style={{ color: "#e2e8f0" }}>{nm}</span>
+                            <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 600, color: w < 0 ? "#f87171" : "#4ade80" }}>{(w*100).toFixed(1)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
