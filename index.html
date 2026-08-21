@@ -12787,9 +12787,9 @@
               fontFamily: "'DM Mono',monospace", fontSize: 10,
             }}>
               <div style={{ color: "#7a90a8", marginBottom: 4 }}>mes {hb.monthIndex}</div>
-              {[["p95","#4ade80"],["p75","#9aaabb"],["p50",color],["p25","#9aaabb"],["p5","#f87171"]].map(([k,c]) => (
+              {[["p95","mejor 5%","#4ade80"],["p75","optimista","#9aaabb"],["p50","mediana",color],["p25","pesimista","#9aaabb"],["p5","peor 5%","#f87171"]].map(([k,label,c]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "#5a7080" }}>{k}</span>
+                  <span style={{ color: "#5a7080" }}>{label}</span>
                   <span style={{ color: c, fontWeight: 600 }}>{hb[k].toFixed(1)}</span>
                 </div>
               ))}
@@ -13939,9 +13939,9 @@
             máxima caída durante el horizonte (pico a valle, por trayectoria)
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, textAlign: "center", marginBottom: 14 }}>
-            {[["p5","peor 5%","#f87171"],["p25","","#9aaabb"],["p50","mediana",VS_A],["p75","","#9aaabb"],["p95","mejor 5%","#4ade80"]].map(([k,label,c]) => (
+            {[["p5","peor 5%","#f87171"],["p25","pesimista","#9aaabb"],["p50","mediana",VS_A],["p75","optimista","#9aaabb"],["p95","mejor 5%","#4ade80"]].map(([k,label,c]) => (
               <div key={k}>
-                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase" }}>{k}{label && ` (${label})`}</div>
+                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase" }}>{label}</div>
                 <div style={{ fontSize: 15, color: c, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{(mc.drawdownPercentiles[k]*100).toFixed(1)}%</div>
               </div>
             ))}
@@ -14048,8 +14048,8 @@
                 </div>
 
                 <div style={{ display: "flex", gap: 16, marginBottom: 10, fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 10, background: `${VS_A}22`, display: "inline-block" }}></span>p5–p95</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 10, background: `${VS_A}38`, display: "inline-block" }}></span>p25–p75</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 10, background: `${VS_A}22`, display: "inline-block" }}></span>90% de los escenarios</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 10, background: `${VS_A}38`, display: "inline-block" }}></span>50% de los escenarios</span>
                   <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 16, height: 2, background: VS_A, display: "inline-block" }}></span>mediana</span>
                 </div>
 
@@ -14060,9 +14060,9 @@
                     valor a {mc.horizonMonths} meses (base 100)
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, textAlign: "center" }}>
-                    {[["p5","#f87171"],["p25","#9aaabb"],["p50",VS_A],["p75","#9aaabb"],["p95","#4ade80"]].map(([k,c]) => (
+                    {[["p5","peor 5%","#f87171"],["p25","pesimista","#9aaabb"],["p50","mediana",VS_A],["p75","optimista","#9aaabb"],["p95","mejor 5%","#4ade80"]].map(([k,label,c]) => (
                       <div key={k}>
-                        <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase" }}>{k}</div>
+                        <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase" }}>{label}</div>
                         <div style={{ fontSize: 15, color: c, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{mc.terminal[k].toFixed(1)}</div>
                       </div>
                     ))}
