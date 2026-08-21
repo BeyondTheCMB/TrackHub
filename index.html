@@ -12091,44 +12091,112 @@
       return matrix;
     }
 
+    // Trunca etiquetas largas para las cabeceras verticales (el nombre
+    // completo sigue disponible en el title del <th> y de cada celda).
+    // Esto es lo que evita el solape: sin truncar, un writing-mode vertical
+    // con texto largo se sale de la altura reservada de la cabecera y pisa
+    // la primera fila de la matriz.
+    function vsTruncateLabel(s, max) {
+      return s.length > max ? s.slice(0, max - 1) + "…" : s;
+    }
+
+    const VS_CORR_HEADER_H = 118;
+    const VS_CORR_LABEL_MAX = 20;
+
     function VsCorrHeatmap({ dataMap, names }) {
       const matrix = vsFactorCorrelationMatrix(dataMap, names);
+      const [hoverRow, setHoverRow] = useState(null);
+      const [hoverCol, setHoverCol] = useState(null);
+
+      const cellColor = (v, isDiag) => {
+        if (isDiag) return "rgba(167,139,250,0.16)"; // VS_A tenue en la diagonal
+        if (v === null) return "transparent";
+        const alpha = Math.min(Math.abs(v), 1) * 0.65;
+        return v > 0 ? `rgba(248,113,113,${alpha})` : `rgba(96,165,250,${alpha})`;
+      };
+
       return (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", fontSize: 10 }}>
-            <thead>
-              <tr>
-                <th style={{ padding: "3px 6px" }}></th>
-                {names.map(nm => (
-                  <th key={nm} style={{ padding: "3px 6px", color: "#7a90a8", fontFamily: "'DM Mono',monospace", fontWeight: 500, writingMode: "vertical-rl", textOrientation: "mixed", maxHeight: 90, whiteSpace: "nowrap" }}>{nm}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {names.map(rowNm => (
-                <tr key={rowNm}>
-                  <td style={{ padding: "3px 8px", color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{rowNm}</td>
-                  {names.map(colNm => {
-                    const v = matrix[rowNm][colNm];
-                    const isDiag = rowNm === colNm;
-                    let bg = "transparent";
-                    if (v !== null && !isDiag) {
-                      const alpha = Math.min(Math.abs(v), 1) * 0.6;
-                      bg = v > 0 ? `rgba(248,113,113,${alpha})` : `rgba(96,165,250,${alpha})`;
-                    } else if (isDiag) {
-                      bg = "rgba(122,144,168,0.15)";
-                    }
-                    return (
-                      <td key={colNm} title={`${rowNm} × ${colNm}`}
-                        style={{ padding: "5px 8px", textAlign: "center", fontFamily: "'DM Mono',monospace", color: "#e2e8f0", background: bg, border: "1px solid #0d1825" }}>
-                        {v === null ? "—" : v.toFixed(2)}
-                      </td>
-                    );
-                  })}
+        <div>
+          <div style={{ overflow: "auto", maxHeight: 520, borderRadius: 8, border: "1px solid #1a2535" }}>
+            <table style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 11 }}>
+              <thead>
+                <tr>
+                  <th style={{
+                    position: "sticky", top: 0, left: 0, zIndex: 3,
+                    background: "#0d1825", padding: "6px 10px", height: VS_CORR_HEADER_H,
+                    borderBottom: "1px solid #1a2535", borderRight: "1px solid #1a2535",
+                  }}></th>
+                  {names.map(nm => (
+                    <th key={nm} title={nm} onMouseEnter={()=>setHoverCol(nm)} onMouseLeave={()=>setHoverCol(null)}
+                      style={{
+                        position: "sticky", top: 0, zIndex: 2,
+                        background: hoverCol === nm ? "#171f2c" : "#0d1825",
+                        height: VS_CORR_HEADER_H, minWidth: 30, maxWidth: 30,
+                        borderBottom: "1px solid #1a2535", borderLeft: "1px solid #12181f",
+                        verticalAlign: "bottom", padding: "8px 0 10px",
+                        transition: "background .1s",
+                      }}>
+                      <div style={{
+                        writingMode: "vertical-rl", transform: "rotate(180deg)",
+                        color: hoverCol === nm ? "#e2e8f0" : "#7a90a8",
+                        fontFamily: "'DM Mono',monospace", fontWeight: 500,
+                        whiteSpace: "nowrap", margin: "0 auto",
+                      }}>
+                        {vsTruncateLabel(nm, VS_CORR_LABEL_MAX)}
+                      </div>
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {names.map(rowNm => (
+                  <tr key={rowNm}>
+                    <td title={rowNm} onMouseEnter={()=>setHoverRow(rowNm)} onMouseLeave={()=>setHoverRow(null)}
+                      style={{
+                        position: "sticky", left: 0, zIndex: 1,
+                        background: hoverRow === rowNm ? "#171f2c" : "#0d1825",
+                        padding: "7px 12px", color: hoverRow === rowNm ? "#e2e8f0" : "#7a90a8",
+                        fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap",
+                        borderRight: "1px solid #1a2535", borderBottom: "1px solid #12181f",
+                        transition: "background .1s",
+                      }}>
+                      {vsTruncateLabel(rowNm, 26)}
+                    </td>
+                    {names.map(colNm => {
+                      const v = matrix[rowNm][colNm];
+                      const isDiag = rowNm === colNm;
+                      const isHi = hoverRow === rowNm || hoverCol === colNm;
+                      return (
+                        <td key={colNm} title={`${rowNm} × ${colNm}${v !== null ? `: ${v.toFixed(3)}` : ""}`}
+                          onMouseEnter={()=>{ setHoverRow(rowNm); setHoverCol(colNm); }}
+                          onMouseLeave={()=>{ setHoverRow(null); setHoverCol(null); }}
+                          style={{
+                            padding: "8px 6px", textAlign: "center", minWidth: 30,
+                            fontFamily: "'DM Mono',monospace", fontWeight: isDiag ? 400 : 600,
+                            fontStyle: isDiag ? "italic" : "normal",
+                            color: isDiag ? "#5a7080" : "#e2e8f0",
+                            background: cellColor(v, isDiag),
+                            outline: isHi ? "1px solid rgba(167,139,250,0.5)" : "none",
+                            outlineOffset: "-1px",
+                            borderBottom: "1px solid #12181f", borderLeft: "1px solid #12181f",
+                            cursor: "default",
+                          }}>
+                          {v === null ? "—" : v.toFixed(2)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+            <span>-1</span>
+            <div style={{ flex: 1, maxWidth: 220, height: 8, borderRadius: 4, background: "linear-gradient(90deg, rgba(96,165,250,0.65), rgba(96,165,250,0.05) 45%, rgba(122,144,168,0.15) 50%, rgba(248,113,113,0.05) 55%, rgba(248,113,113,0.65))" }} />
+            <span>+1</span>
+            <span style={{ marginLeft: 8, color: "#3a4550" }}>· pasa el ratón por una celda o etiqueta para resaltar fila/columna</span>
+          </div>
         </div>
       );
     }
