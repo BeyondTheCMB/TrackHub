@@ -12405,6 +12405,22 @@
       // Líneas guía del eje Y: 4 niveles
       const yTicks = Array.from({length: 4}, (_, i) => yMin + (i / 3) * (yMax - yMin));
 
+      // Máxima caída acumulada (peak-to-trough) de toda la serie — se
+      // muestra siempre, no solo al pasar el ratón, como referencia rápida.
+      let peak = series[0].value, maxDD = 0, maxDDIdx = 0;
+      for (let i = 1; i < series.length; i++) {
+        if (series[i].value > peak) peak = series[i].value;
+        const dd = (series[i].value / peak) - 1;
+        if (dd < maxDD) { maxDD = dd; maxDDIdx = i; }
+      }
+
+      // El mapeo ratón→índice se hace en coordenadas de viewBox (0..W),
+      // usando el ancho REAL renderizado del SVG. Para que esto sea exacto
+      // hace falta que el SVG se estire sin "letterbox" — ver
+      // preserveAspectRatio="none" más abajo; sin eso, el navegador puede
+      // centrar el contenido con márgenes cuando la proporción del
+      // contenedor no coincide con la del viewBox, y el cálculo se
+      // desalinea con el cursor real (el "está en Cuenca" de antes).
       const handleMove = (e) => {
         const rect = svgRef.current.getBoundingClientRect();
         const relX = ((e.clientX - rect.left) / rect.width) * W;
@@ -12414,10 +12430,12 @@
       };
 
       const hp = hoverIdx !== null ? series[hoverIdx] : null;
+      const hpPeriodReturn = hp && hoverIdx > 0 ? (hp.value / series[hoverIdx - 1].value - 1) * 100 : null;
+      const hpCumReturn = hp ? (hp.value / series[0].value - 1) * 100 : null;
 
       return (
         <div>
-          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block" }}
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height, display: "block" }}
             onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
             {yTicks.map((t, i) => (
               <g key={i}>
@@ -12433,6 +12451,11 @@
 
             {hasSplit && (
               <line x1={xForIdx(splitIndex)} x2={xForIdx(splitIndex)} y1={padT} y2={H-padB} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" opacity="0.6" />
+            )}
+
+            {/* Marca de la máxima caída (peak-to-trough) de la serie */}
+            {maxDD < -0.001 && (
+              <circle cx={xForIdx(maxDDIdx)} cy={yForVal(series[maxDDIdx].value)} r="3" fill="none" stroke="#f87171" strokeWidth="1.5" />
             )}
 
             {hasSplit ? (
@@ -12451,12 +12474,38 @@
               </>
             )}
           </svg>
-          {hp && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#7a90a8", padding: "0 4px" }}>
-              <span>{hp.date}{hp.isSynthetic ? " · sintético" : ""}</span>
-              <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{hp.value.toFixed(2)}</span>
-            </div>
-          )}
+
+          <div style={{ minHeight: 34, padding: "4px 4px 0" }}>
+            {hp ? (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                <span style={{ color: "#7a90a8" }}>{hp.date}{hp.isSynthetic ? " · sintético" : ""}</span>
+                <span style={{ display: "flex", gap: 14 }}>
+                  {hpPeriodReturn !== null && (
+                    <span title="variación respecto al periodo anterior">
+                      <span style={{ color: "#5a7080" }}>periodo </span>
+                      <span style={{ color: hpPeriodReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
+                        {hpPeriodReturn >= 0 ? "+" : ""}{hpPeriodReturn.toFixed(2)}%
+                      </span>
+                    </span>
+                  )}
+                  <span title="variación acumulada desde el inicio de la serie">
+                    <span style={{ color: "#5a7080" }}>acumulado </span>
+                    <span style={{ color: hpCumReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
+                      {hpCumReturn >= 0 ? "+" : ""}{hpCumReturn.toFixed(2)}%
+                    </span>
+                  </span>
+                  <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{hp.value.toFixed(2)}</span>
+                </span>
+              </div>
+            ) : (
+              maxDD < -0.001 && (
+                <div style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>
+                  Máxima caída (pico a valle): <span style={{ color: "#f87171", fontWeight: 600 }}>{(maxDD*100).toFixed(2)}%</span>
+                  <span style={{ marginLeft: 8, color: "#3a4550" }}>· pasa el ratón por la línea para ver el detalle de cada punto</span>
+                </div>
+              )
+            )}
+          </div>
         </div>
       );
     }
