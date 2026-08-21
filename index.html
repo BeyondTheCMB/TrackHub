@@ -12372,6 +12372,15 @@
     // Sirve tanto para el backtest (dos tramos: sintético + real) como para
     // ver la evolución de un solo índice o fondo. `series` es un índice de
     // crecimiento acumulado (base 100), ya calculado por quien la llame.
+    // Cuántos meses de calendario separan dos fechas 'YYYY-MM...' — se usa
+    // para dejar claro en el tooltip cuando un "periodo" en realidad cubre
+    // más de un mes (huecos reales en los datos, no un error de etiqueta).
+    function vsMonthsBetween(dateStrA, dateStrB) {
+      const [ya, ma] = dateStrA.slice(0, 7).split("-").map(Number);
+      const [yb, mb] = dateStrB.slice(0, 7).split("-").map(Number);
+      return (yb - ya) * 12 + (mb - ma);
+    }
+
     function VsLineChart({ series, splitIndex, height = 260, colorMain = VS_A, colorSynthetic = "#5a7080" }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const [width, setWidth] = useState(0);
@@ -12450,6 +12459,7 @@
 
       const hp = hoverIdx !== null ? series[hoverIdx] : null;
       const hpPeriodReturn = hp && hoverIdx > 0 ? (hp.value / series[hoverIdx - 1].value - 1) * 100 : null;
+      const hpPeriodMonths = hp && hoverIdx > 0 ? vsMonthsBetween(series[hoverIdx - 1].date, hp.date) : null;
       const hpCumReturn = hp ? (hp.value / series[0].value - 1) * 100 : null;
       const hpColor = hp ? (hp.isSynthetic ? colorSynthetic : colorMain) : colorMain;
 
@@ -12537,7 +12547,9 @@
               <div style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 10 }}>
                 {hpPeriodReturn !== null && (
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "#5a7080" }}>periodo</span>
+                    <span style={{ color: hpPeriodMonths > 1 ? "#f59e0b" : "#5a7080" }}>
+                      {hpPeriodMonths === 1 ? "periodo (1m)" : `periodo (${hpPeriodMonths}m ⚠)`}
+                    </span>
                     <span style={{ color: hpPeriodReturn >= 0 ? "#4ade80" : "#f87171", fontWeight: 600 }}>
                       {hpPeriodReturn >= 0 ? "+" : ""}{hpPeriodReturn.toFixed(2)}%
                     </span>
