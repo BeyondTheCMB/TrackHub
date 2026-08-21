@@ -10486,6 +10486,7 @@
           _sb.from("bw_data").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("vs_factors").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("vs_analyses").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("vs_corr_assets").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
         ]);
         const profs = await loadSharedProfiles(); setProfiles(profs);
         if (activeProfileId === id) { const next = profs[0]?.id || null; setActiveProfileId(next); if (next) saveShellActiveProfile(next); }
@@ -11741,6 +11742,19 @@
       await _sb.from("vs_analyses").delete().eq("id", id).eq("user_id", _sbUser.id);
     };
 
+    // ── Activos para la pestaña de Correlación (vs_corr_assets) ──────────────
+    // Colección separada del pool de factores: aquí se guardan fondos/índices
+    // que quieres comparar entre sí, sin que "contaminen" el pool usado
+    // para RBSA (que tiene su propia noción de qué es un buen factor).
+    const vsLoadCorrAssets = async (profileId) => {
+      if (!profileId) return {};
+      const { data } = await _sb.from("vs_corr_assets").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      return (data && data.data) ? data.data : {};
+    };
+    const vsSaveCorrAssets = async (profileId, assetsObj) => {
+      await _sb.from("vs_corr_assets").upsert({ user_id: _sbUser.id, profile_id: profileId, data: assetsObj }, { onConflict: "user_id,profile_id" });
+    };
+
     // ── Parsers de CSV ────────────────────────────────────────────────────────
     function vsSplitCSVLine(line){
       const out = []; let cur=''; let inQ=false;
@@ -12041,6 +12055,84 @@
       window.open(`https://www.google.com/search?q=${encodeURIComponent(q)}`, "_blank", "noopener");
     }
 
+    // Correlación de Pearson simple entre dos series de retornos ya
+    // alineadas (mismo largo, mismo orden). No hace ninguna optimización
+    // conjunta — es la matriz "pura", útil para detectar colinealidad en
+    // el pool ANTES de correr un RBSA, no para sustituirlo.
+    function vsPearsonCorr(a, b) {
+      const n = a.length;
+      const ma = a.reduce((s,x)=>s+x,0)/n, mb = b.reduce((s,x)=>s+x,0)/n;
+      let cov=0, va=0, vb=0;
+      for (let i=0;i<n;i++){ cov += (a[i]-ma)*(b[i]-mb); va += (a[i]-ma)**2; vb += (b[i]-mb)**2; }
+      const denom = Math.sqrt(va*vb);
+      return denom > 0 ? cov/denom : null;
+    }
+
+    // Matriz de correlación pareja a pareja para un conjunto de factores
+    // del pool. Alinea por mes de calendario (ya son series mensuales) y
+    // exige al menos 6 meses en común para calcular cada celda.
+    function vsFactorCorrelationMatrix(factorsObj, names) {
+      const maps = {};
+      for (const nm of names) {
+        maps[nm] = new Map(factorsObj[nm].returns.map(p => [p.date.slice(0,7), p.value]));
+      }
+      const matrix = {};
+      for (const a of names) {
+        matrix[a] = {};
+        for (const b of names) {
+          if (a === b) { matrix[a][b] = 1; continue; }
+          const commonKeys = [...maps[a].keys()].filter(k => maps[b].has(k));
+          if (commonKeys.length < 6) { matrix[a][b] = null; continue; }
+          const va = commonKeys.map(k => maps[a].get(k));
+          const vb = commonKeys.map(k => maps[b].get(k));
+          matrix[a][b] = vsPearsonCorr(va, vb);
+        }
+      }
+      return matrix;
+    }
+
+    function VsCorrHeatmap({ dataMap, names }) {
+      const matrix = vsFactorCorrelationMatrix(dataMap, names);
+      return (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 10 }}>
+            <thead>
+              <tr>
+                <th style={{ padding: "3px 6px" }}></th>
+                {names.map(nm => (
+                  <th key={nm} style={{ padding: "3px 6px", color: "#7a90a8", fontFamily: "'DM Mono',monospace", fontWeight: 500, writingMode: "vertical-rl", textOrientation: "mixed", maxHeight: 90, whiteSpace: "nowrap" }}>{nm}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {names.map(rowNm => (
+                <tr key={rowNm}>
+                  <td style={{ padding: "3px 8px", color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{rowNm}</td>
+                  {names.map(colNm => {
+                    const v = matrix[rowNm][colNm];
+                    const isDiag = rowNm === colNm;
+                    let bg = "transparent";
+                    if (v !== null && !isDiag) {
+                      const alpha = Math.min(Math.abs(v), 1) * 0.6;
+                      bg = v > 0 ? `rgba(248,113,113,${alpha})` : `rgba(96,165,250,${alpha})`;
+                    } else if (isDiag) {
+                      bg = "rgba(122,144,168,0.15)";
+                    }
+                    return (
+                      <td key={colNm} title={`${rowNm} × ${colNm}`}
+                        style={{ padding: "5px 8px", textAlign: "center", fontFamily: "'DM Mono',monospace", color: "#e2e8f0", background: bg, border: "1px solid #0d1825" }}>
+                        {v === null ? "—" : v.toFixed(2)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
     function VsCatTag({ category }) {
       const c = VS_CAT_COLOR[category] || "#7a90a8";
       return (
@@ -12058,6 +12150,7 @@
       const [file, setFile] = useState(null);
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
+      const [showCorr, setShowCorr] = useState(false);
       const fileRef = useRef(null);
 
       const names = Object.keys(factors).sort();
@@ -12183,6 +12276,24 @@
                   })}
                 </tbody>
               </table>
+            )}
+
+            {names.length >= 2 && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+                <button onClick={()=>setShowCorr(v=>!v)}
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>
+                  📊 {showCorr ? "ocultar" : "ver"} matriz de correlación
+                </button>
+
+                {showCorr && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", marginBottom: 8, lineHeight: 1.5 }}>
+                      Correlación de Pearson pareja a pareja (mensual, sin restricciones — no es lo mismo que los pesos del RBSA). Celdas rojas: correlación positiva fuerte, candidatas a colinealidad si eliges ambas en un mismo análisis.
+                    </div>
+                    <VsCorrHeatmap dataMap={factors} names={names} />
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -12525,9 +12636,173 @@
       );
     }
 
+    function VsCorrelationTab({ factors, corrAssets, onAddAsset, onRemoveAsset }) {
+      const [name, setName] = useState("");
+      const [category, setCategory] = useState("equity");
+      const [sourceType, setSourceType] = useState("investing");
+      const [description, setDescription] = useState("");
+      const [file, setFile] = useState(null);
+      const [status, setStatus] = useState("");
+      const [busy, setBusy] = useState(false);
+      const fileRef = useRef(null);
+
+      const poolNames = Object.keys(factors).sort();
+      const assetNames = Object.keys(corrAssets).sort();
+      const allNames = [...poolNames, ...assetNames];
+      const combinedData = { ...factors, ...corrAssets };
+
+      // Todo seleccionado por defecto al entrar en la pestaña — los del
+      // pool ya disponibles de serie, más lo que hayas añadido aquí antes.
+      const [selected, setSelected] = useState(() => new Set(allNames));
+
+      const toggle = (nm) => {
+        const next = new Set(selected);
+        if (next.has(nm)) next.delete(nm); else next.add(nm);
+        setSelected(next);
+      };
+      const selectAll = () => setSelected(new Set(allNames));
+      const selectNone = () => setSelected(new Set());
+
+      const handleRegister = async () => {
+        if (!name.trim() || !file) return;
+        setBusy(true); setStatus("procesando…");
+        try {
+          const text = await file.text();
+          let raw;
+          if (sourceType === "investing") raw = vsParseInvestingCSV(text);
+          else raw = vsParseFREDCSV(text);
+
+          if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV."); setBusy(false); return; }
+          const returns = (sourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
+          if (returns.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
+
+          await onAddAsset(name.trim(), {
+            category, sourceType, description,
+            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
+          });
+
+          setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
+          setSelected(prev => new Set([...prev, name.trim()]));
+          setName(""); setDescription(""); setFile(null);
+          if (fileRef.current) fileRef.current.value = "";
+        } catch (e) {
+          setStatus("Error: " + e.message);
+        }
+        setBusy(false);
+      };
+
+      const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
+      const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "14px 0 6px", fontWeight: 500 };
+
+      const selectedNames = allNames.filter(nm => selected.has(nm));
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir fondo o índice</div>
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
+                No hace falta que sea un buen factor de RBSA — aquí solo se compara correlación pareja a pareja.
+              </div>
+
+              <label style={labelStyle}>Nombre</label>
+              <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: Otro Fondo Cualquiera" />
+
+              <label style={labelStyle}>Categoría</label>
+              <select style={inputStyle} value={category} onChange={e=>setCategory(e.target.value)}>
+                {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+
+              <label style={labelStyle}>Formato de fuente</label>
+              <select style={inputStyle} value={sourceType} onChange={e=>setSourceType(e.target.value)}>
+                <option value="investing">Investing.com (Fecha, Último)</option>
+                <option value="fred_rate">FRED (tipo de interés)</option>
+              </select>
+
+              <label style={labelStyle}>Archivo CSV</label>
+              <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+              <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
+                style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+                🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
+              </button>
+
+              <label style={labelStyle}>Descripción <span style={{fontWeight:400}}>(opcional)</span></label>
+              <input style={inputStyle} type="text" value={description} onChange={e=>setDescription(e.target.value)} placeholder="breve nota" />
+
+              <button onClick={handleRegister} disabled={busy || !name.trim() || !file}
+                style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!name.trim()||!file) ? "not-allowed" : "pointer", opacity: (busy||!name.trim()||!file) ? 0.4 : 1 }}>
+                Añadir
+              </button>
+              {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
+            </div>
+
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Disponibles</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={selectAll} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>todos</button>
+                  <button onClick={selectNone} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>ninguno</button>
+                </div>
+              </div>
+
+              {poolNames.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>del pool</div>
+                  {poolNames.map(nm => (
+                    <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                      <span>{nm}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {assetNames.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>añadidos aquí</div>
+                  {assetNames.map(nm => (
+                    <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1 }}>{nm}</span>
+                      <button onClick={(e)=>{ e.preventDefault(); onRemoveAsset(nm); }}
+                        style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                        onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
+                        onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
+                        quitar
+                      </button>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {allNames.length === 0 && (
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Nada disponible todavía — añade factores en Pool o un fondo aquí arriba.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Matriz de correlación</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 16 }}>
+              {selectedNames.length} seleccionados · correlación de Pearson mensual, pareja a pareja
+            </div>
+            {selectedNames.length < 2 ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 280, color: "#3a4550", gap: 8 }}>
+                <div style={{ fontSize: 32, opacity: 0.4 }}>📊</div>
+                <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace" }}>selecciona al menos 2 para ver la matriz</div>
+              </div>
+            ) : (
+              <VsCorrHeatmap dataMap={combinedData} names={selectedNames} />
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const [tab, setTab] = useState("pool");
       const [factors, setFactors] = useState({});
+      const [corrAssets, setCorrAssets] = useState({});
       const [loading, setLoading] = useState(true);
       const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
@@ -12561,6 +12836,7 @@
           }
         });
         vsLoadAnalyses(profileId).then(setSavedAnalyses);
+        vsLoadCorrAssets(profileId).then(setCorrAssets);
       }, [profileId]);
 
       const handleAdd = async (name, data) => {
@@ -12573,6 +12849,18 @@
         delete next[name];
         setFactors(next);
         await vsSaveFactors(profileId, next);
+      };
+
+      const handleAddCorrAsset = async (name, data) => {
+        const next = { ...corrAssets, [name]: data };
+        setCorrAssets(next);
+        await vsSaveCorrAssets(profileId, next);
+      };
+      const handleRemoveCorrAsset = async (name) => {
+        const next = { ...corrAssets };
+        delete next[name];
+        setCorrAssets(next);
+        await vsSaveCorrAssets(profileId, next);
       };
 
       const handleSaveAnalysis = async (analysisObj) => {
@@ -12588,6 +12876,7 @@
       const TABS = [
         { id: "pool", label: "Pool de Factores", icon: "🗂" },
         { id: "test", label: "Analizar Fondo", icon: "📈" },
+        { id: "corr", label: "Correlación", icon: "📊" },
         { id: "saved", label: "Guardadas", icon: "💾" },
       ];
 
@@ -12634,6 +12923,7 @@
               <>
                 {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} />}
                 {tab === "test" && <VsAnalyze factors={factors} onSaveAnalysis={handleSaveAnalysis} />}
+                {tab === "corr" && <VsCorrelationTab factors={factors} corrAssets={corrAssets} onAddAsset={handleAddCorrAsset} onRemoveAsset={handleRemoveCorrAsset} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
             )}
