@@ -12045,6 +12045,84 @@
       return M.map(row => row[n]);
     }
 
+    // ── Backtest extendido ────────────────────────────────────────────────
+    // Reconstruye una serie sintética ANTES del inicio real del fondo,
+    // aplicando los pesos de un análisis ya guardado a los propios
+    // retornos históricos de esos factores. No inventa correlaciones
+    // nuevas — usa exactamente los pesos que ya calculó el RBSA, solo que
+    // proyectados hacia periodos donde el fondo aún no existía.
+    //
+    // Limitación real e inevitable: la extensión solo llega tan atrás como
+    // el factor con MENOS historial entre los que tienen peso > 0 — igual
+    // que cualquier backtest de este tipo, esto se reporta explícitamente
+    // en vez de fingir cobertura que no existe.
+    function vsBuildBacktestSeries(weights, factorsPool, fundReturns) {
+      const active = Object.entries(weights).filter(([, w]) => w > 0.001);
+      const missing = active.filter(([nm]) => !factorsPool[nm]);
+      const usable = active.filter(([nm]) => factorsPool[nm]);
+
+      if (usable.length === 0) {
+        return { error: "Ninguno de los factores con peso en este análisis sigue disponible en el pool de Índices.", missing: missing.map(([nm]) => nm) };
+      }
+
+      const factorMaps = usable.map(([nm, w]) => ({
+        name: nm, w,
+        map: new Map(factorsPool[nm].returns.map(p => [p.date.slice(0, 7), p.value])),
+      }));
+
+      // Primera fecha real del fondo (mes de calendario)
+      const fundSorted = [...fundReturns].sort((a, b) => a.date - b.date);
+      const fundFirstMonthKey = fundSorted[0].date.toISOString().slice(0, 7);
+
+      // Intersección de meses donde TODOS los factores activos tienen dato,
+      // limitada a antes del inicio real del fondo.
+      const allMonthKeys = new Set(factorMaps[0].map.keys());
+      for (const fm of factorMaps.slice(1)) {
+        for (const k of [...allMonthKeys]) if (!fm.map.has(k)) allMonthKeys.delete(k);
+      }
+      const extensionMonths = [...allMonthKeys].filter(k => k < fundFirstMonthKey).sort();
+
+      if (extensionMonths.length === 0) {
+        return { error: "Los factores con peso en este análisis no cubren ningún periodo anterior al inicio real del fondo.", missing: missing.map(([nm]) => nm) };
+      }
+
+      // Qué factor es el que más limita hacia atrás (el de cobertura más corta)
+      const perFactorEarliest = factorMaps.map(fm => ({
+        name: fm.name,
+        earliest: [...fm.map.keys()].sort()[0],
+      }));
+      const limitingFactor = perFactorEarliest.reduce((a, b) => (b.earliest > a.earliest ? b : a));
+
+      const syntheticReturns = extensionMonths.map(k => {
+        const value = factorMaps.reduce((sum, fm) => sum + fm.w * fm.map.get(k), 0);
+        return { monthKey: k, value };
+      });
+
+      // Serie combinada de retornos: sintéticos (ordenados) + reales (ordenados)
+      const combined = [
+        ...syntheticReturns.map(p => ({ monthKey: p.monthKey, value: p.value, isSynthetic: true })),
+        ...fundSorted.map(p => ({ monthKey: p.date.toISOString().slice(0, 7), value: p.value, isSynthetic: false })),
+      ];
+
+      // Convertir a índice de crecimiento acumulado, base 100 en el primer punto sintético
+      let level = 100;
+      const series = combined.map((p, i) => {
+        if (i > 0) level = level * (1 + p.value);
+        return { date: p.monthKey, value: level, isSynthetic: p.isSynthetic };
+      });
+
+      return {
+        series,
+        splitIndex: syntheticReturns.length - 1, // último punto sintético (el real empieza justo después)
+        extendedMonths: syntheticReturns.length,
+        extendedFrom: extensionMonths[0],
+        realFrom: fundFirstMonthKey,
+        limitingFactor: limitingFactor.name,
+        limitingFactorSince: limitingFactor.earliest,
+        missing: missing.map(([nm]) => nm),
+      };
+    }
+
     function vsRunOLS(r, X, factorNames) {
       const nF = X[0].length, nObs = r.length;
       const XtX = Array.from({length: nF}, (_, i) =>
@@ -12288,6 +12366,111 @@
           </div>
         </div>
       );
+    }
+
+    // ── Gráfica de línea reutilizable (SVG a mano, sin librerías) ────────────
+    // Sirve tanto para el backtest (dos tramos: sintético + real) como para
+    // ver la evolución de un solo índice o fondo. `series` es un índice de
+    // crecimiento acumulado (base 100), ya calculado por quien la llame.
+    function VsLineChart({ series, splitIndex, height = 260, colorMain = VS_A, colorSynthetic = "#5a7080" }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const svgRef = useRef(null);
+      if (!series || series.length < 2) {
+        return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#3a4550", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>datos insuficientes para graficar</div>;
+      }
+
+      const W = 760, H = height, padL = 52, padR = 16, padT = 16, padB = 28;
+      const values = series.map(p => p.value);
+      const vMin = Math.min(...values), vMax = Math.max(...values);
+      const vPad = (vMax - vMin) * 0.08 || vMax * 0.05 || 1;
+      const yMin = vMin - vPad, yMax = vMax + vPad;
+
+      const xForIdx = (i) => padL + (i / (series.length - 1)) * (W - padL - padR);
+      const yForVal = (v) => padT + (1 - (v - yMin) / (yMax - yMin)) * (H - padT - padB);
+
+      const pathFor = (fromIdx, toIdx) => {
+        let d = "";
+        for (let i = fromIdx; i <= toIdx; i++) {
+          d += (i === fromIdx ? "M" : "L") + xForIdx(i).toFixed(1) + "," + yForVal(series[i].value).toFixed(1) + " ";
+        }
+        return d;
+      };
+
+      const hasSplit = typeof splitIndex === "number" && splitIndex >= 0 && splitIndex < series.length - 1;
+
+      // Etiquetas del eje X: ~6 repartidas
+      const nLabels = Math.min(6, series.length);
+      const labelIdxs = Array.from({length: nLabels}, (_, i) => Math.round(i * (series.length - 1) / (nLabels - 1)));
+
+      // Líneas guía del eje Y: 4 niveles
+      const yTicks = Array.from({length: 4}, (_, i) => yMin + (i / 3) * (yMax - yMin));
+
+      const handleMove = (e) => {
+        const rect = svgRef.current.getBoundingClientRect();
+        const relX = ((e.clientX - rect.left) / rect.width) * W;
+        const frac = (relX - padL) / (W - padL - padR);
+        const idx = Math.round(frac * (series.length - 1));
+        setHoverIdx(Math.max(0, Math.min(series.length - 1, idx)));
+      };
+
+      const hp = hoverIdx !== null ? series[hoverIdx] : null;
+
+      return (
+        <div>
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block" }}
+            onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
+            {yTicks.map((t, i) => (
+              <g key={i}>
+                <line x1={padL} x2={W-padR} y1={yForVal(t)} y2={yForVal(t)} stroke="#12181f" strokeWidth="1" />
+                <text x={padL - 8} y={yForVal(t)+3} textAnchor="end" fontSize="9" fontFamily="'DM Mono',monospace" fill="#5a7080">{t.toFixed(0)}</text>
+              </g>
+            ))}
+            {labelIdxs.map((idx, i) => (
+              <text key={i} x={xForIdx(idx)} y={H-8} textAnchor="middle" fontSize="9" fontFamily="'DM Mono',monospace" fill="#5a7080">
+                {series[idx].date.slice(0,7)}
+              </text>
+            ))}
+
+            {hasSplit && (
+              <line x1={xForIdx(splitIndex)} x2={xForIdx(splitIndex)} y1={padT} y2={H-padB} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" opacity="0.6" />
+            )}
+
+            {hasSplit ? (
+              <>
+                <path d={pathFor(0, splitIndex)} fill="none" stroke={colorSynthetic} strokeWidth="2" strokeDasharray="4,3" />
+                <path d={pathFor(splitIndex, series.length - 1)} fill="none" stroke={colorMain} strokeWidth="2" />
+              </>
+            ) : (
+              <path d={pathFor(0, series.length - 1)} fill="none" stroke={colorMain} strokeWidth="2" />
+            )}
+
+            {hp && (
+              <>
+                <line x1={xForIdx(hoverIdx)} x2={xForIdx(hoverIdx)} y1={padT} y2={H-padB} stroke="#7a90a8" strokeWidth="1" opacity="0.4" />
+                <circle cx={xForIdx(hoverIdx)} cy={yForVal(hp.value)} r="3.5" fill={hp.isSynthetic ? colorSynthetic : colorMain} stroke="#060d14" strokeWidth="1.5" />
+              </>
+            )}
+          </svg>
+          {hp && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#7a90a8", padding: "0 4px" }}>
+              <span>{hp.date}{hp.isSynthetic ? " · sintético" : ""}</span>
+              <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{hp.value.toFixed(2)}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Convierte una serie de retornos guardada (de un índice o fondo del
+    // pool) en un índice de crecimiento acumulado base 100, para graficar
+    // una sola serie suelta (sin tramo sintético).
+    function vsReturnsToGrowthSeries(returns) {
+      const sorted = [...returns].sort((a, b) => a.date.localeCompare(b.date));
+      let level = 100;
+      return sorted.map((p, i) => {
+        if (i > 0) level = level * (1 + p.value);
+        return { date: p.date, value: level, isSynthetic: false };
+      });
     }
 
     function VsCatTag({ category }) {
@@ -12969,6 +13152,8 @@
       };
       const selectAll = () => setSelected(new Set(allNames));
       const selectNone = () => setSelected(new Set());
+      const [chartOpenFor, setChartOpenFor] = useState(null); // nombre del que tiene la gráfica abierta
+
 
       const handleRegister = async () => {
         if (!name.trim() || !file) return;
@@ -13056,10 +13241,21 @@
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>índices (pool)</div>
                   {indexNames.map(nm => (
-                    <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
-                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
-                      <span>{nm}</span>
-                    </label>
+                    <div key={nm}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
+                        <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                        <span style={{ flex: 1 }}>{nm}</span>
+                        <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
+                          style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+                          📈
+                        </button>
+                      </label>
+                      {chartOpenFor === nm && (
+                        <div style={{ padding: "8px 4px 12px" }}>
+                          <VsLineChart series={vsReturnsToGrowthSeries(factors[nm].returns)} height={180} />
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               )}
@@ -13068,16 +13264,27 @@
                 <div>
                   <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>fondos (pool)</div>
                   {fundNames.map(nm => (
-                    <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
-                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
-                      <span style={{ flex: 1 }}>{nm}</span>
-                      <button onClick={(e)=>{ e.preventDefault(); onRemoveFund(nm); }}
-                        style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
-                        onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
-                        onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
-                        quitar
-                      </button>
-                    </label>
+                    <div key={nm}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
+                        <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                        <span style={{ flex: 1 }}>{nm}</span>
+                        <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
+                          style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", marginRight: 4 }}>
+                          📈
+                        </button>
+                        <button onClick={(e)=>{ e.preventDefault(); onRemoveFund(nm); }}
+                          style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                          onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
+                          onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
+                          quitar
+                        </button>
+                      </label>
+                      {chartOpenFor === nm && (
+                        <div style={{ padding: "8px 4px 12px" }}>
+                          <VsLineChart series={vsReturnsToGrowthSeries(funds[nm].returns)} height={180} />
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               )}
@@ -13101,6 +13308,114 @@
             ) : (
               <VsCorrHeatmap dataMap={combinedData} names={selectedNames} />
             )}
+          </div>
+        </div>
+      );
+    }
+
+    function VsBacktestTab({ factors, funds, savedAnalyses }) {
+      const [selectedId, setSelectedId] = useState(null);
+
+      const analysis = savedAnalyses.find(a => a.id === selectedId);
+      const d = analysis ? analysis.data : null;
+      const fund = d ? funds[d.fundName] : null;
+
+      let backtest = null;
+      if (d && fund) {
+        const fReturns = vsHydrateFundReturns(fund.returns);
+        backtest = vsBuildBacktestSeries(d.weights, factors, fReturns);
+      }
+
+      const activeWeights = d ? Object.entries(d.weights).filter(([, w]) => w > 0.001).sort((a,b)=>b[1]-a[1]) : [];
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Backtest extendido</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 16, lineHeight: 1.5 }}>
+              Parte de un análisis ya guardado (sus pesos) y proyecta hacia atrás usando el histórico real de esos mismos factores, más allá de donde empieza el fondo.
+            </div>
+
+            {savedAnalyses.length === 0 ? (
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                No hay análisis guardados todavía — guarda uno desde "Analizar Fondo" primero.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
+                {savedAnalyses.map(a => (
+                  <label key={a.id} style={{ display: "block", padding: "9px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedId === a.id ? "#171f2c" : "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="vs-backtest-pick" checked={selectedId === a.id} onChange={()=>setSelectedId(a.id)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1, color: "#e2e8f0", fontWeight: 600 }}>{a.data.fundName || "(sin nombre)"}</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", color: a.data.rSquared >= 0.7 ? "#4ade80" : a.data.rSquared >= 0.5 ? "#f59e0b" : "#f87171" }}>{a.data.rSquared?.toFixed(2)}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginLeft: 24 }}>
+                      {new Date(a.created_at).toLocaleDateString()} · {a.data.nObs} obs
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {analysis && !fund && (
+              <div style={{ marginTop: 12, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>
+                El fondo "{d.fundName}" ya no está en el pool de Fondos — no se puede reconstruir el tramo real.
+              </div>
+            )}
+
+            {activeWeights.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 6 }}>pesos usados para extender</div>
+                {activeWeights.map(([nm, w]) => (
+                  <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0" }}>
+                    <span style={{ color: factors[nm] ? "#e2e8f0" : "#f87171" }}>{nm}{!factors[nm] && " (ya no está en el pool)"}</span>
+                    <span style={{ fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{(w*100).toFixed(1)}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+              {d ? `${d.fundName} — histórico extendido` : "Backtest"}
+            </div>
+
+            {!analysis ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 320, color: "#3a4550", gap: 8 }}>
+                <div style={{ fontSize: 32, opacity: 0.4 }}>📉</div>
+                <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace" }}>elige un análisis guardado</div>
+              </div>
+            ) : !fund ? null : backtest && backtest.error ? (
+              <div style={{ padding: 16, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)", borderRadius: 8, fontSize: 12, color: "#f59e0b" }}>
+                {backtest.error}
+              </div>
+            ) : backtest ? (
+              <div>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 12 }}>
+                  <div><span style={{ color: "#7a90a8" }}>Extendido desde </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{backtest.extendedFrom}</span></div>
+                  <div><span style={{ color: "#7a90a8" }}>Real desde </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{backtest.realFrom}</span></div>
+                  <div><span style={{ color: "#7a90a8" }}>+{backtest.extendedMonths} meses sintéticos</span></div>
+                </div>
+
+                <div style={{ display: "flex", gap: 16, marginBottom: 10, fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 16, height: 2, background: "#5a7080", display: "inline-block", borderTop: "2px dashed #5a7080" }}></span>sintético</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 16, height: 2, background: VS_A, display: "inline-block" }}></span>real</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5, color: "#f59e0b" }}>┊ inicio real del fondo</span>
+                </div>
+
+                <VsLineChart series={backtest.series} splitIndex={backtest.splitIndex} height={300} />
+
+                <div style={{ marginTop: 14, fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6 }}>
+                  Límite hacia atrás marcado por <span style={{ color: "#e2e8f0" }}>{backtest.limitingFactor}</span> (cobertura desde {backtest.limitingFactorSince}). Es una proyección con los pesos ya calculados, no un dato real — trátalo como una estimación de rango de escenarios, no como el histórico verdadero del fondo.
+                </div>
+                {backtest.missing.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>
+                    ⚠ {backtest.missing.join(", ")} tenía peso en el análisis original pero ya no está en el pool de Índices — se ha ignorado en la extensión.
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
         </div>
       );
@@ -13185,6 +13500,7 @@
         { id: "pool", label: "Pool de Factores", icon: "🗂" },
         { id: "test", label: "Analizar Fondo", icon: "📈" },
         { id: "corr", label: "Correlación", icon: "📊" },
+        { id: "backtest", label: "Backtest", icon: "📉" },
         { id: "saved", label: "Guardadas", icon: "💾" },
       ];
 
@@ -13232,6 +13548,7 @@
                 {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} />}
                 {tab === "test" && <VsAnalyze factors={factors} funds={funds} onAddFund={handleAddFund} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} />}
+                {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
             )}
