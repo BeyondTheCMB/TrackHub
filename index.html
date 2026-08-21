@@ -12758,7 +12758,15 @@
                 {kindKey === "index" ? "Sin índices aún." : "Sin fondos aún."}
               </div>
             ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
+                <colgroup>
+                  <col style={{ width: "26%" }} />
+                  <col style={{ width: "12%" }} />
+                  <col style={{ width: "12%" }} />
+                  <col style={{ width: "20%" }} />
+                  <col style={{ width: "7%" }} />
+                  <col style={{ width: "23%" }} />
+                </colgroup>
                 <thead>
                   <tr>
                     {["Nombre","Categoría","Fuente","Cobertura","Obs",""].map((h,i) => (
@@ -12775,14 +12783,14 @@
                     return (
                       <React.Fragment key={nm}>
                         <tr>
-                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={nm}>
                             {nm}{f.builtin && <span title="Automático — se refresca solo" style={{ marginLeft: 6, color: VS_A, fontSize: 10 }}>⚡</span>}
                           </td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}><VsCatTag category={f.category} /></td>
-                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#5a7080", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#5a7080", fontSize: 11, fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {{investing:"CSV", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", ecb_auto:"BCE (auto)"}[f.sourceType] || f.sourceType}
                           </td>
-                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#7a90a8", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>{rs[0]?.date} → {rs[rs.length-1]?.date}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#7a90a8", fontSize: 11, fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rs[0]?.date} → {rs[rs.length-1]?.date}</td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>{rs.length}</td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}>
                             {f.builtin ? (
