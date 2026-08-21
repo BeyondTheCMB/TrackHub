@@ -12106,6 +12106,31 @@
       const terminal = paths.map(p => p[p.length - 1]);
       const probLoss = terminal.filter(v => v < 100).length / nSims;
 
+      // Máxima caída (peak-to-trough) DE CADA TRAYECTORIA por separado — no
+      // es lo mismo que "el valor final es bajo". Un camino puede terminar
+      // en positivo y aun así haber sufrido una caída fuerte por el medio;
+      // el valor terminal por sí solo no lo captura.
+      const drawdowns = paths.map(p => {
+        let peak = p[0], maxDD = 0;
+        for (let i = 1; i < p.length; i++) {
+          if (p[i] > peak) peak = p[i];
+          const dd = (p[i] / peak) - 1;
+          if (dd < maxDD) maxDD = dd;
+        }
+        return maxDD;
+      });
+      // Percentiles de la distribución de caídas (todos ≤0). p5 = el peor
+      // 5% de escenarios (la caída que solo se supera —en severidad— un 5%
+      // de las veces); p95 = el mejor 5% (la caída más leve). Es la misma
+      // lógica que un VaR al 95%.
+      const drawdownPercentiles = {
+        p5: vsPercentile(drawdowns, 5),
+        p25: vsPercentile(drawdowns, 25),
+        p50: vsPercentile(drawdowns, 50),
+        p75: vsPercentile(drawdowns, 75),
+        p95: vsPercentile(drawdowns, 95),
+      };
+
       return {
         bands,
         terminal: {
@@ -12115,6 +12140,7 @@
           p75: vsPercentile(terminal, 75),
           p95: vsPercentile(terminal, 95),
         },
+        drawdowns, drawdownPercentiles,
         probLoss, nSims, horizonMonths, nHistoricalReturns: n,
       };
     }
@@ -13899,6 +13925,44 @@
       );
     }
 
+    function VsDrawdownStats({ mc }) {
+      const [thresholdInput, setThresholdInput] = useState("20");
+      const threshold = parseFloat(thresholdInput);
+      const validThreshold = isFinite(threshold) && threshold >= 0;
+      const probWorse = validThreshold
+        ? mc.drawdowns.filter(d => d <= -threshold/100).length / mc.drawdowns.length
+        : null;
+
+      return (
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
+          <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 8 }}>
+            máxima caída durante el horizonte (pico a valle, por trayectoria)
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, textAlign: "center", marginBottom: 14 }}>
+            {[["p5","peor 5%","#f87171"],["p25","","#9aaabb"],["p50","mediana",VS_A],["p75","","#9aaabb"],["p95","mejor 5%","#4ade80"]].map(([k,label,c]) => (
+              <div key={k}>
+                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase" }}>{k}{label && ` (${label})`}</div>
+                <div style={{ fontSize: 15, color: c, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{(mc.drawdownPercentiles[k]*100).toFixed(1)}%</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 11, color: "#7a90a8", marginBottom: 6 }}>¿Qué probabilidad hay de una caída peor que…?</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>-</span>
+            <input type="text" value={thresholdInput} onChange={e=>setThresholdInput(e.target.value)}
+              style={{ width: 60, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+            <span style={{ color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>%</span>
+            {validThreshold && (
+              <span style={{ marginLeft: 8, fontFamily: "'DM Mono',monospace", fontSize: 14, fontWeight: 700, color: probWorse > 0.3 ? "#f87171" : probWorse > 0.1 ? "#f59e0b" : "#4ade80" }}>
+                {(probWorse*100).toFixed(1)}% de probabilidad
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function VsBacktestMonteCarlo({ funds }) {
       const fundNames = Object.keys(funds).sort();
       const [selectedFund, setSelectedFund] = useState(null);
@@ -14004,6 +14068,8 @@
                     ))}
                   </div>
                 </div>
+
+                <VsDrawdownStats mc={mc} />
 
                 <div style={{ marginTop: 14, fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6 }}>
                   No es una predicción ni una trayectoria real — es el rango de resultados que habría producido este fondo si su comportamiento histórico se repitiera aleatoriamente. Asume que el futuro se parece estadísticamente al pasado, lo cual no está garantizado (cambios de gestor, de régimen de mercado, etc.).
