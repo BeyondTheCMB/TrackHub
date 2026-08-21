@@ -12680,7 +12680,8 @@
       );
     }
 
-    function VsFactorPool({ factors, onAdd, onRemove, onUpdate }) {
+    function VsPool({ factors, funds, onAdd, onRemove, onUpdate, onAddFund, onRemoveFund, onUpdateFund }) {
+      const [type, setType] = useState("index"); // "index" | "fund" — a qué pool va lo que añades
       const [name, setName] = useState("");
       const [category, setCategory] = useState("equity");
       const [sourceType, setSourceType] = useState("investing");
@@ -12689,10 +12690,25 @@
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
       const [showCorr, setShowCorr] = useState(false);
-      const [editOpenFor, setEditOpenFor] = useState(null);
+      const [editOpenFor, setEditOpenFor] = useState(null); // "index:Nombre" | "fund:Nombre"
+      const [chartOpenFor, setChartOpenFor] = useState(null);
       const fileRef = useRef(null);
 
-      const names = Object.keys(factors).sort();
+      const indexNames = Object.keys(factors).sort();
+      const fundNames = Object.keys(funds).sort();
+      const allNames = [...indexNames, ...fundNames];
+      const combinedData = { ...factors, ...funds };
+
+      const sourceOptionsForType = type === "index"
+        ? [
+            { value: "investing", label: "Investing.com (Fecha, Último)" },
+            { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
+            { value: "fred_rate", label: "FRED (tipo de interés)" },
+          ]
+        : [
+            { value: "investing", label: "Investing.com (Fecha, Último)" },
+            { value: "fred_rate", label: "FRED (tipo de interés)" },
+          ];
 
       const handleRegister = async () => {
         if (!name.trim() || !file) return;
@@ -12709,10 +12725,12 @@
           const returns = (sourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
           if (returns.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
 
-          await onAdd(name.trim(), {
+          const data = {
             category, sourceType, description,
-            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), value: p.value })),
-          });
+            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
+          };
+          if (type === "index") await onAdd(name.trim(), data);
+          else await onAddFund(name.trim(), data);
 
           setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
           setName(""); setDescription(""); setFile(null);
@@ -12726,16 +12744,115 @@
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "14px 0 6px", fontWeight: 500 };
 
+      // Tabla genérica reutilizada para Índices y Fondos — mismo aspecto,
+      // solo cambian los datos y los handlers que recibe.
+      function PoolTable({ title, kindKey, data, names, onRemoveFn, onUpdateFn, sourceOpts }) {
+        return (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14 }}>{title}</div>
+              <span style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{names.length}</span>
+            </div>
+            {names.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "18px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>
+                {kindKey === "index" ? "Sin índices aún." : "Sin fondos aún."}
+              </div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {["Nombre","Categoría","Fuente","Cobertura","Obs",""].map((h,i) => (
+                      <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {names.map(nm => {
+                    const f = data[nm];
+                    const rs = f.returns;
+                    const editKey = `${kindKey}:${nm}`;
+                    const chartKey = editKey;
+                    return (
+                      <React.Fragment key={nm}>
+                        <tr>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>
+                            {nm}{f.builtin && <span title="Automático — se refresca solo" style={{ marginLeft: 6, color: VS_A, fontSize: 10 }}>⚡</span>}
+                          </td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}><VsCatTag category={f.category} /></td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#5a7080", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                            {{investing:"CSV", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", ecb_auto:"BCE (auto)"}[f.sourceType] || f.sourceType}
+                          </td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#7a90a8", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>{rs[0]?.date} → {rs[rs.length-1]?.date}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>{rs.length}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}>
+                            {f.builtin ? (
+                              <span style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace" }}>automático</span>
+                            ) : (
+                              <div style={{ display: "flex", gap: 4 }}>
+                                <button onClick={()=>setChartOpenFor(chartOpenFor===chartKey?null:chartKey)}
+                                  style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===chartKey?VS_A:"#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 11, cursor: "pointer" }}>
+                                  📈
+                                </button>
+                                <button onClick={()=>setEditOpenFor(editOpenFor===editKey?null:editKey)}
+                                  style={{ background: "none", border: "1px solid #1a2535", color: editOpenFor===editKey?VS_A:"#7a90a8", borderRadius: 6, padding: "4px 8px", fontSize: 11, cursor: "pointer" }}>
+                                  ✎ editar
+                                </button>
+                                <button onClick={()=>onRemoveFn(nm)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                                  onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
+                                  onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
+                                  quitar
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                        {chartOpenFor === chartKey && (
+                          <tr><td colSpan={6} style={{ padding: "10px 8px", borderBottom: "1px solid #1a2535" }}>
+                            <VsLineChart series={vsReturnsToGrowthSeries(f.returns)} height={180} />
+                          </td></tr>
+                        )}
+                        {editOpenFor === editKey && (
+                          <tr><td colSpan={6} style={{ padding: 0, borderBottom: "1px solid #1a2535" }}>
+                            <VsEditEntryForm
+                              currentName={nm} category={f.category} description={f.description} sourceType={f.sourceType}
+                              currentReturns={f.returns}
+                              sourceTypeOptions={sourceOpts}
+                              onSave={async (oldName, newName, d) => { await onUpdateFn(oldName, newName, d); }}
+                              onCancel={()=>setEditOpenFor(null)}
+                            />
+                          </td></tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        );
+      }
+
       return (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
-          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir un factor</div>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, alignSelf: "start" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir al pool</div>
             <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
               Sube un CSV de Investing.com (o ECB / FRED para tipos de interés).
             </div>
 
+            <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+              <button onClick={()=>{setType("index"); setSourceType("investing");}}
+                style={{ flex: 1, background: type==="index" ? VS_A+"18" : "none", border: `1px solid ${type==="index" ? VS_A : "#1a2535"}`, color: type==="index" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                🗂 Índice
+              </button>
+              <button onClick={()=>{setType("fund"); setSourceType("investing");}}
+                style={{ flex: 1, background: type==="fund" ? VS_A+"18" : "none", border: `1px solid ${type==="fund" ? VS_A : "#1a2535"}`, color: type==="fund" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                💼 Fondo
+              </button>
+            </div>
+
             <label style={labelStyle}>Nombre</label>
-            <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: VIX" />
+            <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder={type==="index" ? "ej: VIX" : "ej: Gamma Global"} />
 
             <label style={labelStyle}>Categoría</label>
             <select style={inputStyle} value={category} onChange={e=>setCategory(e.target.value)}>
@@ -12744,12 +12861,13 @@
 
             <label style={labelStyle}>Formato de fuente</label>
             <select style={inputStyle} value={sourceType} onChange={e=>setSourceType(e.target.value)}>
-              <option value="investing">Investing.com (Fecha, Último)</option>
-              <option value="fred_rate">FRED (tipo de interés, otra divisa)</option>
+              {sourceOptionsForType.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
-              El tipo libre de riesgo en EUR (€STR/BCE) ya está incluido automáticamente en el pool.
-            </small>
+            {type === "index" && (
+              <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
+                El tipo libre de riesgo en EUR (€STR/BCE) ya está incluido automáticamente.
+              </small>
+            )}
 
             <label style={labelStyle}>Archivo CSV</label>
             <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
@@ -12763,98 +12881,40 @@
 
             <button onClick={handleRegister} disabled={busy || !name.trim() || !file}
               style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!name.trim()||!file) ? "not-allowed" : "pointer", opacity: (busy||!name.trim()||!file) ? 0.4 : 1 }}>
-              Registrar factor
+              Añadir {type === "index" ? "índice" : "fondo"}
             </button>
             {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
           </div>
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Pool actual</div>
-              <span style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{names.length} factor{names.length===1?"":"es"}</span>
-            </div>
-            {names.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "30px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin factores aún.</div>
-            ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead>
-                  <tr>
-                    {["Nombre","Categoría","Fuente","Cobertura","Obs",""].map((h,i) => (
-                      <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {names.map(nm => {
-                    const f = factors[nm];
-                    const rs = f.returns;
-                    return (
-                      <React.Fragment key={nm}>
-                      <tr>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>
-                          {nm}{f.builtin && <span title="Automático — se refresca solo" style={{ marginLeft: 6, color: VS_A, fontSize: 10 }}>⚡</span>}
-                        </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}><VsCatTag category={f.category} /></td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#5a7080", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
-                          {{investing:"CSV", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", ecb_auto:"BCE (auto)"}[f.sourceType] || f.sourceType}
-                        </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#7a90a8", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>{rs[0]?.date} → {rs[rs.length-1]?.date}</td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>{rs.length}</td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}>
-                          {f.builtin ? (
-                            <span style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace" }}>automático</span>
-                          ) : (
-                            <div style={{ display: "flex", gap: 4 }}>
-                              <button onClick={()=>setEditOpenFor(editOpenFor===nm?null:nm)}
-                                style={{ background: "none", border: "1px solid #1a2535", color: editOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "4px 8px", fontSize: 11, cursor: "pointer" }}>
-                                ✎ editar
-                              </button>
-                              <button onClick={()=>onRemove(nm)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
-                                onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
-                                onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
-                                quitar
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                      {editOpenFor === nm && (
-                        <tr>
-                          <td colSpan={6} style={{ padding: 0, borderBottom: "1px solid #1a2535" }}>
-                            <VsEditEntryForm
-                              currentName={nm} category={f.category} description={f.description} sourceType={f.sourceType}
-                              currentReturns={f.returns}
-                              sourceTypeOptions={[
-                                { value: "investing", label: "Investing.com (Fecha, Último)" },
-                                { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
-                                { value: "fred_rate", label: "FRED (tipo de interés)" },
-                              ]}
-                              onSave={async (oldName, newName, data) => { await onUpdate(oldName, newName, data); }}
-                              onCancel={()=>setEditOpenFor(null)}
-                            />
-                          </td>
-                        </tr>
-                      )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
+            <PoolTable title="Índices" kindKey="index" data={factors} names={indexNames}
+              onRemoveFn={onRemove} onUpdateFn={onUpdate}
+              sourceOpts={[
+                { value: "investing", label: "Investing.com (Fecha, Último)" },
+                { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
+                { value: "fred_rate", label: "FRED (tipo de interés)" },
+              ]} />
 
-            {names.length >= 2 && (
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+            <PoolTable title="Fondos" kindKey="fund" data={funds} names={fundNames}
+              onRemoveFn={onRemoveFund} onUpdateFn={onUpdateFund}
+              sourceOpts={[
+                { value: "investing", label: "Investing.com (Fecha, Último)" },
+                { value: "fred_rate", label: "FRED (tipo de interés)" },
+              ]} />
+
+            {allNames.length >= 2 && (
+              <div style={{ marginTop: 8, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
                 <button onClick={()=>setShowCorr(v=>!v)}
                   style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>
-                  📊 {showCorr ? "ocultar" : "ver"} matriz de correlación
+                  📊 {showCorr ? "ocultar" : "ver"} matriz de correlación (índices + fondos)
                 </button>
 
                 {showCorr && (
                   <div style={{ marginTop: 12 }}>
                     <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", marginBottom: 8, lineHeight: 1.5 }}>
-                      Correlación de Pearson pareja a pareja (mensual, sin restricciones — no es lo mismo que los pesos del RBSA). Celdas rojas: correlación positiva fuerte, candidatas a colinealidad si eliges ambas en un mismo análisis.
+                      Correlación de Pearson pareja a pareja (mensual, sin restricciones — no es lo mismo que los pesos del RBSA). Celdas rojas: correlación positiva fuerte.
                     </div>
-                    <VsCorrHeatmap dataMap={factors} names={names} />
+                    <VsCorrHeatmap dataMap={combinedData} names={allNames} />
                   </div>
                 )}
               </div>
@@ -13350,24 +13410,15 @@
       );
     }
 
-    function VsCorrelationTab({ factors, funds, onAddFund, onRemoveFund, onUpdateFund }) {
-      const [name, setName] = useState("");
-      const [category, setCategory] = useState("equity");
-      const [sourceType, setSourceType] = useState("investing");
-      const [description, setDescription] = useState("");
-      const [file, setFile] = useState(null);
-      const [status, setStatus] = useState("");
-      const [busy, setBusy] = useState(false);
-      const fileRef = useRef(null);
-
+    function VsCorrelationTab({ factors, funds }) {
       const indexNames = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
       const allNames = [...indexNames, ...fundNames];
       const combinedData = { ...factors, ...funds };
 
-      // Todo seleccionado por defecto al entrar en la pestaña — los
-      // índices del pool y los fondos ya guardados, disponibles de serie.
+      // Todo seleccionado por defecto al entrar en la pestaña.
       const [selected, setSelected] = useState(() => new Set(allNames));
+      const [chartOpenFor, setChartOpenFor] = useState(null);
 
       const toggle = (nm) => {
         const next = new Set(selected);
@@ -13376,164 +13427,72 @@
       };
       const selectAll = () => setSelected(new Set(allNames));
       const selectNone = () => setSelected(new Set());
-      const [chartOpenFor, setChartOpenFor] = useState(null); // nombre del que tiene la gráfica abierta
-      const [editOpenFor, setEditOpenFor] = useState(null);
-
-
-      const handleRegister = async () => {
-        if (!name.trim() || !file) return;
-        setBusy(true); setStatus("procesando…");
-        try {
-          const text = await file.text();
-          let raw;
-          if (sourceType === "investing") raw = vsParseInvestingCSV(text);
-          else raw = vsParseFREDCSV(text);
-
-          if (raw.length < 2) { setStatus("Error: no se pudieron leer filas del CSV."); setBusy(false); return; }
-          const returns = (sourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
-          if (returns.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
-
-          await onAddFund(name.trim(), {
-            category, sourceType, description,
-            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
-          });
-
-          setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
-          setSelected(prev => new Set([...prev, name.trim()]));
-          setName(""); setDescription(""); setFile(null);
-          if (fileRef.current) fileRef.current.value = "";
-        } catch (e) {
-          setStatus("Error: " + e.message);
-        }
-        setBusy(false);
-      };
-
-      const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
-      const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "14px 0 6px", fontWeight: 500 };
 
       const selectedNames = allNames.filter(nm => selected.has(nm));
 
       return (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir fondo</div>
-              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
-                Va al pool de Fondos — también estará disponible en "Analizar Fondo", sin tener que subirlo dos veces.
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, alignSelf: "start" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Disponibles</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={selectAll} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>todos</button>
+                <button onClick={selectNone} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>ninguno</button>
               </div>
-
-              <label style={labelStyle}>Nombre</label>
-              <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="ej: Gamma Global" />
-
-              <label style={labelStyle}>Categoría</label>
-              <select style={inputStyle} value={category} onChange={e=>setCategory(e.target.value)}>
-                {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-
-              <label style={labelStyle}>Formato de fuente</label>
-              <select style={inputStyle} value={sourceType} onChange={e=>setSourceType(e.target.value)}>
-                <option value="investing">Investing.com (Fecha, Último)</option>
-                <option value="fred_rate">FRED (tipo de interés)</option>
-              </select>
-
-              <label style={labelStyle}>Archivo CSV</label>
-              <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
-              <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
-                style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
-                🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
-              </button>
-
-              <label style={labelStyle}>Descripción <span style={{fontWeight:400}}>(opcional)</span></label>
-              <input style={inputStyle} type="text" value={description} onChange={e=>setDescription(e.target.value)} placeholder="breve nota" />
-
-              <button onClick={handleRegister} disabled={busy || !name.trim() || !file}
-                style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!name.trim()||!file) ? "not-allowed" : "pointer", opacity: (busy||!name.trim()||!file) ? 0.4 : 1 }}>
-                Añadir al pool de Fondos
-              </button>
-              {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
+            </div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
+              Para añadir o editar índices y fondos, ve a la pestaña "Pool".
             </div>
 
-            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Disponibles</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={selectAll} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>todos</button>
-                  <button onClick={selectNone} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>ninguno</button>
-                </div>
+            {indexNames.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>índices</div>
+                {indexNames.map(nm => (
+                  <div key={nm}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1 }}>{nm}</span>
+                      <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
+                        style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+                        📈
+                      </button>
+                    </label>
+                    {chartOpenFor === nm && (
+                      <div style={{ padding: "8px 4px 12px" }}>
+                        <VsLineChart series={vsReturnsToGrowthSeries(factors[nm].returns)} height={180} />
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
+            )}
 
-              {indexNames.length > 0 && (
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>índices (pool)</div>
-                  {indexNames.map(nm => (
-                    <div key={nm}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
-                        <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
-                        <span style={{ flex: 1 }}>{nm}</span>
-                        <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
-                          style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
-                          📈
-                        </button>
-                      </label>
-                      {chartOpenFor === nm && (
-                        <div style={{ padding: "8px 4px 12px" }}>
-                          <VsLineChart series={vsReturnsToGrowthSeries(factors[nm].returns)} height={180} />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+            {fundNames.length > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>fondos</div>
+                {fundNames.map(nm => (
+                  <div key={nm}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1 }}>{nm}</span>
+                      <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
+                        style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+                        📈
+                      </button>
+                    </label>
+                    {chartOpenFor === nm && (
+                      <div style={{ padding: "8px 4px 12px" }}>
+                        <VsLineChart series={vsReturnsToGrowthSeries(funds[nm].returns)} height={180} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
-              {fundNames.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>fondos (pool)</div>
-                  {fundNames.map(nm => (
-                    <div key={nm}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
-                        <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
-                        <span style={{ flex: 1 }}>{nm}</span>
-                        <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
-                          style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", marginRight: 4 }}>
-                          📈
-                        </button>
-                        <button onClick={(e)=>{ e.preventDefault(); setEditOpenFor(editOpenFor===nm?null:nm); }}
-                          style={{ background: "none", border: "1px solid #1a2535", color: editOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", marginRight: 4 }}>
-                          ✎
-                        </button>
-                        <button onClick={(e)=>{ e.preventDefault(); onRemoveFund(nm); }}
-                          style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
-                          onMouseEnter={e=>{e.currentTarget.style.borderColor="#f87171"; e.currentTarget.style.color="#f87171";}}
-                          onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2535"; e.currentTarget.style.color="#7a90a8";}}>
-                          quitar
-                        </button>
-                      </label>
-                      {chartOpenFor === nm && (
-                        <div style={{ padding: "8px 4px 12px" }}>
-                          <VsLineChart series={vsReturnsToGrowthSeries(funds[nm].returns)} height={180} />
-                        </div>
-                      )}
-                      {editOpenFor === nm && (
-                        <VsEditEntryForm
-                          currentName={nm} category={funds[nm].category} description={funds[nm].description} sourceType={funds[nm].sourceType}
-                          currentReturns={funds[nm].returns}
-                          sourceTypeOptions={[
-                            { value: "investing", label: "Investing.com (Fecha, Último)" },
-                            { value: "fred_rate", label: "FRED (tipo de interés)" },
-                          ]}
-                          onSave={async (oldName, newName, data) => { await onUpdateFund(oldName, newName, data); }}
-                          onCancel={()=>setEditOpenFor(null)}
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {allNames.length === 0 && (
-                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Nada disponible todavía — añade índices en Pool o un fondo aquí arriba.</div>
-              )}
-            </div>
+            {allNames.length === 0 && (
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Nada en el pool todavía — añade índices o fondos desde la pestaña "Pool".</div>
+            )}
           </div>
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
@@ -13755,7 +13714,7 @@
       };
 
       const TABS = [
-        { id: "pool", label: "Pool de Factores", icon: "🗂" },
+        { id: "pool", label: "Pool", icon: "🗂" },
         { id: "test", label: "Analizar Fondo", icon: "📈" },
         { id: "corr", label: "Correlación", icon: "📊" },
         { id: "backtest", label: "Backtest", icon: "📉" },
@@ -13803,9 +13762,9 @@
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Cargando…</div>
             ) : (
               <>
-                {tab === "pool" && <VsFactorPool factors={factors} onAdd={handleAdd} onRemove={handleRemove} onUpdate={handleUpdateFactor} />}
+                {tab === "pool" && <VsPool factors={factors} funds={funds} onAdd={handleAdd} onRemove={handleRemove} onUpdate={handleUpdateFactor} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} onUpdateFund={handleUpdateFund} />}
                 {tab === "test" && <VsAnalyze factors={factors} funds={funds} onAddFund={handleAddFund} onSaveAnalysis={handleSaveAnalysis} />}
-                {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} onUpdateFund={handleUpdateFund} />}
+                {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
