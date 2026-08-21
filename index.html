@@ -12056,6 +12056,69 @@
     // el factor con MENOS historial entre los que tienen peso > 0 — igual
     // que cualquier backtest de este tipo, esto se reporta explícitamente
     // en vez de fingir cobertura que no existe.
+    // ── Monte Carlo / Bootstrap ──────────────────────────────────────────────
+    // Alternativa completamente distinta al RBSA: no usa ningún factor de
+    // mercado, no asume ninguna relación con índices. Genera muchos
+    // escenarios remuestreando (con reemplazo) los propios retornos
+    // mensuales históricos del fondo, y reporta el RANGO de resultados
+    // plausibles (percentiles), no una única trayectoria. Es la herramienta
+    // adecuada cuando RBSA (con o sin Ridge) simplemente no encuentra una
+    // combinación de factores que explique el fondo — en vez de fingir que
+    // sabemos por qué se mueve, describimos estadísticamente cómo se mueve.
+    function vsPercentile(arr, p) {
+      const sorted = [...arr].sort((a, b) => a - b);
+      const idx = (p / 100) * (sorted.length - 1);
+      const lo = Math.floor(idx), hi = Math.ceil(idx);
+      if (lo === hi) return sorted[lo];
+      return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+    }
+
+    function vsRunMonteCarlo(returnValues, horizonMonths, nSims) {
+      if (!returnValues || returnValues.length < 6) {
+        return { error: "Se necesitan al menos 6 retornos históricos del fondo para remuestrear con garantías." };
+      }
+      const n = returnValues.length;
+      const paths = [];
+      for (let s = 0; s < nSims; s++) {
+        let level = 100;
+        const path = [level];
+        for (let m = 0; m < horizonMonths; m++) {
+          const idx = Math.floor(Math.random() * n);
+          level = level * (1 + returnValues[idx]);
+          path.push(level);
+        }
+        paths.push(path);
+      }
+
+      const bands = [];
+      for (let m = 0; m <= horizonMonths; m++) {
+        const valuesAtM = paths.map(p => p[m]);
+        bands.push({
+          monthIndex: m,
+          p5: vsPercentile(valuesAtM, 5),
+          p25: vsPercentile(valuesAtM, 25),
+          p50: vsPercentile(valuesAtM, 50),
+          p75: vsPercentile(valuesAtM, 75),
+          p95: vsPercentile(valuesAtM, 95),
+        });
+      }
+
+      const terminal = paths.map(p => p[p.length - 1]);
+      const probLoss = terminal.filter(v => v < 100).length / nSims;
+
+      return {
+        bands,
+        terminal: {
+          p5: vsPercentile(terminal, 5),
+          p25: vsPercentile(terminal, 25),
+          p50: vsPercentile(terminal, 50),
+          p75: vsPercentile(terminal, 75),
+          p95: vsPercentile(terminal, 95),
+        },
+        probLoss, nSims, horizonMonths, nHistoricalReturns: n,
+      };
+    }
+
     function vsBuildBacktestSeries(weights, factorsPool, fundReturns) {
       const active = Object.entries(weights).filter(([, w]) => w > 0.001);
       const missing = active.filter(([nm]) => !factorsPool[nm]);
@@ -12149,28 +12212,40 @@
       return { weights: weightsByFactor, rSquared, nObs, nFactors: nF };
     }
 
-    function vsSolveRBSA(r, X, maxIter, tol){
+    // ── Ridge ────────────────────────────────────────────────────────────────
+    // Misma arquitectura que RBSA (descenso de gradiente proyectado sobre el
+    // símplex — pesos no-negativos que suman 1, misma interpretación de
+    // "cartera real"), con un término de penalización L2 añadido al
+    // gradiente: λ·w. Cuando dos factores están muy correlacionados, RBSA
+    // puro puede repartir el peso entre ellos de forma casi arbitraria (hay
+    // muchas combinaciones que explican el fondo casi igual de bien); Ridge
+    // "encoge" los pesos hacia un reparto más uniforme entre ellos, dando
+    // una solución más estable frente a pequeños cambios en los datos.
+    // lambda=0 es exactamente el mismo resultado que vsSolveRBSA sin Ridge.
+    function vsSolveRBSA(r, X, maxIter, tol, lambda){
       maxIter = maxIter || 5000;
       tol = tol || 1e-10;
+      lambda = lambda || 0;
       const nF = X[0].length;
-      const L = vsEstimateLipschitz(X); const step = 1/L;
+      const L = vsEstimateLipschitz(X) + 2*lambda; const step = 1/L;
       let w = new Array(nF).fill(1/nF); let prevObj = Infinity; let converged=false; let iter=0;
       for(iter=0; iter<maxIter; iter++){
         const fitted = vsMatVec(X,w); const resid = r.map((ri,i)=>ri-fitted[i]);
-        const grad = vsTransposeMatVec(X,resid).map(g=>-2*g);
+        const grad = vsTransposeMatVec(X,resid).map((g,j)=>-2*g + 2*lambda*w[j]);
         const wNew = vsProjectToSimplex(w.map((wi,j)=>wi-step*grad[j]));
         const fittedNew = vsMatVec(X,wNew); const residNew = r.map((ri,i)=>ri-fittedNew[i]);
-        const obj = residNew.reduce((a,e)=>a+e*e,0);
+        const ridgePenalty = lambda * wNew.reduce((s,wi)=>s+wi*wi, 0);
+        const obj = residNew.reduce((a,e)=>a+e*e,0) + ridgePenalty;
         if(Math.abs(prevObj-obj) < tol){ w=wNew; converged=true; iter++; break; }
         w = wNew; prevObj = obj;
       }
       w = w.map(wi => Math.abs(wi)<1e-6 ? 0 : wi);
       const wSum = w.reduce((a,b)=>a+b,0);
       w = w.map(wi=>wi/wSum);
-      return {weights:w, iterations:iter, converged, maxIter, tol};
+      return {weights:w, iterations:iter, converged, maxIter, tol, lambda};
     }
-    function vsRunRBSA(r, X, factorNames, maxIter, tol){
-      const {weights, iterations, converged, maxIter: usedMaxIter, tol: usedTol} = vsSolveRBSA(r, X, maxIter, tol);
+    function vsRunRBSA(r, X, factorNames, maxIter, tol, lambda){
+      const {weights, iterations, converged, maxIter: usedMaxIter, tol: usedTol, lambda: usedLambda} = vsSolveRBSA(r, X, maxIter, tol, lambda);
       const fitted = vsMatVec(X,weights); const resid = r.map((ri,i)=>ri-fitted[i]);
       const rMean = r.reduce((a,b)=>a+b,0)/r.length;
       const ssRes = resid.reduce((a,e)=>a+e*e,0);
@@ -12199,7 +12274,7 @@
       }
       const weightsByFactor = {};
       factorNames.forEach((name,i)=> weightsByFactor[name] = weights[i]);
-      return {weights:weightsByFactor, rSquared, trackingErrorAnnual, nObs, nFactors, warnings, converged, iterations, maxIter: usedMaxIter, tol: usedTol};
+      return {weights:weightsByFactor, rSquared, trackingErrorAnnual, nObs, nFactors, warnings, converged, iterations, maxIter: usedMaxIter, tol: usedTol, lambda: usedLambda};
     }
 
     // ── Componentes de UI ────────────────────────────────────────────────────
@@ -12586,6 +12661,118 @@
       });
     }
 
+    // Gráfico de abanico (fan chart) para Monte Carlo — banda p5-p95 (clara),
+    // banda p25-p75 (más oscura) y línea de mediana. Mismo patrón que
+    // VsLineChart (medir el contenedor real con ResizeObserver, sin forzar
+    // preserveAspectRatio) para evitar los mismos problemas de desajuste y
+    // deformación que ya resolvimos ahí.
+    function VsFanChart({ bands, height = 280, color = VS_A }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const [width, setWidth] = useState(0);
+      const wrapRef = useRef(null);
+      const gradId = useState(() => "vsfan-" + Math.random().toString(36).slice(2))[0];
+
+      useEffect(() => {
+        if (!wrapRef.current) return;
+        const el = wrapRef.current;
+        const ro = new ResizeObserver(entries => {
+          const w = entries[0]?.contentRect?.width;
+          if (w > 0) setWidth(w);
+        });
+        ro.observe(el);
+        setWidth(el.getBoundingClientRect().width || 0);
+        return () => ro.disconnect();
+      }, []);
+
+      if (!bands || bands.length < 2) {
+        return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#3a4550", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>datos insuficientes para graficar</div>;
+      }
+      if (!width) return <div ref={wrapRef} style={{ height }} />;
+
+      const W = width, H = height, padL = 46, padR = 8, padT = 14, padB = 26;
+      const allVals = bands.flatMap(b => [b.p5, b.p95]);
+      const vMin = Math.min(...allVals), vMax = Math.max(...allVals);
+      const vPad = (vMax - vMin) * 0.06 || vMax * 0.05 || 1;
+      const yMin = vMin - vPad, yMax = vMax + vPad;
+
+      const xForIdx = (i) => padL + (i / (bands.length - 1)) * (W - padL - padR);
+      const yForVal = (v) => padT + (1 - (v - yMin) / (yMax - yMin)) * (H - padT - padB);
+      const baseline = H - padB;
+
+      const lineFor = (key) => {
+        let d = "";
+        bands.forEach((b, i) => { d += (i === 0 ? "M" : "L") + xForIdx(i).toFixed(1) + "," + yForVal(b[key]).toFixed(1) + " "; });
+        return d;
+      };
+      const bandFor = (lowKey, highKey) => {
+        let d = "";
+        bands.forEach((b, i) => { d += (i === 0 ? "M" : "L") + xForIdx(i).toFixed(1) + "," + yForVal(b[highKey]).toFixed(1) + " "; });
+        for (let i = bands.length - 1; i >= 0; i--) { d += "L" + xForIdx(i).toFixed(1) + "," + yForVal(bands[i][lowKey]).toFixed(1) + " "; }
+        return d + "Z";
+      };
+
+      const nLabels = Math.min(6, bands.length);
+      const labelIdxs = Array.from({length: nLabels}, (_, i) => Math.round(i * (bands.length - 1) / (nLabels - 1)));
+      const yTicks = Array.from({length: 4}, (_, i) => yMin + (i / 3) * (yMax - yMin));
+
+      const handleMove = (e) => {
+        const rect = wrapRef.current.getBoundingClientRect();
+        const relX = e.clientX - rect.left;
+        const frac = (relX - padL) / (W - padL - padR);
+        const idx = Math.round(frac * (bands.length - 1));
+        setHoverIdx(Math.max(0, Math.min(bands.length - 1, idx)));
+      };
+
+      const hb = hoverIdx !== null ? bands[hoverIdx] : null;
+      const hx = hb ? xForIdx(hoverIdx) : 0;
+      const tooltipW = 150;
+      let tipLeft = hx + 12; if (tipLeft + tooltipW > W) tipLeft = hx - tooltipW - 12;
+      const tipTop = 8;
+
+      return (
+        <div ref={wrapRef} style={{ position: "relative" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block" }}
+            onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
+            {yTicks.map((t, i) => (
+              <g key={i}>
+                <line x1={padL} x2={W-padR} y1={yForVal(t)} y2={yForVal(t)} stroke="#12181f" strokeWidth="1" />
+                <text x={padL - 8} y={yForVal(t)+3} textAnchor="end" fontSize="9" fontFamily="'DM Mono',monospace" fill="#5a7080">{t.toFixed(0)}</text>
+              </g>
+            ))}
+            {labelIdxs.map((idx, i) => (
+              <text key={i} x={xForIdx(idx)} y={H-8} textAnchor="middle" fontSize="9" fontFamily="'DM Mono',monospace" fill="#5a7080">
+                {bands[idx].monthIndex}m
+              </text>
+            ))}
+            <line x1={padL} x2={W-padR} y1={yForVal(100)} y2={yForVal(100)} stroke="#3a4550" strokeWidth="1" strokeDasharray="2,3" />
+
+            <path d={bandFor("p5","p95")} fill={color} opacity="0.10" stroke="none" />
+            <path d={bandFor("p25","p75")} fill={color} opacity="0.22" stroke="none" />
+            <path d={lineFor("p50")} fill="none" stroke={color} strokeWidth="2" />
+
+            {hb && <line x1={hx} x2={hx} y1={padT} y2={baseline} stroke="#7a90a8" strokeWidth="1" opacity="0.4" />}
+          </svg>
+
+          {hb && (
+            <div style={{
+              position: "absolute", left: tipLeft, top: tipTop, width: tooltipW,
+              background: "#12181f", border: "1px solid #1a2535", borderRadius: 8,
+              padding: "8px 10px", pointerEvents: "none", boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
+              fontFamily: "'DM Mono',monospace", fontSize: 10,
+            }}>
+              <div style={{ color: "#7a90a8", marginBottom: 4 }}>mes {hb.monthIndex}</div>
+              {[["p95","#4ade80"],["p75","#9aaabb"],["p50",color],["p25","#9aaabb"],["p5","#f87171"]].map(([k,c]) => (
+                <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "#5a7080" }}>{k}</span>
+                  <span style={{ color: c, fontWeight: 600 }}>{hb[k].toFixed(1)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // ── Formulario de edición reutilizable (índices y fondos) ────────────────
     // Cambiar nombre, categoría, nota, o reemplazar el CSV por completo.
     // Si no se sube ningún archivo nuevo, se conservan los retornos que ya
@@ -12962,6 +13149,9 @@
       const [lastRX, setLastRX] = useState(null); // { r, X, selNames } del último ajuste, para el diagnóstico OLS
       const [olsResult, setOlsResult] = useState(null);
       const [olsBusy, setOlsBusy] = useState(false);
+      const [ridgeLambdaInput, setRidgeLambdaInput] = useState("0.01");
+      const [ridgeResult, setRidgeResult] = useState(null);
+      const [ridgeBusy, setRidgeBusy] = useState(false);
       const [maxIter, setMaxIter] = useState(5000);
       const [tolInput, setTolInput] = useState("1e-10");
       const [saving, setSaving] = useState(false);
@@ -13021,6 +13211,27 @@
         setOlsBusy(false);
       };
 
+      // Reejecuta el mismo r/X del último RBSA, pero con penalización Ridge.
+      // Compara peso a peso contra el resultado original para ver cuánto se
+      // mueve cada uno — movimientos grandes delatan factores cuyo peso
+      // individual no era muy fiable (colinealidad), aunque el R² conjunto
+      // no cambie apenas.
+      const runRidgeDiagnostic = () => {
+        if (!lastRX || !result) return;
+        const lambda = parseFloat(ridgeLambdaInput);
+        if (!isFinite(lambda) || lambda < 0) return;
+        setRidgeBusy(true);
+        try {
+          const parsedTol = parseFloat(tolInput);
+          const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
+          const res = vsRunRBSA(lastRX.r, lastRX.X, lastRX.selNames, maxIter, effectiveTol, lambda);
+          setRidgeResult(res);
+        } catch (e) {
+          setRidgeResult({ error: e.message });
+        }
+        setRidgeBusy(false);
+      };
+
       // Sube un CSV nuevo y lo guarda directamente en el pool de Fondos —
       // así queda disponible para próximas veces (aquí y en Correlación)
       // sin tener que volver a subirlo.
@@ -13052,7 +13263,7 @@
       const run = async () => {
         if (!activeFundName || selected.size === 0) return;
         if (mode === "pool" && !funds[selectedFund]) return;
-        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg(""); setOlsResult(null); setLastRX(null);
+        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg(""); setOlsResult(null); setRidgeResult(null); setLastRX(null);
         try {
           const fReturns = vsHydrateFundReturns(funds[selectedFund].returns);
 
@@ -13263,6 +13474,65 @@
                   💾 {saving ? "guardando…" : "Guardar este análisis"}
                 </button>
                 {saveMsg && <div style={{ marginTop: 6, fontSize: 11, color: saveMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveMsg}</div>}
+
+                {lastRX && (
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6, marginBottom: 10 }}>
+                      🛡 Comprobación de estabilidad: reejecuta el mismo ajuste con una penalización Ridge (λ), que "encoge" los pesos hacia un reparto más uniforme cuando hay factores muy correlacionados. Si los pesos apenas cambian, el resultado original es fiable. Si cambian mucho, algunos pesos individuales no eran muy de fiar (aunque el R² conjunto fuera bueno).
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input type="text" value={ridgeLambdaInput} onChange={e=>setRidgeLambdaInput(e.target.value)}
+                        style={{ width: 90, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                      <button onClick={runRidgeDiagnostic} disabled={ridgeBusy}
+                        style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 600, cursor: ridgeBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
+                        🛡 {ridgeBusy ? "calculando…" : "¿Cambian mucho los pesos con Ridge?"}
+                      </button>
+                    </div>
+
+                    {ridgeResult && ridgeResult.error && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{ridgeResult.error}</div>
+                    )}
+
+                    {ridgeResult && !ridgeResult.error && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, color: "#7a90a8" }}>R² con Ridge:</span>
+                          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, fontWeight: 700, color: "#e2e8f0" }}>{ridgeResult.rSquared.toFixed(2)}</span>
+                          <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>(vs {result.rSquared.toFixed(2)} sin Ridge)</span>
+                        </div>
+
+                        {(() => {
+                          const maxShift = Math.max(...Object.keys(result.weights).map(nm => Math.abs((ridgeResult.weights[nm]||0) - result.weights[nm])));
+                          return (
+                            <div style={{ fontSize: 11, color: maxShift > 0.05 ? "#f59e0b" : "#4ade80", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                              {maxShift > 0.05
+                                ? `Movimiento máximo: ${(maxShift*100).toFixed(1)}pp — algunos pesos son sensibles a la colinealidad, no te fíes del desglose fino.`
+                                : `Movimiento máximo: ${(maxShift*100).toFixed(1)}pp — el reparto es estable, buena señal.`}
+                            </div>
+                          );
+                        })()}
+
+                        {Object.keys(result.weights).sort((a,b)=>result.weights[b]-result.weights[a]).map(nm => {
+                          const before = result.weights[nm], after = ridgeResult.weights[nm] || 0;
+                          const shift = after - before;
+                          return (
+                            <div key={nm} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12 }}>
+                              <span style={{ color: "#e2e8f0" }}>{nm}</span>
+                              <span style={{ fontFamily: "'DM Mono',monospace" }}>
+                                <span style={{ color: "#7a90a8" }}>{(before*100).toFixed(1)}%</span>
+                                <span style={{ color: "#3a4550", margin: "0 4px" }}>→</span>
+                                <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{(after*100).toFixed(1)}%</span>
+                                <span style={{ color: Math.abs(shift) > 0.05 ? "#f59e0b" : "#4ade80", marginLeft: 8 }}>
+                                  ({shift >= 0 ? "+" : ""}{(shift*100).toFixed(1)}pp)
+                                </span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {result.rSquared < 0.6 && lastRX && (
                   <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
@@ -13521,7 +13791,7 @@
       );
     }
 
-    function VsBacktestTab({ factors, funds, savedAnalyses }) {
+    function VsBacktestRBSA({ factors, funds, savedAnalyses }) {
       const [selectedId, setSelectedId] = useState(null);
 
       const analysis = savedAnalyses.find(a => a.id === selectedId);
@@ -13537,7 +13807,7 @@
       const activeWeights = d ? Object.entries(d.weights).filter(([, w]) => w > 0.001).sort((a,b)=>b[1]-a[1]) : [];
 
       return (
-        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20 }}>
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Backtest extendido</div>
             <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 16, lineHeight: 1.5 }}>
@@ -13628,6 +13898,144 @@
         </div>
       );
     }
+
+    function VsBacktestMonteCarlo({ funds }) {
+      const fundNames = Object.keys(funds).sort();
+      const [selectedFund, setSelectedFund] = useState(null);
+      const [horizon, setHorizon] = useState(12);
+      const [nSims, setNSims] = useState(2000);
+      const [mc, setMc] = useState(null);
+      const [busy, setBusy] = useState(false);
+
+      const run = () => {
+        if (!selectedFund || !funds[selectedFund]) return;
+        setBusy(true);
+        // setTimeout para dejar pintar el estado "calculando…" antes del
+        // trabajo síncrono (miles de trayectorias) que puede tardar un poco.
+        setTimeout(() => {
+          const values = funds[selectedFund].returns.map(p => p.value);
+          const res = vsRunMonteCarlo(values, horizon, nSims);
+          setMc(res);
+          setBusy(false);
+        }, 30);
+      };
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Monte Carlo / Bootstrap</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 16, lineHeight: 1.5 }}>
+              No usa ningún factor de mercado. Remuestrea (con reemplazo) los propios retornos mensuales históricos del fondo para generar muchos escenarios plausibles, y muestra el rango de resultados — no una única trayectoria. Útil cuando RBSA (con o sin Ridge) no encuentra ninguna combinación de factores que explique bien el fondo.
+            </div>
+
+            <div style={{ fontSize: 11, color: "#7a90a8", fontWeight: 500, marginBottom: 6 }}>Fondo</div>
+            {fundNames.length === 0 ? (
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>No hay fondos en el pool — añade uno desde "Pool" primero.</div>
+            ) : (
+              <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 14 }}>
+                {fundNames.map(nm => (
+                  <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedFund === nm ? "#171f2c" : "none" }}>
+                    <input type="radio" name="vs-mc-pick" checked={selectedFund === nm} onChange={()=>{setSelectedFund(nm); setMc(null);}} style={{ accentColor: VS_A }} />
+                    <span style={{ flex: 1 }}>{nm}</span>
+                    <span style={{ color: "#5a7080", fontFamily: "'DM Mono',monospace", fontSize: 10 }}>{funds[nm].returns.length} obs</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: "#7a90a8", fontWeight: 500, marginBottom: 6 }}>Horizonte (meses)</div>
+            <input type="number" min={1} max={240} value={horizon} onChange={e=>setHorizon(Math.max(1, parseInt(e.target.value)||12))}
+              style={{ width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 13, marginBottom: 12 }} />
+
+            <div style={{ fontSize: 11, color: "#7a90a8", fontWeight: 500, marginBottom: 6 }}>Nº de simulaciones</div>
+            <select value={nSims} onChange={e=>setNSims(parseInt(e.target.value))}
+              style={{ width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 13, marginBottom: 14 }}>
+              <option value={500}>500 (rápido)</option>
+              <option value={2000}>2.000</option>
+              <option value={5000}>5.000 (más preciso)</option>
+            </select>
+
+            <button onClick={run} disabled={busy || !selectedFund}
+              style={{ width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!selectedFund)?"not-allowed":"pointer", opacity: (busy||!selectedFund)?0.4:1 }}>
+              {busy ? "simulando…" : "Ejecutar simulación"}
+            </button>
+          </div>
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+              {selectedFund ? `${selectedFund} — escenarios simulados` : "Resultado"}
+            </div>
+
+            {!mc ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 320, color: "#3a4550", gap: 8 }}>
+                <div style={{ fontSize: 32, opacity: 0.4 }}>🎲</div>
+                <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace" }}>elige un fondo y ejecuta la simulación</div>
+              </div>
+            ) : mc.error ? (
+              <div style={{ padding: 16, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)", borderRadius: 8, fontSize: 12, color: "#f59e0b" }}>
+                {mc.error}
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 14, fontSize: 12 }}>
+                  <div><span style={{ color: "#7a90a8" }}>Simulaciones </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{mc.nSims.toLocaleString()}</span></div>
+                  <div><span style={{ color: "#7a90a8" }}>Remuestreado de </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{mc.nHistoricalReturns} retornos reales</span></div>
+                  <div><span style={{ color: "#7a90a8" }}>Prob. de pérdida a {mc.horizonMonths}m </span><span style={{ fontFamily: "'DM Mono',monospace", color: mc.probLoss > 0.3 ? "#f87171" : "#e2e8f0", fontWeight: 700 }}>{(mc.probLoss*100).toFixed(0)}%</span></div>
+                </div>
+
+                <div style={{ display: "flex", gap: 16, marginBottom: 10, fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 10, background: `${VS_A}22`, display: "inline-block" }}></span>p5–p95</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 10, background: `${VS_A}38`, display: "inline-block" }}></span>p25–p75</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 16, height: 2, background: VS_A, display: "inline-block" }}></span>mediana</span>
+                </div>
+
+                <VsFanChart bands={mc.bands} height={300} />
+
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 8 }}>
+                    valor a {mc.horizonMonths} meses (base 100)
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, textAlign: "center" }}>
+                    {[["p5","#f87171"],["p25","#9aaabb"],["p50",VS_A],["p75","#9aaabb"],["p95","#4ade80"]].map(([k,c]) => (
+                      <div key={k}>
+                        <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase" }}>{k}</div>
+                        <div style={{ fontSize: 15, color: c, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{mc.terminal[k].toFixed(1)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 14, fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6 }}>
+                  No es una predicción ni una trayectoria real — es el rango de resultados que habría producido este fondo si su comportamiento histórico se repitiera aleatoriamente. Asume que el futuro se parece estadísticamente al pasado, lo cual no está garantizado (cambios de gestor, de régimen de mercado, etc.).
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function VsBacktestTab({ factors, funds, savedAnalyses }) {
+      const [mode, setMode] = useState("rbsa"); // "rbsa" | "montecarlo"
+      return (
+        <div style={{ padding: 20 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 20, maxWidth: 400 }}>
+            <button onClick={()=>setMode("rbsa")}
+              style={{ flex: 1, background: mode==="rbsa" ? VS_A+"18" : "none", border: `1px solid ${mode==="rbsa" ? VS_A : "#1a2535"}`, color: mode==="rbsa" ? VS_A : "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              📉 Extensión RBSA
+            </button>
+            <button onClick={()=>setMode("montecarlo")}
+              style={{ flex: 1, background: mode==="montecarlo" ? VS_A+"18" : "none", border: `1px solid ${mode==="montecarlo" ? VS_A : "#1a2535"}`, color: mode==="montecarlo" ? VS_A : "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              🎲 Monte Carlo
+            </button>
+          </div>
+          {mode === "rbsa"
+            ? <VsBacktestRBSA factors={factors} funds={funds} savedAnalyses={savedAnalyses} />
+            : <VsBacktestMonteCarlo funds={funds} />}
+        </div>
+      );
+    }
+
 
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const [tab, setTab] = useState("pool");
