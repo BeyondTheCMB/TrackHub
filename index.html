@@ -12314,6 +12314,42 @@
       return {weights:weightsByFactor, rSquared, trackingErrorAnnual, nObs, nFactors, warnings, converged, iterations, maxIter: usedMaxIter, tol: usedTol, lambda: usedLambda};
     }
 
+    // ── RBSA rodante (evolución del estilo en el tiempo) ──────────────────────
+    // Corre RBSA en ventanas móviles del histórico en vez de una sola vez
+    // sobre todo el periodo. El RBSA simple asume que el fondo se ha
+    // comportado igual todo el tiempo — esto lo comprueba: si los pesos
+    // apenas cambian de una ventana a otra, esa suposición es razonable; si
+    // saltan mucho, el fondo ha cambiado de estilo (cambio de gestor, de
+    // ciclo de mercado...) y extrapolar hacia atrás con un único conjunto
+    // de pesos promedio es menos defendible.
+    function vsRollingRBSA(r, X, dates, selNames, windowSize, step, maxIter, tol) {
+      if (r.length < windowSize) {
+        return { error: `Se necesitan al menos ${windowSize} observaciones para una ventana de ese tamaño; solo hay ${r.length}.` };
+      }
+      const windows = [];
+      for (let start = 0; start + windowSize <= r.length; start += step) {
+        const end = start + windowSize; // exclusivo
+        const res = vsRunRBSA(r.slice(start, end), X.slice(start, end), selNames, maxIter, tol);
+        windows.push({
+          startDate: dates[start], endDate: dates[end - 1],
+          weights: res.weights, rSquared: res.rSquared, nObs: end - start,
+        });
+      }
+      // La ventana más reciente (terminada en el último dato disponible) se
+      // añade siempre, aunque no caiga justo en un múltiplo de `step` — es
+      // la más relevante si algún día se usa para decidir con qué estilo
+      // extender el backtest hacia atrás.
+      const lastStart = r.length - windowSize;
+      if (windows.length === 0 || windows[windows.length - 1].endDate !== dates[r.length - 1]) {
+        const res = vsRunRBSA(r.slice(lastStart), X.slice(lastStart), selNames, maxIter, tol);
+        windows.push({
+          startDate: dates[lastStart], endDate: dates[r.length - 1],
+          weights: res.weights, rSquared: res.rSquared, nObs: windowSize,
+        });
+      }
+      return { windows };
+    }
+
     // ── Componentes de UI ────────────────────────────────────────────────────
 
     // Abre una búsqueda de Google acotada a investing.com. No hacemos
@@ -12891,6 +12927,148 @@
       );
     }
 
+    // Paleta cíclica para las series del área apilada (no depende de la
+    // categoría del factor — con muchos factores en juego, mejor un ciclo
+    // de colores bien diferenciados entre sí).
+    const VS_STACK_PALETTE = ["#a78bfa", "#22d3ee", "#4ade80", "#f59e0b", "#f87171", "#60a5fa", "#e879f9", "#fbbf24", "#34d399", "#94a3b8"];
+
+    // Gráfico de área apilada 100% — evolución del reparto de pesos del
+    // RBSA rodante a lo largo de las ventanas. La línea de R² se superpone
+    // en el mismo eje (0-100%) ya que ambos comparten rango [0,1].
+    function VsStackedAreaChart({ windows, factorNames, height = 300 }) {
+      const [hoverIdx, setHoverIdx] = useState(null);
+      const [width, setWidth] = useState(0);
+      const wrapRef = useRef(null);
+
+      useEffect(() => {
+        if (!wrapRef.current) return;
+        const el = wrapRef.current;
+        const ro = new ResizeObserver(entries => {
+          const w = entries[0]?.contentRect?.width;
+          if (w > 0) setWidth(w);
+        });
+        ro.observe(el);
+        setWidth(el.getBoundingClientRect().width || 0);
+        return () => ro.disconnect();
+      }, []);
+
+      if (!windows || windows.length < 2) {
+        return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "#3a4550", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>datos insuficientes para graficar</div>;
+      }
+      if (!width) return <div ref={wrapRef} style={{ height }} />;
+
+      const W = width, H = height, padL = 32, padR = 8, padT = 14, padB = 26;
+      const n = windows.length;
+      const xForIdx = (i) => padL + (i / (n - 1)) * (W - padL - padR);
+      const yForFrac = (f) => padT + (1 - f) * (H - padT - padB); // f en [0,1]
+      const baseline = H - padB;
+
+      // Acumulados por ventana, para dibujar cada banda como diferencia
+      // entre su techo y el techo de la anterior.
+      const cum = windows.map(w => {
+        let acc = 0;
+        const out = {};
+        for (const nm of factorNames) { acc += w.weights[nm] || 0; out[nm] = acc; }
+        return out;
+      });
+
+      const bandPath = (nm, prevNm) => {
+        let d = "";
+        for (let i = 0; i < n; i++) d += (i === 0 ? "M" : "L") + xForIdx(i).toFixed(1) + "," + yForFrac(cum[i][nm]).toFixed(1) + " ";
+        for (let i = n - 1; i >= 0; i--) {
+          const bottom = prevNm ? cum[i][prevNm] : 0;
+          d += "L" + xForIdx(i).toFixed(1) + "," + yForFrac(bottom).toFixed(1) + " ";
+        }
+        return d + "Z";
+      };
+
+      const rSquaredPath = () => {
+        let d = "";
+        windows.forEach((w, i) => { d += (i === 0 ? "M" : "L") + xForIdx(i).toFixed(1) + "," + yForFrac(w.rSquared).toFixed(1) + " "; });
+        return d;
+      };
+
+      const nLabels = Math.min(6, n);
+      const labelIdxs = Array.from({length: nLabels}, (_, i) => Math.round(i * (n - 1) / (nLabels - 1)));
+
+      const handleMove = (e) => {
+        const rect = wrapRef.current.getBoundingClientRect();
+        const relX = e.clientX - rect.left;
+        const frac = (relX - padL) / (W - padL - padR);
+        const idx = Math.round(frac * (n - 1));
+        setHoverIdx(Math.max(0, Math.min(n - 1, idx)));
+      };
+
+      const hw = hoverIdx !== null ? windows[hoverIdx] : null;
+      const hx = hw ? xForIdx(hoverIdx) : 0;
+      const tooltipW = 190;
+      let tipLeft = hx + 12; if (tipLeft + tooltipW > W) tipLeft = hx - tooltipW - 12;
+
+      return (
+        <div ref={wrapRef} style={{ position: "relative" }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block" }}
+            onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
+            {[0, 0.25, 0.5, 0.75, 1].map((t, i) => (
+              <g key={i}>
+                <line x1={padL} x2={W-padR} y1={yForFrac(t)} y2={yForFrac(t)} stroke="#12181f" strokeWidth="1" />
+                <text x={padL - 6} y={yForFrac(t)+3} textAnchor="end" fontSize="9" fontFamily="'DM Mono',monospace" fill="#5a7080">{(t*100).toFixed(0)}</text>
+              </g>
+            ))}
+            {labelIdxs.map((idx, i) => (
+              <text key={i} x={xForIdx(idx)} y={H-8} textAnchor="middle" fontSize="9" fontFamily="'DM Mono',monospace" fill="#5a7080">
+                {windows[idx].endDate.slice(0,7)}
+              </text>
+            ))}
+
+            {factorNames.map((nm, i) => (
+              <path key={nm} d={bandPath(nm, factorNames[i-1])} fill={VS_STACK_PALETTE[i % VS_STACK_PALETTE.length]} opacity="0.85" stroke="#060d14" strokeWidth="0.5" />
+            ))}
+
+            {/* Línea de R² superpuesta, mismo eje 0-1 */}
+            <path d={rSquaredPath()} fill="none" stroke="#e2e8f0" strokeWidth="1.5" strokeDasharray="2,2" opacity="0.8" />
+
+            {hw && (
+              <line x1={hx} x2={hx} y1={padT} y2={baseline} stroke="#e2e8f0" strokeWidth="1" opacity="0.5" />
+            )}
+          </svg>
+
+          {hw && (
+            <div style={{
+              position: "absolute", left: tipLeft, top: 8, width: tooltipW,
+              background: "#12181f", border: "1px solid #1a2535", borderRadius: 8,
+              padding: "8px 10px", pointerEvents: "none", boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
+              fontFamily: "'DM Mono',monospace",
+            }}>
+              <div style={{ fontSize: 10, color: "#7a90a8", marginBottom: 4 }}>{hw.startDate.slice(0,7)} → {hw.endDate.slice(0,7)}</div>
+              <div style={{ fontSize: 10, color: "#e2e8f0", marginBottom: 6 }}>R² = {hw.rSquared.toFixed(2)}</div>
+              {factorNames.filter(nm => (hw.weights[nm]||0) > 0.005).sort((a,b)=>(hw.weights[b]||0)-(hw.weights[a]||0)).map(nm => {
+                const i = factorNames.indexOf(nm);
+                return (
+                  <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 10, gap: 8 }}>
+                    <span style={{ color: VS_STACK_PALETTE[i % VS_STACK_PALETTE.length], overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm}</span>
+                    <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{(hw.weights[nm]*100).toFixed(1)}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px", marginTop: 8, padding: "0 4px" }}>
+            {factorNames.map((nm, i) => (
+              <span key={nm} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: VS_STACK_PALETTE[i % VS_STACK_PALETTE.length], display: "inline-block" }}></span>
+                {nm}
+              </span>
+            ))}
+            <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>
+              <span style={{ width: 12, height: 0, borderTop: "1.5px dashed #e2e8f0", display: "inline-block" }}></span>
+              R²
+            </span>
+          </div>
+        </div>
+      );
+    }
+
     // ── Formulario de edición reutilizable (índices y fondos) ────────────────
     // Cambiar nombre, categoría, nota, o reemplazar el CSV por completo.
     // Si no se sube ningún archivo nuevo, se conservan los retornos que ya
@@ -13270,6 +13448,10 @@
       const [ridgeLambdaInput, setRidgeLambdaInput] = useState("0.01");
       const [ridgeResult, setRidgeResult] = useState(null);
       const [ridgeBusy, setRidgeBusy] = useState(false);
+      const [rollingWindowInput, setRollingWindowInput] = useState("24");
+      const [rollingStepInput, setRollingStepInput] = useState("6");
+      const [rollingResult, setRollingResult] = useState(null);
+      const [rollingBusy, setRollingBusy] = useState(false);
       const [maxIter, setMaxIter] = useState(5000);
       const [tolInput, setTolInput] = useState("1e-10");
       const [saving, setSaving] = useState(false);
@@ -13350,6 +13532,29 @@
         setRidgeBusy(false);
       };
 
+      // RBSA rodante: reusa el mismo r/X/dates del último ajuste, cortado en
+      // ventanas móviles. Se ejecuta de forma diferida (setTimeout) para que
+      // el estado "calculando…" se pinte antes de bloquear el hilo con las
+      // N regresiones que hacen falta.
+      const runRollingRBSA = () => {
+        if (!lastRX) return;
+        const windowSize = parseInt(rollingWindowInput);
+        const step = parseInt(rollingStepInput);
+        if (!isFinite(windowSize) || windowSize < 8 || !isFinite(step) || step < 1) return;
+        setRollingBusy(true);
+        setTimeout(() => {
+          try {
+            const parsedTol = parseFloat(tolInput);
+            const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
+            const res = vsRollingRBSA(lastRX.r, lastRX.X, lastRX.dates, lastRX.selNames, windowSize, step, maxIter, effectiveTol);
+            setRollingResult(res);
+          } catch (e) {
+            setRollingResult({ error: e.message });
+          }
+          setRollingBusy(false);
+        }, 20);
+      };
+
       // Sube un CSV nuevo y lo guarda directamente en el pool de Fondos —
       // así queda disponible para próximas veces (aquí y en Correlación)
       // sin tener que volver a subirlo.
@@ -13381,7 +13586,7 @@
       const run = async () => {
         if (!activeFundName || selected.size === 0) return;
         if (mode === "pool" && !funds[selectedFund]) return;
-        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg(""); setOlsResult(null); setRidgeResult(null); setLastRX(null);
+        setBusy(true); setStatus("procesando…"); setResult(null); setSaveMsg(""); setOlsResult(null); setRidgeResult(null); setRollingResult(null); setLastRX(null);
         try {
           const fReturns = vsHydrateFundReturns(funds[selectedFund].returns);
 
@@ -13400,6 +13605,7 @@
           // inventar ningún dato.
           const r = [];
           const X = [];
+          const dates = []; // fecha real de cada observación, para el RBSA rodante
           for (const fr of fReturns) {
             const row = [];
             let usable = true;
@@ -13408,7 +13614,7 @@
               if (compounded === null) { usable = false; break; }
               row.push(compounded);
             }
-            if (usable) { r.push(fr.value); X.push(row); }
+            if (usable) { r.push(fr.value); X.push(row); dates.push(fr.date.toISOString().slice(0,10)); }
           }
 
           if (r.length < 6) {
@@ -13420,7 +13626,7 @@
           const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
           const res = vsRunRBSA(r, X, selNames, maxIter, effectiveTol);
           setResult(res); setNObs(r.length);
-          setLastRX({ r, X, selNames });
+          setLastRX({ r, X, selNames, dates });
           setStatus(`Ajuste completado con ${r.length} observaciones (${res.iterations}/${maxIter} iteraciones, tol=${effectiveTol.toExponential(0)}${res.converged ? ", convergió" : ", NO convergió"}).`);
         } catch (e) {
           setStatus("Error: " + e.message);
@@ -13647,6 +13853,56 @@
                             </div>
                           );
                         })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {lastRX && (
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6, marginBottom: 10 }}>
+                      📈 RBSA rodante: corre el mismo ajuste en ventanas móviles del histórico, en vez de una vez sobre todo el periodo. El ajuste normal asume que el fondo se ha comportado igual todo el tiempo — esto lo comprueba. Si los pesos apenas cambian entre ventanas, es una suposición razonable. Si cambian mucho, el fondo ha cambiado de estilo y extrapolar hacia atrás con un único conjunto de pesos es menos defendible.
+                    </div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 3 }}>ventana (meses)</div>
+                        <input type="number" min={8} value={rollingWindowInput} onChange={e=>setRollingWindowInput(e.target.value)}
+                          style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 3 }}>paso (meses)</div>
+                        <input type="number" min={1} value={rollingStepInput} onChange={e=>setRollingStepInput(e.target.value)}
+                          style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                      </div>
+                      <button onClick={runRollingRBSA} disabled={rollingBusy}
+                        style={{ flex: 1, alignSelf: "flex-end", background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: rollingBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
+                        {rollingBusy ? "calculando…" : "Ejecutar RBSA rodante"}
+                      </button>
+                    </div>
+
+                    {rollingResult && rollingResult.error && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{rollingResult.error}</div>
+                    )}
+
+                    {rollingResult && !rollingResult.error && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
+                          {rollingResult.windows.length} ventanas de {rollingWindowInput} meses, paso de {rollingStepInput}
+                        </div>
+                        <VsStackedAreaChart windows={rollingResult.windows} factorNames={lastRX.selNames} height={280} />
+
+                        {(() => {
+                          const first = rollingResult.windows[0].weights;
+                          const last = rollingResult.windows[rollingResult.windows.length - 1].weights;
+                          const maxShift = Math.max(...lastRX.selNames.map(nm => Math.abs((last[nm]||0) - (first[nm]||0))));
+                          return (
+                            <div style={{ marginTop: 10, fontSize: 11, color: maxShift > 0.15 ? "#f59e0b" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>
+                              {maxShift > 0.15
+                                ? `Movimiento entre la primera y la última ventana: hasta ${(maxShift*100).toFixed(1)}pp en algún factor — el estilo del fondo parece haber cambiado con el tiempo.`
+                                : `Movimiento entre la primera y la última ventana: máximo ${(maxShift*100).toFixed(1)}pp — el estilo parece razonablemente estable.`}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
