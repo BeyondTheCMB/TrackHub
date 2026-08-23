@@ -12496,6 +12496,8 @@
     function VsLineChart({ series, splitIndex, height = 260, colorMain = VS_A, colorSynthetic = "#5a7080" }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const [width, setWidth] = useState(0);
+      const [measureA, setMeasureA] = useState(null); // primer punto marcado (clic)
+      const [measureB, setMeasureB] = useState(null); // segundo punto, fijado al hacer clic otra vez
       const wrapRef = useRef(null);
       const gradId = useState(() => "vsgrad-" + Math.random().toString(36).slice(2))[0];
 
@@ -12569,11 +12571,43 @@
         setHoverIdx(Math.max(0, Math.min(series.length - 1, idx)));
       };
 
+      // Medición entre dos puntos: primer clic marca A, segundo clic fija B.
+      // Un tercer clic empieza una medición nueva desde ahí (no hace falta
+      // borrar antes). Mientras solo hay A marcado, el tramo se previsualiza
+      // en vivo siguiendo el ratón, igual que el tooltip normal.
+      const handleClick = (e) => {
+        const rect = wrapRef.current.getBoundingClientRect();
+        const relX = e.clientX - rect.left;
+        const frac = (relX - padL) / (W - padL - padR);
+        const idx = Math.max(0, Math.min(series.length - 1, Math.round(frac * (series.length - 1))));
+        if (measureA === null) {
+          setMeasureA(idx); setMeasureB(null);
+        } else if (measureB === null) {
+          setMeasureB(idx);
+        } else {
+          setMeasureA(idx); setMeasureB(null);
+        }
+      };
+      const clearMeasure = (e) => { e.stopPropagation(); setMeasureA(null); setMeasureB(null); };
+
       const hp = hoverIdx !== null ? series[hoverIdx] : null;
       const hpPeriodReturn = hp && hoverIdx > 0 ? (hp.value / series[hoverIdx - 1].value - 1) * 100 : null;
       const hpPeriodMonths = hp && hoverIdx > 0 ? vsMonthsBetween(series[hoverIdx - 1].date, hp.date) : null;
       const hpCumReturn = hp ? (hp.value / series[0].value - 1) * 100 : null;
       const hpColor = hp ? (hp.isSynthetic ? colorSynthetic : colorMain) : colorMain;
+
+      // Segundo punto de la medición: el fijado (B) si ya existe, si no el
+      // punto bajo el ratón ahora mismo (previsualización en vivo).
+      const measureBLive = measureB !== null ? measureB : (measureA !== null ? hoverIdx : null);
+      const hasMeasure = measureA !== null && measureBLive !== null && measureBLive !== measureA;
+      let measureInfo = null;
+      if (hasMeasure) {
+        const iStart = Math.min(measureA, measureBLive), iEnd = Math.max(measureA, measureBLive);
+        const change = (series[iEnd].value / series[iStart].value - 1) * 100;
+        const months = vsMonthsBetween(series[iStart].date, series[iEnd].date);
+        const annualized = months > 0 ? ((Math.pow(series[iEnd].value / series[iStart].value, 12 / months) - 1) * 100) : null;
+        measureInfo = { iStart, iEnd, change, months, annualized, locked: measureB !== null };
+      }
 
       // Posición del tooltip flotante, evitando que se salga por los bordes.
       const hx = hp ? xForIdx(hoverIdx) : 0;
@@ -12586,8 +12620,8 @@
 
       return (
         <div ref={wrapRef} style={{ position: "relative" }}>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block" }}
-            onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height, display: "block", cursor: "crosshair" }}
+            onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)} onClick={handleClick}>
             <defs>
               <linearGradient id={gradId+"-main"} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={colorMain} stopOpacity="0.32" />
@@ -12645,7 +12679,53 @@
                 <circle cx={hx} cy={hy} r="4" fill={hpColor} stroke="#060d14" strokeWidth="1.5" />
               </>
             )}
+
+            {/* Medición entre dos puntos: zona sombreada + marcadores en A y B */}
+            {hasMeasure && (
+              <>
+                <rect x={Math.min(xForIdx(measureInfo.iStart), xForIdx(measureInfo.iEnd))} y={padT}
+                  width={Math.abs(xForIdx(measureInfo.iEnd) - xForIdx(measureInfo.iStart))} height={baseline - padT}
+                  fill={measureInfo.change >= 0 ? "#4ade80" : "#f87171"} opacity="0.08" />
+                <line x1={xForIdx(measureA)} x2={xForIdx(measureA)} y1={padT} y2={baseline} stroke={VS_A} strokeWidth="1.5" strokeDasharray={measureInfo.locked ? "none" : "3,3"} />
+                <circle cx={xForIdx(measureA)} cy={yForVal(series[measureA].value)} r="4" fill={VS_A} stroke="#060d14" strokeWidth="1.5" />
+                {measureInfo.locked && (
+                  <>
+                    <line x1={xForIdx(measureB)} x2={xForIdx(measureB)} y1={padT} y2={baseline} stroke={VS_A} strokeWidth="1.5" />
+                    <circle cx={xForIdx(measureB)} cy={yForVal(series[measureB].value)} r="4" fill={VS_A} stroke="#060d14" strokeWidth="1.5" />
+                  </>
+                )}
+              </>
+            )}
           </svg>
+
+          {hasMeasure && (
+            <div style={{
+              position: "absolute",
+              left: Math.min(Math.max((xForIdx(measureInfo.iStart) + xForIdx(measureInfo.iEnd)) / 2 - 80, 4), W - 164),
+              top: 6, width: 160,
+              background: "#12181f", border: `1px solid ${VS_A}55`, borderRadius: 8,
+              padding: "8px 10px", boxShadow: "0 4px 14px rgba(0,0,0,0.4)",
+              fontFamily: "'DM Mono',monospace", pointerEvents: measureInfo.locked ? "auto" : "none",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <span style={{ fontSize: 9, color: "#5a7080" }}>{series[measureInfo.iStart].date.slice(0,7)} → {series[measureInfo.iEnd].date.slice(0,7)}</span>
+                {measureInfo.locked && (
+                  <button onClick={clearMeasure} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1 }}>✕</button>
+                )}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: measureInfo.change >= 0 ? "#4ade80" : "#f87171" }}>
+                {measureInfo.change >= 0 ? "+" : ""}{measureInfo.change.toFixed(2)}%
+              </div>
+              {measureInfo.annualized !== null && measureInfo.months >= 3 && (
+                <div style={{ fontSize: 9, color: "#7a90a8", marginTop: 2 }}>
+                  {measureInfo.annualized >= 0 ? "+" : ""}{measureInfo.annualized.toFixed(2)}% anualizado · {measureInfo.months}m
+                </div>
+              )}
+              {!measureInfo.locked && (
+                <div style={{ fontSize: 9, color: "#3a4550", marginTop: 4 }}>clic para fijar el segundo punto</div>
+              )}
+            </div>
+          )}
 
           {hp && (
             <div style={{
@@ -12680,6 +12760,7 @@
           {!hp && maxDD < -0.001 && (
             <div style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#5a7080", padding: "4px 4px 0" }}>
               Máxima caída (pico a valle): <span style={{ color: "#f87171", fontWeight: 600 }}>{(maxDD*100).toFixed(2)}%</span>
+              <span style={{ marginLeft: 8, color: "#3a4550" }}>· clic en dos puntos para medir una subida/caída concreta</span>
             </div>
           )}
         </div>
