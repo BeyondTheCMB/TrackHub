@@ -13154,6 +13154,36 @@
       );
     }
 
+    // Botón "ⓘ" reutilizable — clic para mostrar/ocultar una breve
+    // explicación flotante. Cada instancia es independiente (varias pueden
+    // estar abiertas a la vez, sin coordinación entre ellas).
+    function VsInfoTip({ text, width = 220 }) {
+      const [open, setOpen] = useState(false);
+      return (
+        <span style={{ position: "relative", display: "inline-block", verticalAlign: "middle", marginLeft: 5 }}>
+          <button onClick={(e)=>{ e.stopPropagation(); e.preventDefault(); setOpen(v=>!v); }}
+            style={{
+              width: 14, height: 14, borderRadius: "50%", border: `1px solid ${open ? VS_A : "#3a4550"}`,
+              background: "none", color: open ? VS_A : "#5a7080", fontSize: 9, lineHeight: "12px", padding: 0,
+              cursor: "pointer", fontFamily: "'DM Mono',monospace", display: "inline-flex",
+              alignItems: "center", justifyContent: "center",
+            }}>
+            i
+          </button>
+          {open && (
+            <div onClick={e=>e.stopPropagation()} style={{
+              position: "absolute", zIndex: 30, top: 18, left: 0, width,
+              background: "#12181f", border: "1px solid #1a2535", borderRadius: 8,
+              padding: "9px 11px", fontSize: 10, color: "#9aaabb", lineHeight: 1.55,
+              boxShadow: "0 4px 14px rgba(0,0,0,0.45)", fontFamily: "'DM Mono',monospace",
+            }}>
+              {text}
+            </div>
+          )}
+        </span>
+      );
+    }
+
     function VsCatTag({ category }) {
       const c = VS_CAT_COLOR[category] || "#7a90a8";
       return (
@@ -13804,10 +13834,14 @@
                     <div>
                       <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
                         🛡 ¿Reparto estable? (Ridge)
+                        <VsInfoTip text="Ridge añade una penalización que reparte el peso de forma más uniforme entre factores muy correlacionados, en vez de dejar que el ajuste elija de forma casi arbitraria uno de varios repartos equivalentes. No cambia la interpretación (sigue siendo una cartera long-only), solo la estabilidad del resultado." />
                       </div>
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <input type="text" value={ridgeLambdaInput} onChange={e=>setRidgeLambdaInput(e.target.value)}
-                          style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                        <span style={{ display: "flex", alignItems: "center" }}>
+                          <input type="text" value={ridgeLambdaInput} onChange={e=>setRidgeLambdaInput(e.target.value)}
+                            style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                          <VsInfoTip text="λ (lambda): cuánto más alto, más fuerza el reparto hacia pesos iguales entre factores. 0 = sin penalización, el ajuste normal. Prueba 0.001–0.05: valores pequeños casi no cambian nada, valores grandes sacrifican ajuste (R²) a cambio de estabilidad." />
+                        </span>
                         <button onClick={runRidgeDiagnostic} disabled={ridgeBusy}
                           style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px", fontSize: 11, fontWeight: 600, cursor: ridgeBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
                           {ridgeBusy ? "calculando…" : "Comprobar"}
@@ -13856,14 +13890,19 @@
                     <div>
                       <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
                         📈 ¿Estilo estable en el tiempo?
+                        <VsInfoTip text="Repite el ajuste sobre segmentos móviles del histórico en vez de una sola vez con todos los datos. Si el reparto de pesos apenas cambia entre ventanas, el fondo se ha comportado de forma consistente. Si cambia mucho, el estilo del fondo ha variado con el tiempo (cambio de gestor, de ciclo de mercado…) y extrapolar hacia atrás con un único conjunto de pesos es menos defendible." />
                       </div>
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-                        <input type="number" min={8} value={rollingWindowInput} onChange={e=>setRollingWindowInput(e.target.value)}
-                          title="ventana (meses)"
-                          style={{ width: 55, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
-                        <input type="number" min={1} value={rollingStepInput} onChange={e=>setRollingStepInput(e.target.value)}
-                          title="paso (meses)"
-                          style={{ width: 55, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                        <span style={{ display: "flex", alignItems: "center" }}>
+                          <input type="number" min={8} value={rollingWindowInput} onChange={e=>setRollingWindowInput(e.target.value)}
+                            style={{ width: 55, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                          <VsInfoTip text="Ventana (en meses): cuántos meses entran en cada tramo de ajuste. Más grande = más estable pero menos sensible a cambios recientes; más pequeño = más sensible pero con menos observaciones por ventana (menos fiable estadísticamente)." />
+                        </span>
+                        <span style={{ display: "flex", alignItems: "center" }}>
+                          <input type="number" min={1} value={rollingStepInput} onChange={e=>setRollingStepInput(e.target.value)}
+                            style={{ width: 55, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                          <VsInfoTip text="Paso (en meses): cuántos meses se avanza de una ventana a la siguiente. Un paso pequeño da más ventanas (curva más suave en el gráfico) pero tarda más en calcular; un paso grande es más rápido pero con menos resolución temporal." />
+                        </span>
                         <button onClick={runRollingRBSA} disabled={rollingBusy}
                           style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: rollingBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
                           {rollingBusy ? "calculando…" : "Comprobar"}
