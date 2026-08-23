@@ -13800,111 +13800,97 @@
                 {saveMsg && <div style={{ marginTop: 6, fontSize: 11, color: saveMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveMsg}</div>}
 
                 {lastRX && (
-                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
-                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6, marginBottom: 10 }}>
-                      🛡 Comprobación de estabilidad: reejecuta el mismo ajuste con una penalización Ridge (λ), que "encoge" los pesos hacia un reparto más uniforme cuando hay factores muy correlacionados. Si los pesos apenas cambian, el resultado original es fiable. Si cambian mucho, algunos pesos individuales no eran muy de fiar (aunque el R² conjunto fuera bueno).
-                    </div>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input type="text" value={ridgeLambdaInput} onChange={e=>setRidgeLambdaInput(e.target.value)}
-                        style={{ width: 90, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
-                      <button onClick={runRidgeDiagnostic} disabled={ridgeBusy}
-                        style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 600, cursor: ridgeBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
-                        🛡 {ridgeBusy ? "calculando…" : "¿Cambian mucho los pesos con Ridge?"}
-                      </button>
-                    </div>
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
+                        🛡 ¿Reparto estable? (Ridge)
+                      </div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input type="text" value={ridgeLambdaInput} onChange={e=>setRidgeLambdaInput(e.target.value)}
+                          style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                        <button onClick={runRidgeDiagnostic} disabled={ridgeBusy}
+                          style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px", fontSize: 11, fontWeight: 600, cursor: ridgeBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
+                          {ridgeBusy ? "calculando…" : "Comprobar"}
+                        </button>
+                      </div>
 
-                    {ridgeResult && ridgeResult.error && (
-                      <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{ridgeResult.error}</div>
-                    )}
+                      {ridgeResult && ridgeResult.error && (
+                        <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{ridgeResult.error}</div>
+                      )}
 
-                    {ridgeResult && !ridgeResult.error && (
-                      <div style={{ marginTop: 12 }}>
-                        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
-                          <span style={{ fontSize: 11, color: "#7a90a8" }}>R² con Ridge:</span>
-                          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, fontWeight: 700, color: "#e2e8f0" }}>{ridgeResult.rSquared.toFixed(2)}</span>
-                          <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>(vs {result.rSquared.toFixed(2)} sin Ridge)</span>
-                        </div>
+                      {ridgeResult && !ridgeResult.error && (
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, fontWeight: 700, color: "#e2e8f0" }}>{ridgeResult.rSquared.toFixed(2)}</span>
+                            <span style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>(vs {result.rSquared.toFixed(2)})</span>
+                          </div>
 
-                        {(() => {
-                          const maxShift = Math.max(...Object.keys(result.weights).map(nm => Math.abs((ridgeResult.weights[nm]||0) - result.weights[nm])));
-                          return (
-                            <div style={{ fontSize: 11, color: maxShift > 0.05 ? "#f59e0b" : "#4ade80", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
-                              {maxShift > 0.05
-                                ? `Movimiento máximo: ${(maxShift*100).toFixed(1)}pp — algunos pesos son sensibles a la colinealidad, no te fíes del desglose fino.`
-                                : `Movimiento máximo: ${(maxShift*100).toFixed(1)}pp — el reparto es estable, buena señal.`}
-                            </div>
-                          );
-                        })()}
+                          {(() => {
+                            const maxShift = Math.max(...Object.keys(result.weights).map(nm => Math.abs((ridgeResult.weights[nm]||0) - result.weights[nm])));
+                            return (
+                              <div style={{ fontSize: 10, color: maxShift > 0.05 ? "#f59e0b" : "#4ade80", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
+                                movimiento máx: {(maxShift*100).toFixed(1)}pp {maxShift > 0.05 ? "— sensible" : "— estable"}
+                              </div>
+                            );
+                          })()}
 
-                        {Object.keys(result.weights).sort((a,b)=>result.weights[b]-result.weights[a]).map(nm => {
-                          const before = result.weights[nm], after = ridgeResult.weights[nm] || 0;
-                          const shift = after - before;
-                          return (
-                            <div key={nm} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12 }}>
-                              <span style={{ color: "#e2e8f0" }}>{nm}</span>
-                              <span style={{ fontFamily: "'DM Mono',monospace" }}>
-                                <span style={{ color: "#7a90a8" }}>{(before*100).toFixed(1)}%</span>
-                                <span style={{ color: "#3a4550", margin: "0 4px" }}>→</span>
-                                <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{(after*100).toFixed(1)}%</span>
-                                <span style={{ color: Math.abs(shift) > 0.05 ? "#f59e0b" : "#4ade80", marginLeft: 8 }}>
-                                  ({shift >= 0 ? "+" : ""}{(shift*100).toFixed(1)}pp)
+                          {Object.keys(result.weights).sort((a,b)=>result.weights[b]-result.weights[a]).map(nm => {
+                            const before = result.weights[nm], after = ridgeResult.weights[nm] || 0;
+                            const shift = after - before;
+                            return (
+                              <div key={nm} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 11, gap: 6 }}>
+                                <span style={{ color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm}</span>
+                                <span style={{ fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>
+                                  <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{(after*100).toFixed(1)}%</span>
+                                  <span style={{ color: Math.abs(shift) > 0.05 ? "#f59e0b" : "#4ade80", marginLeft: 6 }}>
+                                    ({shift >= 0 ? "+" : ""}{(shift*100).toFixed(1)})
+                                  </span>
                                 </span>
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {lastRX && (
-                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
-                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6, marginBottom: 10 }}>
-                      📈 RBSA rodante: corre el mismo ajuste en ventanas móviles del histórico, en vez de una vez sobre todo el periodo. El ajuste normal asume que el fondo se ha comportado igual todo el tiempo — esto lo comprueba. Si los pesos apenas cambian entre ventanas, es una suposición razonable. Si cambian mucho, el fondo ha cambiado de estilo y extrapolar hacia atrás con un único conjunto de pesos es menos defendible.
-                    </div>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
-                      <div>
-                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 3 }}>ventana (meses)</div>
-                        <input type="number" min={8} value={rollingWindowInput} onChange={e=>setRollingWindowInput(e.target.value)}
-                          style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 3 }}>paso (meses)</div>
-                        <input type="number" min={1} value={rollingStepInput} onChange={e=>setRollingStepInput(e.target.value)}
-                          style={{ width: 70, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
-                      </div>
-                      <button onClick={runRollingRBSA} disabled={rollingBusy}
-                        style={{ flex: 1, alignSelf: "flex-end", background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: rollingBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
-                        {rollingBusy ? "calculando…" : "Ejecutar RBSA rodante"}
-                      </button>
-                    </div>
-
-                    {rollingResult && rollingResult.error && (
-                      <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{rollingResult.error}</div>
-                    )}
-
-                    {rollingResult && !rollingResult.error && (
-                      <div style={{ marginTop: 12 }}>
-                        <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
-                          {rollingResult.windows.length} ventanas de {rollingWindowInput} meses, paso de {rollingStepInput}
+                              </div>
+                            );
+                          })}
                         </div>
-                        <VsStackedAreaChart windows={rollingResult.windows} factorNames={lastRX.selNames} height={280} />
+                      )}
+                    </div>
 
-                        {(() => {
-                          const first = rollingResult.windows[0].weights;
-                          const last = rollingResult.windows[rollingResult.windows.length - 1].weights;
-                          const maxShift = Math.max(...lastRX.selNames.map(nm => Math.abs((last[nm]||0) - (first[nm]||0))));
-                          return (
-                            <div style={{ marginTop: 10, fontSize: 11, color: maxShift > 0.15 ? "#f59e0b" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>
-                              {maxShift > 0.15
-                                ? `Movimiento entre la primera y la última ventana: hasta ${(maxShift*100).toFixed(1)}pp en algún factor — el estilo del fondo parece haber cambiado con el tiempo.`
-                                : `Movimiento entre la primera y la última ventana: máximo ${(maxShift*100).toFixed(1)}pp — el estilo parece razonablemente estable.`}
-                            </div>
-                          );
-                        })()}
+                    <div>
+                      <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
+                        📈 ¿Estilo estable en el tiempo?
                       </div>
-                    )}
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                        <input type="number" min={8} value={rollingWindowInput} onChange={e=>setRollingWindowInput(e.target.value)}
+                          title="ventana (meses)"
+                          style={{ width: 55, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                        <input type="number" min={1} value={rollingStepInput} onChange={e=>setRollingStepInput(e.target.value)}
+                          title="paso (meses)"
+                          style={{ width: 55, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                        <button onClick={runRollingRBSA} disabled={rollingBusy}
+                          style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: rollingBusy ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
+                          {rollingBusy ? "calculando…" : "Comprobar"}
+                        </button>
+                      </div>
+
+                      {rollingResult && rollingResult.error && (
+                        <div style={{ marginTop: 8, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{rollingResult.error}</div>
+                      )}
+
+                      {rollingResult && !rollingResult.error && (
+                        <div>
+                          <VsStackedAreaChart windows={rollingResult.windows} factorNames={lastRX.selNames} height={220} />
+
+                          {(() => {
+                            const first = rollingResult.windows[0].weights;
+                            const last = rollingResult.windows[rollingResult.windows.length - 1].weights;
+                            const maxShift = Math.max(...lastRX.selNames.map(nm => Math.abs((last[nm]||0) - (first[nm]||0))));
+                            return (
+                              <div style={{ marginTop: 8, fontSize: 10, color: maxShift > 0.15 ? "#f59e0b" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>
+                                1ª→última ventana: {(maxShift*100).toFixed(1)}pp {maxShift > 0.15 ? "— estilo cambia" : "— estable"}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
