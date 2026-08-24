@@ -12156,6 +12156,47 @@
       };
     }
 
+    // ── Test de estrés ────────────────────────────────────────────────────
+    // Aplica los pesos de un análisis ya guardado al retorno REAL (no
+    // simulado, no remuestreado) que tuvieron esos factores durante una
+    // ventana histórica concreta — "si el fondo se hubiera comportado según
+    // estos pesos durante la crisis de 2008, ¿cuánto habría caído?". A
+    // diferencia del Backtest continuo, no construye una serie completa:
+    // da una única cifra por episodio, la herramienta estándar de stress
+    // testing en gestión de riesgo profesional.
+    function vsStressTestWindow(weights, factorsPool, startDate, endDate) {
+      const active = Object.entries(weights).filter(([, w]) => w > 0.001);
+      const missing = active.filter(([nm]) => !factorsPool[nm]);
+      if (missing.length) {
+        return { error: `No disponible: ${missing.map(m => m[0]).join(", ")} ya no está en el pool de Índices.` };
+      }
+      const sD = new Date(startDate + "T00:00:00Z");
+      const eD = new Date(endDate + "T00:00:00Z");
+      const contributions = {};
+      let total = 0;
+      for (const [nm, w] of active) {
+        const series = factorsPool[nm].returns.map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.value }));
+        const compounded = vsCompoundFactorInWindow(series, sD, eD);
+        if (compounded === null) {
+          return { error: `'${nm}' no tiene datos en este periodo (${startDate} → ${endDate}).` };
+        }
+        contributions[nm] = w * compounded;
+        total += w * compounded;
+      }
+      return { estimatedReturn: total, contributions };
+    }
+
+    function vsRunStressTest(weights, factorsPool, windows) {
+      return windows.map(win => ({ ...win, ...vsStressTestWindow(weights, factorsPool, win.start, win.end) }));
+    }
+
+    const VS_CRISIS_WINDOWS = [
+      { id: "gfc2008",   label: "Crisis financiera 2008-09", start: "2008-09-01", end: "2009-03-01" },
+      { id: "euro2011",  label: "Crisis deuda euro 2011",    start: "2011-07-01", end: "2011-10-01" },
+      { id: "covid2020", label: "COVID marzo 2020",          start: "2020-02-01", end: "2020-03-31" },
+      { id: "rates2022", label: "Subida de tipos 2022",      start: "2022-01-01", end: "2022-10-01" },
+    ];
+
     function vsBuildBacktestSeries(weights, factorsPool, fundReturns) {
       const active = Object.entries(weights).filter(([, w]) => w > 0.001);
       const missing = active.filter(([nm]) => !factorsPool[nm]);
@@ -14454,11 +14495,143 @@
       );
     }
 
+    function VsBacktestStress({ factors, savedAnalyses }) {
+      const [selectedId, setSelectedId] = useState(null);
+      const [customWindows, setCustomWindows] = useState([]);
+      const [newLabel, setNewLabel] = useState("");
+      const [newStart, setNewStart] = useState("");
+      const [newEnd, setNewEnd] = useState("");
+      const [expandedId, setExpandedId] = useState(null);
+
+      const analysis = savedAnalyses.find(a => a.id === selectedId);
+      const d = analysis ? analysis.data : null;
+
+      const allWindows = [...VS_CRISIS_WINDOWS, ...customWindows];
+      const results = d ? vsRunStressTest(d.weights, factors, allWindows) : null;
+
+      const addCustomWindow = () => {
+        if (!newLabel.trim() || !newStart || !newEnd) return;
+        setCustomWindows(prev => [...prev, { id: "custom-" + Date.now(), label: newLabel.trim(), start: newStart, end: newEnd }]);
+        setNewLabel(""); setNewStart(""); setNewEnd("");
+      };
+      const removeCustomWindow = (id) => setCustomWindows(prev => prev.filter(w => w.id !== id));
+
+      const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12 };
+      const labelStyle = { display: "block", fontSize: 11, color: "#7a90a8", margin: "10px 0 5px", fontWeight: 500 };
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Test de estrés</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 16, lineHeight: 1.5 }}>
+              Aplica los pesos de un análisis guardado al retorno REAL que tuvieron esos factores durante crisis históricas concretas — no una simulación, un dato real de esas fechas exactas.
+            </div>
+
+            {savedAnalyses.length === 0 ? (
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                No hay análisis guardados todavía — guarda uno desde "Analizar Fondo (RBSA)" primero.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 16 }}>
+                {savedAnalyses.map(a => (
+                  <label key={a.id} style={{ display: "block", padding: "9px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedId === a.id ? "#171f2c" : "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="radio" name="vs-stress-pick" checked={selectedId === a.id} onChange={()=>setSelectedId(a.id)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1, color: "#e2e8f0", fontWeight: 600 }}>{a.data.fundName || "(sin nombre)"}</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", color: a.data.rSquared >= 0.7 ? "#4ade80" : a.data.rSquared >= 0.5 ? "#f59e0b" : "#f87171" }}>{a.data.rSquared?.toFixed(2)}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: "#7a90a8", fontWeight: 600, marginBottom: 4 }}>Añadir ventana propia</div>
+            <label style={labelStyle}>Nombre</label>
+            <input style={inputStyle} type="text" value={newLabel} onChange={e=>setNewLabel(e.target.value)} placeholder="ej: Shock arancelario abr-2025" />
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Desde</label>
+                <input style={inputStyle} type="date" value={newStart} onChange={e=>setNewStart(e.target.value)} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Hasta</label>
+                <input style={inputStyle} type="date" value={newEnd} onChange={e=>setNewEnd(e.target.value)} />
+              </div>
+            </div>
+            <button onClick={addCustomWindow} disabled={!newLabel.trim() || !newStart || !newEnd}
+              style={{ marginTop: 10, width: "100%", background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: (!newLabel.trim()||!newStart||!newEnd) ? "not-allowed" : "pointer", opacity: (!newLabel.trim()||!newStart||!newEnd) ? 0.4 : 1 }}>
+              + Añadir ventana
+            </button>
+
+            {customWindows.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                {customWindows.map(w => (
+                  <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, padding: "4px 0", color: "#7a90a8" }}>
+                    <span>{w.label}</span>
+                    <button onClick={()=>removeCustomWindow(w.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 11 }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+              {d ? `${d.fundName} — episodios de estrés` : "Resultado"}
+            </div>
+
+            {!analysis ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 320, color: "#3a4550", gap: 8 }}>
+                <div style={{ fontSize: 32, opacity: 0.4 }}>🔥</div>
+                <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace" }}>elige un análisis guardado</div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 8 }}>
+                {results.map(res => (
+                  <div key={res.id} style={{ border: "1px solid #1a2535", borderRadius: 8, marginBottom: 8, overflow: "hidden" }}>
+                    <div onClick={()=>!res.error && setExpandedId(expandedId===res.id?null:res.id)}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", cursor: res.error ? "default" : "pointer" }}>
+                      <div>
+                        <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>{res.label}</div>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{res.start} → {res.end}</div>
+                      </div>
+                      {res.error ? (
+                        <span style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace", textAlign: "right", maxWidth: 180 }}>{res.error}</span>
+                      ) : (
+                        <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 18, fontWeight: 700, color: res.estimatedReturn >= 0 ? "#4ade80" : "#f87171" }}>
+                          {res.estimatedReturn >= 0 ? "+" : ""}{(res.estimatedReturn*100).toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                    {expandedId === res.id && !res.error && (
+                      <div style={{ padding: "0 12px 12px", borderTop: "1px solid #1a2535" }}>
+                        {Object.entries(res.contributions).sort((a,b)=>a[1]-b[1]).map(([nm, contrib]) => (
+                          <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "5px 0" }}>
+                            <span style={{ color: "#9aaabb" }}>{nm}</span>
+                            <span style={{ fontFamily: "'DM Mono',monospace", color: contrib >= 0 ? "#4ade80" : "#f87171" }}>
+                              {contrib >= 0 ? "+" : ""}{(contrib*100).toFixed(2)}pp
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div style={{ marginTop: 14, fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.6 }}>
+                  Estimación con los pesos actuales aplicados al movimiento real de los factores en cada ventana — no es lo que el fondo hizo de verdad si no existía entonces, es lo que sus pesos actuales habrían producido.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function VsBacktestTab({ factors, funds, savedAnalyses }) {
-      const [mode, setMode] = useState("rbsa"); // "rbsa" | "montecarlo"
+      const [mode, setMode] = useState("rbsa"); // "rbsa" | "montecarlo" | "stress"
       return (
         <div style={{ padding: 20 }}>
-          <div style={{ display: "flex", gap: 6, marginBottom: 20, maxWidth: 400 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 20, maxWidth: 560 }}>
             <button onClick={()=>setMode("rbsa")}
               style={{ flex: 1, background: mode==="rbsa" ? VS_A+"18" : "none", border: `1px solid ${mode==="rbsa" ? VS_A : "#1a2535"}`, color: mode==="rbsa" ? VS_A : "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
               📉 Extensión RBSA
@@ -14467,10 +14640,14 @@
               style={{ flex: 1, background: mode==="montecarlo" ? VS_A+"18" : "none", border: `1px solid ${mode==="montecarlo" ? VS_A : "#1a2535"}`, color: mode==="montecarlo" ? VS_A : "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
               🎲 Monte Carlo
             </button>
+            <button onClick={()=>setMode("stress")}
+              style={{ flex: 1, background: mode==="stress" ? VS_A+"18" : "none", border: `1px solid ${mode==="stress" ? VS_A : "#1a2535"}`, color: mode==="stress" ? VS_A : "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              🔥 Test de estrés
+            </button>
           </div>
-          {mode === "rbsa"
-            ? <VsBacktestRBSA factors={factors} funds={funds} savedAnalyses={savedAnalyses} />
-            : <VsBacktestMonteCarlo funds={funds} />}
+          {mode === "rbsa" && <VsBacktestRBSA factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
+          {mode === "montecarlo" && <VsBacktestMonteCarlo funds={funds} />}
+          {mode === "stress" && <VsBacktestStress factors={factors} savedAnalyses={savedAnalyses} />}
         </div>
       );
     }
@@ -14571,7 +14748,7 @@
 
       const TABS = [
         { id: "pool", label: "Pool", icon: "🗂" },
-        { id: "test", label: "Analizar Fondo", icon: "📈" },
+        { id: "test", label: "Analizar Fondo (RBSA)", icon: "📈" },
         { id: "corr", label: "Correlación", icon: "📊" },
         { id: "backtest", label: "Backtest", icon: "📉" },
         { id: "saved", label: "Guardadas", icon: "💾" },
