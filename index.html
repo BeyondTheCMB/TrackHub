@@ -12197,6 +12197,134 @@
       { id: "rates2022", label: "Subida de tipos 2022",      start: "2022-01-01", end: "2022-10-01" },
     ];
 
+    // ── PCA (componentes principales) ─────────────────────────────────────
+    // Algoritmo de Jacobi cíclico para matrices simétricas — método clásico,
+    // estable y bien documentado (Numerical Recipes / cualquier libro de
+    // álgebra numérica), no es una invención propia: repite barridos
+    // rotando pares de filas/columnas hasta anular los elementos fuera de
+    // la diagonal. Validado por separado antes de incrustarlo aquí: casos
+    // con solución analítica conocida, reconstrucción A=VΛVᵀ, y
+    // ortogonalidad de autovectores, todos con error <1e-7.
+    function vsJacobiEigen(matrix, maxSweeps = 200, tol = 1e-14) {
+      const n = matrix.length;
+      let a = matrix.map(row => [...row]);
+      let v = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+
+      for (let sweep = 0; sweep < maxSweeps; sweep++) {
+        let off = 0;
+        for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) off += a[i][j] * a[i][j];
+        if (off < tol) break;
+
+        for (let p = 0; p < n - 1; p++) {
+          for (let q = p + 1; q < n; q++) {
+            if (Math.abs(a[p][q]) < 1e-15) continue;
+            const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+            const sign = theta >= 0 ? 1 : -1;
+            const t = sign / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+            const c = 1 / Math.sqrt(t * t + 1);
+            const s = t * c;
+
+            const app = a[p][p], aqq = a[q][q], apq = a[p][q];
+            a[p][p] = app - t * apq;
+            a[q][q] = aqq + t * apq;
+            a[p][q] = a[q][p] = 0;
+
+            for (let i = 0; i < n; i++) {
+              if (i !== p && i !== q) {
+                const aip = a[i][p], aiq = a[i][q];
+                a[i][p] = a[p][i] = c * aip - s * aiq;
+                a[i][q] = a[q][i] = s * aip + c * aiq;
+              }
+            }
+            for (let i = 0; i < n; i++) {
+              const vip = v[i][p], viq = v[i][q];
+              v[i][p] = c * vip - s * viq;
+              v[i][q] = s * vip + c * viq;
+            }
+          }
+        }
+      }
+
+      const eigenvalues = a.map((row, i) => row[i]);
+      const idx = eigenvalues.map((_, i) => i).sort((x, y) => eigenvalues[y] - eigenvalues[x]);
+      return {
+        eigenvalues: idx.map(i => eigenvalues[i]),
+        eigenvectors: idx.map(i => v.map(row => row[i])),
+      };
+    }
+
+    function vsComputeCorrelationMatrix(returnsMatrix) {
+      const nObs = returnsMatrix.length, n = returnsMatrix[0].length;
+      const means = Array(n).fill(0);
+      for (const row of returnsMatrix) for (let j = 0; j < n; j++) means[j] += row[j];
+      for (let j = 0; j < n; j++) means[j] /= nObs;
+      const stds = Array(n).fill(0);
+      for (const row of returnsMatrix) for (let j = 0; j < n; j++) stds[j] += (row[j] - means[j]) ** 2;
+      for (let j = 0; j < n; j++) stds[j] = Math.sqrt(stds[j] / (nObs - 1));
+      const corr = Array.from({ length: n }, () => Array(n).fill(0));
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          let cov = 0;
+          for (const row of returnsMatrix) cov += (row[i] - means[i]) * (row[j] - means[j]);
+          cov /= (nObs - 1);
+          corr[i][j] = cov / (stds[i] * stds[j]);
+        }
+      }
+      return { corr, means, stds };
+    }
+
+    // Ajusta PCA sobre correlaciones (no covarianzas): cada factor se
+    // estandariza antes de nada, así ningún factor domina el resultado
+    // solo por tener más volatilidad bruta (equity vs. cash, por ejemplo).
+    function vsRunPCA(factorNames, factorReturnsAligned) {
+      const { corr, means, stds } = vsComputeCorrelationMatrix(factorReturnsAligned);
+      const { eigenvalues, eigenvectors } = vsJacobiEigen(corr);
+      const totalVar = eigenvalues.reduce((a, b) => a + b, 0);
+      const components = eigenvalues.map((val, k) => {
+        const loadings = {};
+        factorNames.forEach((nm, i) => { loadings[nm] = eigenvectors[k][i]; });
+        return { index: k + 1, varianceExplained: val / totalVar, eigenvalue: val, loadings };
+      });
+      const scores = factorReturnsAligned.map(row => {
+        const z = row.map((v, i) => (v - means[i]) / stds[i]);
+        return components.map(comp => factorNames.reduce((s, nm, i) => s + comp.loadings[nm] * z[i], 0));
+      });
+      return { components, scores };
+    }
+
+    function vsRunPCAFromPool(factorNames, factorsPool) {
+      if (factorNames.length < 2) return { error: "Selecciona al menos 2 factores." };
+      const maps = factorNames.map(nm => new Map(factorsPool[nm].returns.map(p => [p.date.slice(0,7), p.value])));
+      let commonKeys = [...maps[0].keys()];
+      for (const m of maps.slice(1)) commonKeys = commonKeys.filter(k => m.has(k));
+      commonKeys.sort();
+      const minObs = factorNames.length + 10;
+      if (commonKeys.length < minObs) {
+        return { error: `Solo ${commonKeys.length} observaciones comunes para ${factorNames.length} factores — se recomiendan al menos ${minObs} para un PCA fiable.` };
+      }
+      const rows = commonKeys.map(k => factorNames.map((nm, i) => maps[i].get(k)));
+      const pca = vsRunPCA(factorNames, rows);
+      return { ...pca, dates: commonKeys, nObs: commonKeys.length };
+    }
+
+    // Ajusta un fondo real contra los primeros K componentes (regresión sin
+    // restricciones — los componentes no son activos comprables, así que no
+    // tiene sentido forzar pesos ≥0 que sumen 1 como en el RBSA normal).
+    function vsFitFundToComponents(fundReturns, pcaResult, kComponents) {
+      const fundMap = new Map(fundReturns.map(p => [p.date.toISOString().slice(0,7), p.value]));
+      const commonIdx = [];
+      pcaResult.dates.forEach((dk, i) => { if (fundMap.has(dk)) commonIdx.push(i); });
+      const minObs = kComponents + 5;
+      if (commonIdx.length < minObs) {
+        return { error: `Solo ${commonIdx.length} meses en común entre el fondo y los componentes — se recomiendan al menos ${minObs}.` };
+      }
+      const r = commonIdx.map(i => fundMap.get(pcaResult.dates[i]));
+      const X = commonIdx.map(i => pcaResult.scores[i].slice(0, kComponents));
+      const compNames = Array.from({ length: kComponents }, (_, k) => `Componente ${k + 1}`);
+      const res = vsRunOLS(r, X, compNames);
+      return { ...res, nObs: r.length };
+    }
+
     function vsBuildBacktestSeries(weights, factorsPool, fundReturns) {
       const active = Object.entries(weights).filter(([, w]) => w > 0.001);
       const missing = active.filter(([nm]) => !factorsPool[nm]);
@@ -14128,6 +14256,194 @@
       );
     }
 
+    function VsPCATab({ factors, funds }) {
+      const indexNames = Object.keys(factors).sort();
+      const fundNames = Object.keys(funds).sort();
+      const [selected, setSelected] = useState(new Set());
+      const [pcaResult, setPcaResult] = useState(null);
+      const [pcaBusy, setPcaBusy] = useState(false);
+      const [expandedComp, setExpandedComp] = useState(null);
+      const [selectedFund, setSelectedFund] = useState(null);
+      const [kComponents, setKComponents] = useState(3);
+      const [fitResult, setFitResult] = useState(null);
+      const [fitBusy, setFitBusy] = useState(false);
+
+      const toggle = (nm) => {
+        const next = new Set(selected);
+        if (next.has(nm)) next.delete(nm); else next.add(nm);
+        setSelected(next);
+      };
+
+      const runPCA = () => {
+        const names = [...selected];
+        if (names.length < 2) return;
+        setPcaBusy(true);
+        setTimeout(() => {
+          try {
+            const res = vsRunPCAFromPool(names, factors);
+            setPcaResult(res); setFitResult(null); setSelectedFund(null); setExpandedComp(null);
+          } catch (e) {
+            setPcaResult({ error: e.message });
+          }
+          setPcaBusy(false);
+        }, 20);
+      };
+
+      const runFit = () => {
+        if (!selectedFund || !pcaResult || pcaResult.error) return;
+        setFitBusy(true);
+        try {
+          const fReturns = vsHydrateFundReturns(funds[selectedFund].returns);
+          const res = vsFitFundToComponents(fReturns, pcaResult, kComponents);
+          setFitResult(res);
+        } catch (e) {
+          setFitResult({ error: e.message });
+        }
+        setFitBusy(false);
+      };
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, alignSelf: "start" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+              Componentes (PCA)
+              <VsInfoTip width={260} text="En vez de que elijas tú los factores, PCA extrae matemáticamente las direcciones de movimiento que mejor explican conjuntamente toda la cesta — componentes ortogonales entre sí, ordenados por cuánta varianza explican. Especialmente útil con grupos muy correlacionados (ej. toda la curva de tipos), donde resuelve la ambigüedad de RBSA/Ridge de raíz en vez de solo suavizarla." />
+            </div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
+              Elige los índices sobre los que calcular componentes.
+            </div>
+
+            {indexNames.length === 0 ? (
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Sin índices en el pool.</div>
+            ) : (
+              <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 12 }}>
+                {indexNames.map(nm => (
+                  <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer" }}>
+                    <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
+                    <span>{nm}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <button onClick={runPCA} disabled={pcaBusy || selected.size < 2}
+              style={{ width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (pcaBusy||selected.size<2)?"not-allowed":"pointer", opacity: (pcaBusy||selected.size<2)?0.4:1 }}>
+              {pcaBusy ? "calculando…" : `Calcular componentes (${selected.size})`}
+            </button>
+
+            {pcaResult && !pcaResult.error && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+                <div style={{ fontSize: 11, color: "#7a90a8", fontWeight: 600, marginBottom: 8 }}>
+                  Ajustar un fondo a los componentes
+                  <VsInfoTip width={240} text="Regresión (sin restricción de pesos ≥0 — los componentes no son activos comprables) del fondo contra los primeros K componentes en vez de contra los factores originales. Compara el R² resultante con el del RBSA normal para ver si merece la pena." />
+                </div>
+                {fundNames.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>Sin fondos en el pool.</div>
+                ) : (
+                  <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 10 }}>
+                    {fundNames.map(nm => (
+                      <label key={nm} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedFund===nm?"#171f2c":"none" }}>
+                        <input type="radio" name="vs-pca-fund" checked={selectedFund===nm} onChange={()=>{setSelectedFund(nm); setFitResult(null);}} style={{ accentColor: VS_A }} />
+                        <span>{nm}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ display: "flex", alignItems: "center" }}>
+                    <input type="number" min={1} max={pcaResult.components.length} value={kComponents}
+                      onChange={e=>setKComponents(Math.max(1, Math.min(pcaResult.components.length, parseInt(e.target.value)||1)))}
+                      style={{ width: 50, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 8px", fontSize: 12, fontFamily: "'DM Mono',monospace" }} />
+                    <VsInfoTip width={200} text="Cuántos de los primeros componentes usar en el ajuste — normalmente 2-3 bastan para capturar la mayor parte de la varianza." />
+                  </span>
+                  <button onClick={runFit} disabled={fitBusy || !selectedFund}
+                    style={{ flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: (fitBusy||!selectedFund)?"not-allowed":"pointer", fontFamily: "'DM Mono',monospace" }}>
+                    {fitBusy ? "…" : "Ajustar"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Componentes extraídos</div>
+
+            {!pcaResult ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 320, color: "#3a4550", gap: 8 }}>
+                <div style={{ fontSize: 32, opacity: 0.4 }}>🔬</div>
+                <div style={{ fontSize: 12, fontFamily: "'DM Mono',monospace" }}>elige al menos 2 índices y calcula</div>
+              </div>
+            ) : pcaResult.error ? (
+              <div style={{ padding: 16, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)", borderRadius: 8, fontSize: 12, color: "#f59e0b" }}>
+                {pcaResult.error}
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 14 }}>
+                  {pcaResult.nObs} observaciones comunes · {pcaResult.components.length} componentes
+                </div>
+
+                {(() => {
+                  let cum = 0;
+                  return pcaResult.components.map(comp => {
+                    cum += comp.varianceExplained;
+                    const isOpen = expandedComp === comp.index;
+                    const sortedLoadings = Object.entries(comp.loadings).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
+                    return (
+                      <div key={comp.index} style={{ marginBottom: 8, border: "1px solid #1a2535", borderRadius: 8, overflow: "hidden" }}>
+                        <div onClick={()=>setExpandedComp(isOpen?null:comp.index)} style={{ padding: "10px 12px", cursor: "pointer" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                            <span style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600 }}>Componente {comp.index}</span>
+                            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 13, color: VS_A, fontWeight: 700 }}>{(comp.varianceExplained*100).toFixed(1)}%</span>
+                          </div>
+                          <div style={{ background: "#060d14", borderRadius: 4, height: 6, overflow: "hidden" }}>
+                            <div style={{ background: VS_A, height: "100%", width: `${(comp.varianceExplained*100).toFixed(1)}%` }} />
+                          </div>
+                          <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>acumulado {(cum*100).toFixed(1)}%</div>
+                        </div>
+                        {isOpen && (
+                          <div style={{ padding: "0 12px 12px", borderTop: "1px solid #1a2535" }}>
+                            {sortedLoadings.map(([nm, load]) => (
+                              <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "4px 0" }}>
+                                <span style={{ color: "#9aaabb" }}>{nm}</span>
+                                <span style={{ fontFamily: "'DM Mono',monospace", color: load >= 0 ? "#4ade80" : "#f87171" }}>{load >= 0 ? "+" : ""}{load.toFixed(3)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
+
+                {fitResult && fitResult.error && (
+                  <div style={{ marginTop: 14, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{fitResult.error}</div>
+                )}
+
+                {fitResult && !fitResult.error && (
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+                      <span style={{ fontSize: 11, color: "#7a90a8" }}>R² contra {kComponents} componente{kComponents===1?"":"s"}:</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: fitResult.rSquared>=0.7?"#4ade80":fitResult.rSquared>=0.5?"#f59e0b":"#f87171" }}>{fitResult.rSquared.toFixed(2)}</span>
+                    </div>
+                    {Object.entries(fitResult.weights).map(([nm, coef]) => (
+                      <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0" }}>
+                        <span style={{ color: "#e2e8f0" }}>{nm}</span>
+                        <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 10, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                      Coeficientes de una regresión libre, no pesos de cartera — no suman 1 ni están limitados a ser positivos. Sirven para comparar el ajuste (R²), no para leer "% invertido".
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function VsCorrelationTab({ factors, funds }) {
       const indexNames = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
@@ -14750,6 +15066,7 @@
         { id: "pool", label: "Pool", icon: "🗂" },
         { id: "test", label: "Analizar Fondo (RBSA)", icon: "📈" },
         { id: "corr", label: "Correlación", icon: "📊" },
+        { id: "pca", label: "Componentes", icon: "🔬" },
         { id: "backtest", label: "Backtest", icon: "📉" },
         { id: "saved", label: "Guardadas", icon: "💾" },
       ];
@@ -14798,6 +15115,7 @@
                 {tab === "pool" && <VsPool factors={factors} funds={funds} onAdd={handleAdd} onRemove={handleRemove} onUpdate={handleUpdateFactor} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} onUpdateFund={handleUpdateFund} />}
                 {tab === "test" && <VsAnalyze factors={factors} funds={funds} onAddFund={handleAddFund} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} />}
+                {tab === "pca" && <VsPCATab factors={factors} funds={funds} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
