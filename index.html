@@ -14352,6 +14352,8 @@
         if (next.has(nm)) next.delete(nm); else next.add(nm);
         setSelected(next);
       };
+      const selectAll = () => setSelected(new Set(indexNames));
+      const selectNone = () => setSelected(new Set());
 
       const runPCA = () => {
         const names = [...selected];
@@ -14429,8 +14431,16 @@
               Componentes (PCA)
               <VsInfoTip width={260} text="En vez de que elijas tú los factores, PCA extrae matemáticamente las direcciones de movimiento que mejor explican conjuntamente toda la cesta — componentes ortogonales entre sí, ordenados por cuánta varianza explican. Especialmente útil con grupos muy correlacionados (ej. toda la curva de tipos), donde resuelve la ambigüedad de RBSA/Ridge de raíz en vez de solo suavizarla." />
             </div>
-            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
-              Elige los índices sobre los que calcular componentes.
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                Elige los índices sobre los que calcular componentes.
+              </div>
+              {indexNames.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: 8 }}>
+                  <button onClick={selectAll} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>todos</button>
+                  <button onClick={selectNone} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>ninguno</button>
+                </div>
+              )}
             </div>
 
             {indexNames.length === 0 ? (
