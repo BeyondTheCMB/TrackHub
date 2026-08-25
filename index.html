@@ -12322,7 +12322,19 @@
       const X = commonIdx.map(i => pcaResult.scores[i].slice(0, kComponents));
       const compNames = Array.from({ length: kComponents }, (_, k) => `Componente ${k + 1}`);
       const res = vsRunOLS(r, X, compNames);
-      return { ...res, nObs: r.length };
+      if (res.error) return res;
+      // Contribución estandarizada: coeficiente × desviación típica del
+      // propio componente. Cada componente tiene una varianza natural muy
+      // distinta (proporcional a su autovalor, ligado a su % de varianza
+      // explicada) — comparar los coeficientes brutos entre sí es engañoso,
+      // igual que comparar gramos de oro con gramos de plumas sin saber la
+      // densidad de cada uno. Esto sí es directamente comparable.
+      const standardized = {};
+      compNames.forEach((nm, k) => {
+        const sd = Math.sqrt(pcaResult.components[k].eigenvalue);
+        standardized[nm] = res.weights[nm] * sd;
+      });
+      return { ...res, nObs: r.length, standardized };
     }
 
     function vsBuildBacktestSeries(weights, factorsPool, fundReturns) {
@@ -14301,10 +14313,19 @@
                     <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
                       Base: {d.basisFactorNames?.join(", ") || "—"}
                     </div>
-                    {Object.entries(d.weights || {}).map(([nm, coef]) => (
+                    {Object.entries(d.weights || {})
+                      .sort((a,b) => Math.abs((d.standardized?.[b[0]] ?? b[1])) - Math.abs((d.standardized?.[a[0]] ?? a[1])))
+                      .map(([nm, coef]) => (
                       <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
                         <span style={{ color: "#e2e8f0" }}>{nm}</span>
-                        <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                        {d.standardized ? (
+                          <span style={{ display: "flex", gap: 14, fontFamily: "'DM Mono',monospace" }}>
+                            <span style={{ color: "#5a7080", minWidth: 50, textAlign: "right" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                            <span style={{ color: d.standardized[nm]>=0?"#4ade80":"#f87171", minWidth: 55, textAlign: "right", fontWeight: 600 }}>{d.standardized[nm]>=0?"+":""}{d.standardized[nm].toFixed(4)}</span>
+                          </span>
+                        ) : (
+                          <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -14413,6 +14434,7 @@
             basisFactorNames: [...selected],
             kComponents,
             weights: fitResult.weights,
+            standardized: fitResult.standardized,
             rSquared: fitResult.rSquared,
             nObs: fitResult.nObs,
             savedAt: new Date().toISOString(),
@@ -14521,14 +14543,23 @@
                       <span style={{ fontSize: 11, color: "#7a90a8" }}>R² contra {kComponents} componente{kComponents===1?"":"s"}:</span>
                       <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: fitResult.rSquared>=0.7?"#4ade80":fitResult.rSquared>=0.5?"#f59e0b":"#f87171" }}>{fitResult.rSquared.toFixed(2)}</span>
                     </div>
-                    {Object.entries(fitResult.weights).map(([nm, coef]) => (
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#3a4550", fontFamily: "'DM Mono',monospace", padding: "0 0 4px", textTransform: "uppercase" }}>
+                      <span>componente</span>
+                      <span style={{ display: "flex", gap: 16 }}><span>coef. bruto</span><span>contribución real<VsInfoTip width={230} text="Coeficiente × desviación típica del propio componente. Los coeficientes brutos no son comparables entre sí porque cada componente tiene una escala natural muy distinta — esto sí lo es. Ordena por esto, no por el coeficiente bruto." /></span></span>
+                    </div>
+                    {Object.entries(fitResult.weights)
+                      .sort((a,b) => Math.abs(fitResult.standardized[b[0]]) - Math.abs(fitResult.standardized[a[0]]))
+                      .map(([nm, coef]) => (
                       <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0" }}>
                         <span style={{ color: "#e2e8f0" }}>{nm}</span>
-                        <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                        <span style={{ display: "flex", gap: 16, fontFamily: "'DM Mono',monospace" }}>
+                          <span style={{ color: "#5a7080", minWidth: 55, textAlign: "right" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                          <span style={{ color: fitResult.standardized[nm]>=0?"#4ade80":"#f87171", minWidth: 55, textAlign: "right", fontWeight: 600 }}>{fitResult.standardized[nm]>=0?"+":""}{fitResult.standardized[nm].toFixed(4)}</span>
+                        </span>
                       </div>
                     ))}
                     <div style={{ marginTop: 10, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
-                      Coeficientes de una regresión libre, no pesos de cartera — no suman 1 ni están limitados a ser positivos. Sirven para comparar el ajuste (R²), no para leer "% invertido".
+                      Coeficientes de una regresión libre, no pesos de cartera — no suman 1 ni están limitados a ser positivos. Compara por "contribución real", no por el coeficiente bruto (cada componente tiene una escala distinta).
                     </div>
                     <button onClick={saveFit} disabled={savingFit}
                       style={{ marginTop: 12, width: "100%", background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: savingFit ? "not-allowed" : "pointer", opacity: savingFit ? 0.5 : 1 }}>
