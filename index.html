@@ -13672,6 +13672,7 @@
         setSaving(true); setSaveMsg("");
         try {
           await onSaveAnalysis({
+            type: "rbsa",
             fundName: activeFundName,
             weights: result.weights,
             rSquared: result.rSquared,
@@ -14206,6 +14207,12 @@
         );
       }
 
+      const TYPE_BADGE = {
+        rbsa: { label: "RBSA", color: VS_A },
+        pca_components: { label: "PCA · componentes", color: "#22d3ee" },
+        pca_fit: { label: "PCA · ajuste", color: "#22d3ee" },
+      };
+
       return (
         <div style={{ padding: 20, maxWidth: 760 }}>
           <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Análisis guardados</div>
@@ -14213,18 +14220,38 @@
 
           {analyses.map(a => {
             const d = a.data;
+            const type = d.type || "rbsa";
+            const badge = TYPE_BADGE[type] || TYPE_BADGE.rbsa;
             const isOpen = expanded === a.id;
-            const sortedWeights = Object.entries(d.weights || {}).sort((x,y)=>y[1]-x[1]);
-            const rsqColor = d.rSquared >= 0.7 ? "#4ade80" : d.rSquared >= 0.5 ? "#f59e0b" : "#f87171";
+
+            // Número de cabecera y título, según el tipo
+            let leadNumber, title, subtitle;
+            if (type === "pca_components") {
+              leadNumber = d.components?.[0] ? (d.components[0].varianceExplained*100).toFixed(0) + "%" : "—";
+              title = d.factorNames?.join(", ") || "(sin factores)";
+              subtitle = `${new Date(a.created_at).toLocaleDateString()} · ${d.nObs} obs · ${d.components?.length || 0} componentes`;
+            } else if (type === "pca_fit") {
+              leadNumber = d.rSquared?.toFixed(2);
+              title = d.fundName || "(sin nombre)";
+              subtitle = `${new Date(a.created_at).toLocaleDateString()} · ${d.nObs} obs · ${d.kComponents} componente${d.kComponents===1?"":"s"}`;
+            } else {
+              const sortedWeights = Object.entries(d.weights || {}).sort((x,y)=>y[1]-x[1]);
+              leadNumber = d.rSquared?.toFixed(2);
+              title = d.fundName || "(sin nombre)";
+              subtitle = `${new Date(a.created_at).toLocaleDateString()} · ${d.nObs} obs · ${sortedWeights.slice(0,2).map(([nm,w])=>`${nm} ${(w*100).toFixed(0)}%`).join(", ")}${sortedWeights.length>2 ? "…" : ""}`;
+            }
+            const rsqColor = type === "pca_components" ? "#22d3ee" : (d.rSquared >= 0.7 ? "#4ade80" : d.rSquared >= 0.5 ? "#f59e0b" : "#f87171");
+
             return (
               <div key={a.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 16, marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }} onClick={()=>setExpanded(isOpen ? null : a.id)}>
-                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: rsqColor, minWidth: 46 }}>{d.rSquared?.toFixed(2)}</div>
+                  <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: rsqColor, minWidth: 46 }}>{leadNumber}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.fundName || "(sin nombre)"}</div>
-                    <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
-                      {new Date(a.created_at).toLocaleDateString()} · {d.nObs} obs · {sortedWeights.slice(0,2).map(([nm,w])=>`${nm} ${(w*100).toFixed(0)}%`).join(", ")}{sortedWeights.length>2 ? "…" : ""}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</span>
+                      <span style={{ fontSize: 9, color: badge.color, border: `1px solid ${badge.color}55`, borderRadius: 100, padding: "1px 6px", fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{badge.label}</span>
                     </div>
+                    <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{subtitle}</div>
                   </div>
                   <button onClick={(e)=>{ e.stopPropagation(); handleDelete(a.id); }} disabled={deletingId===a.id}
                     style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
@@ -14235,13 +14262,46 @@
                   <span style={{ color: "#5a7080", fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
                 </div>
 
-                {isOpen && (
+                {isOpen && type === "pca_components" && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
+                    {(d.components || []).map(comp => (
+                      <div key={comp.index} style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                          <span style={{ color: "#e2e8f0" }}>Componente {comp.index}</span>
+                          <span style={{ fontFamily: "'DM Mono',monospace", color: "#22d3ee", fontWeight: 700 }}>{(comp.varianceExplained*100).toFixed(1)}%</span>
+                        </div>
+                        {Object.entries(comp.loadings).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).map(([nm, load]) => (
+                          <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "2px 0 2px 10px" }}>
+                            <span style={{ color: "#9aaabb" }}>{nm}</span>
+                            <span style={{ fontFamily: "'DM Mono',monospace", color: load>=0?"#4ade80":"#f87171" }}>{load>=0?"+":""}{load.toFixed(3)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {isOpen && type === "pca_fit" && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                      Base: {d.basisFactorNames?.join(", ") || "—"}
+                    </div>
+                    {Object.entries(d.weights || {}).map(([nm, coef]) => (
+                      <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
+                        <span style={{ color: "#e2e8f0" }}>{nm}</span>
+                        <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {isOpen && type === "rbsa" && (
                   <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
                     <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 12 }}>
                       <div><span style={{ color: "#7a90a8" }}>Observaciones: </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{d.nObs}</span></div>
                       <div><span style={{ color: "#7a90a8" }}>Tracking error: </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{(d.trackingErrorAnnual*100).toFixed(2)}%</span></div>
                     </div>
-                    {sortedWeights.map(([nm,w]) => <VsWeightBar key={nm} name={nm} weight={w} />)}
+                    {Object.entries(d.weights || {}).sort((x,y)=>y[1]-x[1]).map(([nm,w]) => <VsWeightBar key={nm} name={nm} weight={w} />)}
                     {d.warnings && d.warnings.length > 0 && (
                       <div style={{ marginTop: 10, fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>
                         {d.warnings.length} aviso{d.warnings.length===1?"":"s"} de fiabilidad en el momento de guardar
@@ -14256,7 +14316,7 @@
       );
     }
 
-    function VsPCATab({ factors, funds }) {
+    function VsPCATab({ factors, funds, onSaveAnalysis }) {
       const indexNames = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
       const [selected, setSelected] = useState(new Set());
@@ -14267,6 +14327,10 @@
       const [kComponents, setKComponents] = useState(3);
       const [fitResult, setFitResult] = useState(null);
       const [fitBusy, setFitBusy] = useState(false);
+      const [savingComponents, setSavingComponents] = useState(false);
+      const [saveComponentsMsg, setSaveComponentsMsg] = useState("");
+      const [savingFit, setSavingFit] = useState(false);
+      const [saveFitMsg, setSaveFitMsg] = useState("");
 
       const toggle = (nm) => {
         const next = new Set(selected);
@@ -14282,11 +14346,30 @@
           try {
             const res = vsRunPCAFromPool(names, factors);
             setPcaResult(res); setFitResult(null); setSelectedFund(null); setExpandedComp(null);
+            setSaveComponentsMsg(""); setSaveFitMsg("");
           } catch (e) {
             setPcaResult({ error: e.message });
           }
           setPcaBusy(false);
         }, 20);
+      };
+
+      const saveComponents = async () => {
+        if (!pcaResult || pcaResult.error) return;
+        setSavingComponents(true); setSaveComponentsMsg("");
+        try {
+          await onSaveAnalysis({
+            type: "pca_components",
+            factorNames: [...selected],
+            components: pcaResult.components,
+            nObs: pcaResult.nObs,
+            savedAt: new Date().toISOString(),
+          });
+          setSaveComponentsMsg("Guardado ✓");
+        } catch (e) {
+          setSaveComponentsMsg("Error: " + e.message);
+        }
+        setSavingComponents(false);
       };
 
       const runFit = () => {
@@ -14296,10 +14379,32 @@
           const fReturns = vsHydrateFundReturns(funds[selectedFund].returns);
           const res = vsFitFundToComponents(fReturns, pcaResult, kComponents);
           setFitResult(res);
+          setSaveFitMsg("");
         } catch (e) {
           setFitResult({ error: e.message });
         }
         setFitBusy(false);
+      };
+
+      const saveFit = async () => {
+        if (!fitResult || fitResult.error) return;
+        setSavingFit(true); setSaveFitMsg("");
+        try {
+          await onSaveAnalysis({
+            type: "pca_fit",
+            fundName: selectedFund,
+            basisFactorNames: [...selected],
+            kComponents,
+            weights: fitResult.weights,
+            rSquared: fitResult.rSquared,
+            nObs: fitResult.nObs,
+            savedAt: new Date().toISOString(),
+          });
+          setSaveFitMsg("Guardado ✓");
+        } catch (e) {
+          setSaveFitMsg("Error: " + e.message);
+        }
+        setSavingFit(false);
       };
 
       return (
@@ -14416,6 +14521,12 @@
                   });
                 })()}
 
+                <button onClick={saveComponents} disabled={savingComponents}
+                  style={{ marginTop: 4, width: "100%", background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: savingComponents ? "not-allowed" : "pointer", opacity: savingComponents ? 0.5 : 1 }}>
+                  💾 {savingComponents ? "guardando…" : "Guardar estos componentes"}
+                </button>
+                {saveComponentsMsg && <div style={{ marginTop: 4, fontSize: 10, color: saveComponentsMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveComponentsMsg}</div>}
+
                 {fitResult && fitResult.error && (
                   <div style={{ marginTop: 14, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{fitResult.error}</div>
                 )}
@@ -14435,6 +14546,11 @@
                     <div style={{ marginTop: 10, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
                       Coeficientes de una regresión libre, no pesos de cartera — no suman 1 ni están limitados a ser positivos. Sirven para comparar el ajuste (R²), no para leer "% invertido".
                     </div>
+                    <button onClick={saveFit} disabled={savingFit}
+                      style={{ marginTop: 12, width: "100%", background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: savingFit ? "not-allowed" : "pointer", opacity: savingFit ? 0.5 : 1 }}>
+                      💾 {savingFit ? "guardando…" : "Guardar este ajuste"}
+                    </button>
+                    {saveFitMsg && <div style={{ marginTop: 4, fontSize: 10, color: saveFitMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveFitMsg}</div>}
                   </div>
                 )}
               </div>
@@ -14549,8 +14665,11 @@
 
     function VsBacktestRBSA({ factors, funds, savedAnalyses }) {
       const [selectedId, setSelectedId] = useState(null);
+      // Solo análisis tipo RBSA tienen pesos sobre factores del pool — los
+      // de PCA usan "Componente 1/2/3" como claves, que no existen ahí.
+      const rbsaAnalyses = savedAnalyses.filter(a => !a.data.type || a.data.type === "rbsa");
 
-      const analysis = savedAnalyses.find(a => a.id === selectedId);
+      const analysis = rbsaAnalyses.find(a => a.id === selectedId);
       const d = analysis ? analysis.data : null;
       const fund = d ? funds[d.fundName] : null;
 
@@ -14570,13 +14689,13 @@
               Parte de un análisis ya guardado (sus pesos) y proyecta hacia atrás usando el histórico real de esos mismos factores, más allá de donde empieza el fondo.
             </div>
 
-            {savedAnalyses.length === 0 ? (
+            {rbsaAnalyses.length === 0 ? (
               <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
-                No hay análisis guardados todavía — guarda uno desde "Analizar Fondo" primero.
+                No hay análisis guardados todavía — guarda uno desde "Analizar Fondo (RBSA)" primero.
               </div>
             ) : (
               <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
-                {savedAnalyses.map(a => (
+                {rbsaAnalyses.map(a => (
                   <label key={a.id} style={{ display: "block", padding: "9px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedId === a.id ? "#171f2c" : "none" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="radio" name="vs-backtest-pick" checked={selectedId === a.id} onChange={()=>setSelectedId(a.id)} style={{ accentColor: VS_A }} />
@@ -14818,8 +14937,9 @@
       const [newStart, setNewStart] = useState("");
       const [newEnd, setNewEnd] = useState("");
       const [expandedId, setExpandedId] = useState(null);
+      const rbsaAnalyses = savedAnalyses.filter(a => !a.data.type || a.data.type === "rbsa");
 
-      const analysis = savedAnalyses.find(a => a.id === selectedId);
+      const analysis = rbsaAnalyses.find(a => a.id === selectedId);
       const d = analysis ? analysis.data : null;
 
       const allWindows = [...VS_CRISIS_WINDOWS, ...customWindows];
@@ -14843,13 +14963,13 @@
               Aplica los pesos de un análisis guardado al retorno REAL que tuvieron esos factores durante crisis históricas concretas — no una simulación, un dato real de esas fechas exactas.
             </div>
 
-            {savedAnalyses.length === 0 ? (
+            {rbsaAnalyses.length === 0 ? (
               <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
                 No hay análisis guardados todavía — guarda uno desde "Analizar Fondo (RBSA)" primero.
               </div>
             ) : (
               <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 16 }}>
-                {savedAnalyses.map(a => (
+                {rbsaAnalyses.map(a => (
                   <label key={a.id} style={{ display: "block", padding: "9px 10px", borderBottom: "1px solid #1a2535", fontSize: 12, cursor: "pointer", background: selectedId === a.id ? "#171f2c" : "none" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="radio" name="vs-stress-pick" checked={selectedId === a.id} onChange={()=>setSelectedId(a.id)} style={{ accentColor: VS_A }} />
@@ -15115,7 +15235,7 @@
                 {tab === "pool" && <VsPool factors={factors} funds={funds} onAdd={handleAdd} onRemove={handleRemove} onUpdate={handleUpdateFactor} onAddFund={handleAddFund} onRemoveFund={handleRemoveFund} onUpdateFund={handleUpdateFund} />}
                 {tab === "test" && <VsAnalyze factors={factors} funds={funds} onAddFund={handleAddFund} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "corr" && <VsCorrelationTab factors={factors} funds={funds} />}
-                {tab === "pca" && <VsPCATab factors={factors} funds={funds} />}
+                {tab === "pca" && <VsPCATab factors={factors} funds={funds} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
               </>
