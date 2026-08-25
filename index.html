@@ -15259,9 +15259,17 @@
       for (const [re, type] of VS_INVERSIS_TYPE_MAP) if (re.test(raw)) return type;
       return "unknown";
     }
+    // La cuenta (Fondos vs. Valores/ETF) no la elige el usuario al importar —
+    // se deriva fila a fila del campo "Mercado" del extracto ("FONDOS
+    // ESPAÑOLES"/"FONDOS EXTRANJEROS" vs. "XETRA"/"CONT. ITALIANO"/"GENERICO"…),
+    // así un mismo importador de MyInvestor sirve para los dos ficheros.
+    function vsInversisAccountForMarket(market) {
+      if (market && /FONDO/i.test(market)) return "MyInvestor · Fondos";
+      return "MyInvestor · Valores";
+    }
     // Filas de datos a partir del índice 2: el Excel de origen trae dos filas
     // de cabecera (colspan "Fechas" + rowspan del resto).
-    function vsParseInversisRows(rows, { source, account }) {
+    function vsParseInversisRows(rows, { source }) {
       const txs = [], warnings = [];
       for (let i = 2; i < rows.length; i++) {
         const r = rows[i];
@@ -15272,7 +15280,7 @@
         txs.push({
           id: null, date: vsToISODate(fechaOp), type, isin: isin || null, name: vsFixMojibake(nombre) || "",
           shares: vsNum(shares), price: vsNum(precio), amount: vsNum(importe), fees: null, taxes: null,
-          currency: divisa || "EUR", account, source, rawType: rawType || null,
+          currency: divisa || "EUR", account: vsInversisAccountForMarket(mercado), source, rawType: rawType || null,
           ref: ref != null ? String(ref) : null, market: mercado || null,
           cashImpact: VS_CASH_IMPACT[type], note: null,
         });
@@ -15316,17 +15324,13 @@
 
     // ── Lectura de fichero → filas de hoja (SheetJS) ───────────────────────
     // El export de fondos de Inversis es en realidad HTML con extensión
-    // .xls declarando charset=iso-8859-1 — hay que leerlo como texto con esa
-    // codificación (no como ArrayBuffer) para que los acentos no se rompan;
-    // XLSX.read con cellDates:true nos da además fechas ya resueltas.
-    function vsReadFileAsText(file, encoding) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
-        reader.readAsText(file, encoding);
-      });
-    }
+    // .xls declarando charset=iso-8859-1, mientras que el de valores/ETF es
+    // un xlsx real (zip) — visualmente iguales, formato distinto por dentro.
+    // Para poder ofrecer "MyInvestor" como una sola opción, se distingue por
+    // los primeros bytes del archivo en vez de por su extensión o de pedirle
+    // al usuario que elija: un xlsx real empieza por la firma ZIP "PK"; si no,
+    // se trata como el HTML con esa codificación. cellDates:true nos da
+    // además fechas ya resueltas en ambos casos.
     function vsReadFileAsArrayBuffer(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -15335,17 +15339,15 @@
         reader.readAsArrayBuffer(file);
       });
     }
-    async function vsImportInversisFunds(file) {
-      const text = await vsReadFileAsText(file, "iso-8859-1");
-      const wb = XLSX.read(text, { type: "string", cellDates: true });
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
-      return vsParseInversisRows(rows, { source: "inversis_funds", account: "MyInvestor · Fondos" });
-    }
-    async function vsImportInversisStocks(file) {
+    async function vsImportMyInvestor(file) {
       const buf = await vsReadFileAsArrayBuffer(file);
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const bytes = new Uint8Array(buf);
+      const isRealXlsx = bytes[0] === 0x50 && bytes[1] === 0x4b; // firma ZIP "PK"
+      const wb = isRealXlsx
+        ? XLSX.read(buf, { type: "array", cellDates: true })
+        : XLSX.read(new TextDecoder("iso-8859-1").decode(buf), { type: "string", cellDates: true });
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
-      return vsParseInversisRows(rows, { source: "inversis_stocks", account: "MyInvestor · Valores" });
+      return vsParseInversisRows(rows, { source: "inversis" });
     }
     async function vsImportPP(file) {
       const buf = await vsReadFileAsArrayBuffer(file);
@@ -15541,8 +15543,7 @@
 
     // ─── Pestaña "Cartera" ──────────────────────────────────────────────────
     const VS_IMPORT_SOURCES = {
-      inversis_funds: { label: "Fondos", importer: vsImportInversisFunds, accept: ".xls,.xlsx" },
-      inversis_stocks: { label: "Acciones y/o ETF", importer: vsImportInversisStocks, accept: ".xls,.xlsx" },
+      myinvestor: { label: "MyInvestor", importer: vsImportMyInvestor, accept: ".xls,.xlsx" },
       pp: { label: "Portfolio Performance", importer: vsImportPP, accept: ".xlsx" },
     };
 
@@ -15552,7 +15553,7 @@
       const [warnings, setWarnings] = useState([]);
       const [importing, setImporting] = useState(false);
       const [importError, setImportError] = useState("");
-      const [importSource, setImportSource] = useState("inversis_funds");
+      const [importSource, setImportSource] = useState("myinvestor");
       const [showManual, setShowManual] = useState(false);
       const [filterAccount, setFilterAccount] = useState("all");
       const [filterType, setFilterType] = useState("all");
@@ -15620,10 +15621,7 @@
 
               <label style={labelStyle}>Fuente</label>
               <select style={{ ...inputStyle, marginBottom: 14 }} value={importSource} onChange={e => setImportSource(e.target.value)}>
-                <optgroup label="MyInvestor">
-                  <option value="inversis_funds">Fondos</option>
-                  <option value="inversis_stocks">Acciones y/o ETF</option>
-                </optgroup>
+                <option value="myinvestor">MyInvestor</option>
                 <option value="pp">Portfolio Performance</option>
               </select>
 
