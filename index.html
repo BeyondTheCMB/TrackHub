@@ -14486,7 +14486,7 @@
           </div>
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Componentes extraídos</div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Análisis</div>
 
             {!pcaResult ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 320, color: "#3a4550", gap: 8 }}>
@@ -14499,6 +14499,36 @@
               </div>
             ) : (
               <div>
+                {/* Ajuste del fondo — arriba del todo, es el resultado que más importa consultar */}
+                {fitResult && fitResult.error && (
+                  <div style={{ marginBottom: 16, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{fitResult.error}</div>
+                )}
+
+                {fitResult && !fitResult.error && (
+                  <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: "1px solid #1a2535" }}>
+                    <div style={{ fontSize: 11, color: "#7a90a8", fontWeight: 600, marginBottom: 10 }}>Ajuste de {selectedFund}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+                      <span style={{ fontSize: 11, color: "#7a90a8" }}>R² contra {kComponents} componente{kComponents===1?"":"s"}:</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: fitResult.rSquared>=0.7?"#4ade80":fitResult.rSquared>=0.5?"#f59e0b":"#f87171" }}>{fitResult.rSquared.toFixed(2)}</span>
+                    </div>
+                    {Object.entries(fitResult.weights).map(([nm, coef]) => (
+                      <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0" }}>
+                        <span style={{ color: "#e2e8f0" }}>{nm}</span>
+                        <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 10, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                      Coeficientes de una regresión libre, no pesos de cartera — no suman 1 ni están limitados a ser positivos. Sirven para comparar el ajuste (R²), no para leer "% invertido".
+                    </div>
+                    <button onClick={saveFit} disabled={savingFit}
+                      style={{ marginTop: 12, width: "100%", background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: savingFit ? "not-allowed" : "pointer", opacity: savingFit ? 0.5 : 1 }}>
+                      💾 {savingFit ? "guardando…" : "Guardar este ajuste"}
+                    </button>
+                    {saveFitMsg && <div style={{ marginTop: 4, fontSize: 10, color: saveFitMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveFitMsg}</div>}
+                  </div>
+                )}
+
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Componentes extraídos</div>
                 <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 14 }}>
                   {pcaResult.nObs} observaciones comunes · {pcaResult.components.length} componentes
                 </div>
@@ -14541,33 +14571,6 @@
                   💾 {savingComponents ? "guardando…" : "Guardar estos componentes"}
                 </button>
                 {saveComponentsMsg && <div style={{ marginTop: 4, fontSize: 10, color: saveComponentsMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveComponentsMsg}</div>}
-
-                {fitResult && fitResult.error && (
-                  <div style={{ marginTop: 14, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{fitResult.error}</div>
-                )}
-
-                {fitResult && !fitResult.error && (
-                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #1a2535" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
-                      <span style={{ fontSize: 11, color: "#7a90a8" }}>R² contra {kComponents} componente{kComponents===1?"":"s"}:</span>
-                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 700, color: fitResult.rSquared>=0.7?"#4ade80":fitResult.rSquared>=0.5?"#f59e0b":"#f87171" }}>{fitResult.rSquared.toFixed(2)}</span>
-                    </div>
-                    {Object.entries(fitResult.weights).map(([nm, coef]) => (
-                      <div key={nm} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0" }}>
-                        <span style={{ color: "#e2e8f0" }}>{nm}</span>
-                        <span style={{ fontFamily: "'DM Mono',monospace", color: coef>=0?"#4ade80":"#f87171" }}>{coef>=0?"+":""}{coef.toFixed(3)}</span>
-                      </div>
-                    ))}
-                    <div style={{ marginTop: 10, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
-                      Coeficientes de una regresión libre, no pesos de cartera — no suman 1 ni están limitados a ser positivos. Sirven para comparar el ajuste (R²), no para leer "% invertido".
-                    </div>
-                    <button onClick={saveFit} disabled={savingFit}
-                      style={{ marginTop: 12, width: "100%", background: "none", border: `1px solid ${VS_A}55`, color: VS_A, borderRadius: 6, padding: "8px", fontSize: 11, fontWeight: 600, cursor: savingFit ? "not-allowed" : "pointer", opacity: savingFit ? 0.5 : 1 }}>
-                      💾 {savingFit ? "guardando…" : "Guardar este ajuste"}
-                    </button>
-                    {saveFitMsg && <div style={{ marginTop: 4, fontSize: 10, color: saveFitMsg.startsWith("Error") ? "#f87171" : "#4ade80", fontFamily: "'DM Mono',monospace" }}>{saveFitMsg}</div>}
-                  </div>
-                )}
               </div>
             )}
           </div>
