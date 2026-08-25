@@ -11755,6 +11755,20 @@
       await _sb.from("vs_funds").upsert({ user_id: _sbUser.id, profile_id: profileId, data: fundsObj }, { onConflict: "user_id,profile_id" });
     };
 
+    // ── Cartera (vs_portfolio) ────────────────────────────────────────────
+    // Mismo patrón que vs_funds: una fila JSON por perfil, con
+    // { transactions: [...] } dentro. Fase 0 = solo modelo de datos +
+    // importación; el motor de cálculo (TTWROR/XIRR) llega en la fase
+    // siguiente, sobre esta misma tabla.
+    const vsLoadPortfolio = async (profileId) => {
+      if (!profileId) return { transactions: [] };
+      const { data } = await _sb.from("vs_portfolio").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      return (data && data.data) ? data.data : { transactions: [] };
+    };
+    const vsSavePortfolio = async (profileId, portfolioObj) => {
+      await _sb.from("vs_portfolio").upsert({ user_id: _sbUser.id, profile_id: profileId, data: portfolioObj }, { onConflict: "user_id,profile_id" });
+    };
+
     // Reconstruye Date objects (incluido startDate) a partir de retornos de
     // fondo persistidos. startDate se guarda desde vsToMonthlyReturns para
     // que la alineación por ventana real siga funcionando aunque el fondo
@@ -15148,10 +15162,521 @@
     }
 
 
+    // ─────────────────────────────────────────────────────────────────────
+    // ── Cartera · Fase 0 — modelo de transacción + importadores ──────────
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // Modelo canónico de transacción (independiente de la fuente):
+    //   { id, date:"YYYY-MM-DD", type, isin, name, shares, price, amount,
+    //     fees, taxes, currency, account, source, rawType, ref, market,
+    //     cashImpact, note }
+    //
+    // `amount` es siempre una magnitud positiva — la dirección del flujo de
+    // caja la marca `type` (ver VS_CF_SIGN más abajo), nunca el signo del
+    // número. Así el dato importado queda igual de cerca del original
+    // posible, y toda la lógica de signo vive en un único sitio.
+    //
+    // `cashImpact:false` marca operaciones que no mueven efectivo real
+    // (altas/bajas de contrasplit: son un cambio de ISIN sobre el mismo
+    // valor, el importe neto que trae el extracto es solo una valoración
+    // teórica, no dinero que entra o sale).
+
+    const VS_TX_TYPE_LABEL = {
+      buy: "Compra", sell: "Venta", dividend: "Dividendo", deposit: "Aportación",
+      withdrawal: "Retirada", fee: "Comisión", tax: "Impuesto", interest: "Interés",
+      split_in: "Split (alta)", split_out: "Split (baja)", unknown: "Sin clasificar",
+    };
+    const VS_TX_TYPE_COLOR = {
+      buy: "#60a5fa", sell: "#f59e0b", dividend: "#34d399", deposit: "#34d399",
+      withdrawal: "#f87171", fee: "#7a90a8", tax: "#7a90a8", interest: "#34d399",
+      split_in: VS_A, split_out: VS_A, unknown: "#f87171",
+    };
+    const VS_TX_TYPES = Object.keys(VS_TX_TYPE_LABEL);
+    // Signo del flujo de caja por tipo — lo usará el motor de TTWROR/XIRR
+    // de la fase siguiente. -1 sale efectivo, +1 entra efectivo, 0 no mueve caja.
+    const VS_CF_SIGN = {
+      buy: -1, withdrawal: -1, fee: -1, tax: -1,
+      sell: 1, dividend: 1, deposit: 1, interest: 1,
+      split_in: 0, split_out: 0, unknown: 0,
+    };
+    const VS_CASH_IMPACT = { buy: true, sell: true, dividend: true, deposit: true, withdrawal: true, fee: true, tax: true, interest: true, split_in: false, split_out: false, unknown: true };
+
+    function VsTxTypeBadge({ type }) {
+      const c = VS_TX_TYPE_COLOR[type] || "#7a90a8";
+      return (
+        <span style={{ fontSize: 10, fontFamily: "'DM Mono',monospace", padding: "2px 7px", borderRadius: 4, background: `${c}1a`, color: c, whiteSpace: "nowrap" }}>
+          {VS_TX_TYPE_LABEL[type] || type}
+        </span>
+      );
+    }
+
+    // Repara mojibake UTF-8-leído-como-Latin1 (p.ej. "transacciÃ³n" → "transacción"),
+    // un problema real detectado en las exportaciones xlsx de PP, no un artefacto de
+    // visualización — se corrige reinterpretando cada char-code como byte y
+    // redecodificando como UTF-8.
+    function vsFixMojibake(s) {
+      if (!s || typeof s !== "string") return s;
+      if (!/[ÃÂ]/.test(s)) return s;
+      try {
+        const bytes = Uint8Array.from([...s].map(c => c.charCodeAt(0)));
+        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch (e) { return s; }
+    }
+
+    function vsToISODate(v) {
+      if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+      if (typeof v === "string") {
+        const cleaned = v.replace(/\u00a0/g, " ").trim();
+        const m = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+      }
+      if (typeof v === "number") {
+        const d = XLSX.SSF.parse_date_code(v);
+        if (d) return `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+      }
+      return null;
+    }
+
+    function vsNum(v) {
+      if (v === null || v === undefined || v === "") return null;
+      const n = typeof v === "number" ? v : parseFloat(String(v).replace(",", "."));
+      return isNaN(n) ? null : n;
+    }
+
+    // ── Inversis (MyInvestor) — fondos y acciones/ETF comparten el mismo
+    // layout de columnas y vocabulario de "Operación" ──────────────────────
+    const VS_INVERSIS_TYPE_MAP = [
+      [/CONTRASPLIT-ALTA/i, "split_in"],
+      [/CONTRASPLIT-BAJA/i, "split_out"],
+      [/DIVIDENDO/i, "dividend"],
+      [/SUSCRIP/i, "buy"],   // SUSCRIPCION, SUSCRIP.POR TRASPASO…
+      [/REEMB/i, "sell"],    // REEMBOLSO, REEMB.POR TRASPASO I…
+      [/^COMPRA/i, "buy"],
+      [/^VENTA/i, "sell"],
+    ];
+    function vsClassifyInversisType(raw) {
+      if (!raw) return "unknown";
+      for (const [re, type] of VS_INVERSIS_TYPE_MAP) if (re.test(raw)) return type;
+      return "unknown";
+    }
+    // Filas de datos a partir del índice 2: el Excel de origen trae dos filas
+    // de cabecera (colspan "Fechas" + rowspan del resto).
+    function vsParseInversisRows(rows, { source, account }) {
+      const txs = [], warnings = [];
+      for (let i = 2; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.every(c => c === null || c === "")) continue;
+        const [fechaOp, , ref, mercado, rawType, isin, nombre, shares, divisa, precio, importe] = r;
+        const type = vsClassifyInversisType(rawType);
+        if (type === "unknown") warnings.push(`Fila ${i + 1}: tipo de operación no reconocido "${rawType}" — revisar manualmente.`);
+        txs.push({
+          id: null, date: vsToISODate(fechaOp), type, isin: isin || null, name: vsFixMojibake(nombre) || "",
+          shares: vsNum(shares), price: vsNum(precio), amount: vsNum(importe), fees: null, taxes: null,
+          currency: divisa || "EUR", account, source, rawType: rawType || null,
+          ref: ref != null ? String(ref) : null, market: mercado || null,
+          cashImpact: VS_CASH_IMPACT[type], note: null,
+        });
+      }
+      return { txs, warnings };
+    }
+
+    // ── Portfolio Performance (exportación xlsx) ───────────────────────────
+    // Vocabulario conocido de "Tipo" — cualquier valor no listado queda como
+    // "unknown" y se pide clasificación manual en la revisión de importación
+    // en vez de asumir un tipo (mejor fallar visible que silenciar un dato).
+    const VS_PP_TYPE_MAP = {
+      "compra": "buy", "venta": "sell", "dividendos": "dividend", "dividendo": "dividend",
+      "entrada de efectivo": "deposit", "salida de efectivo": "withdrawal",
+      "comisiones": "fee", "comisión": "fee", "impuestos": "tax", "intereses": "interest",
+    };
+    function vsClassifyPPType(raw) {
+      if (!raw) return "unknown";
+      return VS_PP_TYPE_MAP[raw.trim().toLowerCase()] || "unknown";
+    }
+    function vsParsePPRows(rows, { source, account }) {
+      const txs = [], warnings = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.every(c => c === null || c === "")) continue;
+        const [fecha, rawType, valor, divisaTx, , , , comisiones, impuestos, cantidad, isin, , ticker, nombre, nota] = r;
+        const type = vsClassifyPPType(rawType);
+        if (type === "unknown") warnings.push(`Fila ${i + 1}: tipo de operación PP no reconocido "${rawType}" — revisar manualmente.`);
+        txs.push({
+          id: null, date: vsToISODate(fecha), type, isin: isin || null,
+          name: vsFixMojibake(nombre) || vsFixMojibake(ticker) || "",
+          shares: vsNum(cantidad), price: null, amount: vsNum(valor),
+          fees: vsNum(comisiones), taxes: vsNum(impuestos), currency: divisaTx || "EUR",
+          account, source, rawType: rawType || null, ref: null, market: null,
+          cashImpact: VS_CASH_IMPACT[type] !== undefined ? VS_CASH_IMPACT[type] : true,
+          note: vsFixMojibake(nota) || null,
+        });
+      }
+      return { txs, warnings };
+    }
+
+    // ── Lectura de fichero → filas de hoja (SheetJS) ───────────────────────
+    // El export de fondos de Inversis es en realidad HTML con extensión
+    // .xls declarando charset=iso-8859-1 — hay que leerlo como texto con esa
+    // codificación (no como ArrayBuffer) para que los acentos no se rompan;
+    // XLSX.read con cellDates:true nos da además fechas ya resueltas.
+    function vsReadFileAsText(file, encoding) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
+        reader.readAsText(file, encoding);
+      });
+    }
+    function vsReadFileAsArrayBuffer(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
+        reader.readAsArrayBuffer(file);
+      });
+    }
+    async function vsImportInversisFunds(file) {
+      const text = await vsReadFileAsText(file, "iso-8859-1");
+      const wb = XLSX.read(text, { type: "string", cellDates: true });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+      return vsParseInversisRows(rows, { source: "inversis_funds", account: "MyInvestor · Fondos" });
+    }
+    async function vsImportInversisStocks(file) {
+      const buf = await vsReadFileAsArrayBuffer(file);
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+      return vsParseInversisRows(rows, { source: "inversis_stocks", account: "MyInvestor · Valores" });
+    }
+    async function vsImportPP(file) {
+      const buf = await vsReadFileAsArrayBuffer(file);
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+      return vsParsePPRows(rows, { source: "pp", account: "Portfolio Performance" });
+    }
+
+    const vsTxId = () => "tx_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+    // Clave de deduplicación al reimportar: prioriza el `ref` de Inversis
+    // (identificador único de operación en el extracto). Sin ref (PP, manual)
+    // compone una clave con los campos — no es infalible pero cubre bien el
+    // caso típico de volver a subir el mismo fichero por error.
+    function vsTxDedupeKey(t) {
+      if (t.ref) return `ref:${t.ref}`;
+      return `k:${t.date}|${t.type}|${t.isin}|${t.shares}|${t.amount}`;
+    }
+
+    // ─── Formulario de alta manual ─────────────────────────────────────────
+    function VsManualTxForm({ accounts, onAdd, onCancel }) {
+      const [f, setF] = useState({ date: "", type: "buy", isin: "", name: "", shares: "", amount: "", account: accounts[0] || "", currency: "EUR", note: "" });
+      const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
+      const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12 };
+      const labelStyle = { display: "block", fontSize: 11, color: "#7a90a8", margin: "10px 0 4px", fontWeight: 500 };
+      const needsShares = !["deposit", "withdrawal", "fee", "tax", "interest"].includes(f.type);
+      const canSave = f.date && f.type && f.name.trim() && f.amount !== "";
+
+      const handleSave = () => {
+        if (!canSave) return;
+        onAdd({
+          date: f.date, type: f.type, isin: f.isin.trim() || null, name: f.name.trim(),
+          shares: needsShares ? vsNum(f.shares) : null,
+          price: needsShares && vsNum(f.shares) && vsNum(f.amount) ? vsNum(f.amount) / vsNum(f.shares) : null,
+          amount: vsNum(f.amount), fees: null, taxes: null, currency: f.currency || "EUR",
+          account: f.account.trim() || "Manual", source: "manual", rawType: null, ref: null, market: null,
+          cashImpact: VS_CASH_IMPACT[f.type], note: f.note.trim() || null,
+        });
+      };
+
+      return (
+        <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={labelStyle}>Fecha</label>
+              <input style={inputStyle} type="date" value={f.date} onChange={set("date")} />
+            </div>
+            <div>
+              <label style={labelStyle}>Tipo</label>
+              <select style={inputStyle} value={f.type} onChange={set("type")}>
+                {VS_TX_TYPES.filter(t => t !== "unknown").map(t => <option key={t} value={t}>{VS_TX_TYPE_LABEL[t]}</option>)}
+              </select>
+            </div>
+          </div>
+          <label style={labelStyle}>Nombre del valor</label>
+          <input style={inputStyle} type="text" value={f.name} onChange={set("name")} placeholder="ej: Azvalor Internacional FI" />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={labelStyle}>ISIN <span style={{fontWeight:400}}>(opcional)</span></label>
+              <input style={inputStyle} type="text" value={f.isin} onChange={set("isin")} placeholder="ES0000000000" />
+            </div>
+            <div>
+              <label style={labelStyle}>Cuenta</label>
+              <input style={inputStyle} type="text" list="vs-accounts" value={f.account} onChange={set("account")} placeholder="ej: MyInvestor · Fondos" />
+              <datalist id="vs-accounts">{accounts.map(a => <option key={a} value={a} />)}</datalist>
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: needsShares ? "1fr 1fr" : "1fr", gap: 12 }}>
+            {needsShares && (
+              <div>
+                <label style={labelStyle}>Títulos / participaciones</label>
+                <input style={inputStyle} type="number" step="any" value={f.shares} onChange={set("shares")} />
+              </div>
+            )}
+            <div>
+              <label style={labelStyle}>Importe neto</label>
+              <input style={inputStyle} type="number" step="any" value={f.amount} onChange={set("amount")} />
+            </div>
+          </div>
+          <label style={labelStyle}>Nota <span style={{fontWeight:400}}>(opcional)</span></label>
+          <input style={inputStyle} type="text" value={f.note} onChange={set("note")} />
+          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+            <button onClick={handleSave} disabled={!canSave}
+              style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 700, cursor: canSave ? "pointer" : "not-allowed", opacity: canSave ? 1 : 0.4 }}>
+              Guardar transacción
+            </button>
+            <button onClick={onCancel}
+              style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 14px", fontSize: 12, cursor: "pointer" }}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Tabla de revisión de una importación antes de confirmarla ────────
+    function VsTxStaging({ staged, warnings, onUpdate, onRemove, onCommit, onDiscardAll }) {
+      const included = staged.filter(t => t._include).length;
+      const cellStyle = { padding: "6px 7px", borderBottom: "1px solid #1a2535" };
+      return (
+        <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14 }}>
+              Revisar importación <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12 }}>({staged.length} filas, {included} seleccionadas)</span>
+            </div>
+            <button onClick={onDiscardAll} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>descartar todo</button>
+          </div>
+          {warnings.length > 0 && (
+            <div style={{ background: "#f8717118", border: "1px solid #f8717155", borderRadius: 6, padding: "8px 10px", marginBottom: 10, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>
+              {warnings.join("\n")}
+            </div>
+          )}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 760 }}>
+              <thead>
+                <tr>
+                  {["", "Fecha", "Tipo", "Valor", "Títulos", "Importe", "Cuenta", ""].map((h, i) => (
+                    <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {staged.map(t => (
+                  <tr key={t.id} style={{ opacity: t._include ? 1 : 0.4 }}>
+                    <td style={cellStyle}><input type="checkbox" checked={t._include} onChange={e => onUpdate(t.id, { _include: e.target.checked })} /></td>
+                    <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{t.date}{t._dup && <span title="Ya existe una transacción con el mismo identificador — probablemente reimportada" style={{ marginLeft: 5, color: "#f59e0b" }}>⚠</span>}</td>
+                    <td style={cellStyle}>
+                      <select value={t.type} onChange={e => onUpdate(t.id, { type: e.target.value, cashImpact: VS_CASH_IMPACT[e.target.value] })}
+                        style={{ background: t.type === "unknown" ? "#f8717118" : "#060d14", border: `1px solid ${t.type === "unknown" ? "#f87171" : "#1a2535"}`, color: "#e2e8f0", borderRadius: 4, padding: "3px 5px", fontSize: 11 }}>
+                        {VS_TX_TYPES.map(ty => <option key={ty} value={ty}>{VS_TX_TYPE_LABEL[ty]}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ ...cellStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.name}>{t.name}</td>
+                    <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{t.shares != null ? t.shares : "—"}</td>
+                    <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{t.amount != null ? t.amount.toFixed(2) : "—"} {t.currency}</td>
+                    <td style={{ ...cellStyle, color: "#7a90a8", fontSize: 11 }}>{t.account}</td>
+                    <td style={cellStyle}>
+                      <button onClick={() => onRemove(t.id)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 13 }} title="Quitar de la importación">✕</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <button onClick={onCommit} disabled={included === 0}
+            style={{ marginTop: 12, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px 16px", fontSize: 12, fontWeight: 700, cursor: included ? "pointer" : "not-allowed", opacity: included ? 1 : 0.4 }}>
+            Confirmar {included} transacción{included === 1 ? "" : "es"}
+          </button>
+        </div>
+      );
+    }
+
+    // ─── Tabla de transacciones guardadas ──────────────────────────────────
+    function VsTxTable({ transactions, onDelete }) {
+      if (transactions.length === 0) {
+        return <div style={{ textAlign: "center", padding: "28px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>Sin transacciones aún.</div>;
+      }
+      const cellStyle = { padding: "7px 8px", borderBottom: "1px solid #1a2535" };
+      return (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 760 }}>
+            <thead>
+              <tr>
+                {["Fecha", "Tipo", "Valor", "Títulos", "Importe", "Cuenta", "Origen", ""].map((h, i) => (
+                  <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {transactions.map(t => (
+                <tr key={t.id}>
+                  <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{t.date}</td>
+                  <td style={cellStyle}><VsTxTypeBadge type={t.type} /></td>
+                  <td style={{ ...cellStyle, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.name}>{t.name}</td>
+                  <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{t.shares != null ? t.shares : "—"}</td>
+                  <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{t.amount != null ? t.amount.toFixed(2) : "—"} {t.currency}</td>
+                  <td style={{ ...cellStyle, color: "#7a90a8", fontSize: 11, whiteSpace: "nowrap" }}>{t.account}</td>
+                  <td style={{ ...cellStyle, color: "#3a4550", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>{t.source}</td>
+                  <td style={cellStyle}>
+                    <button onClick={() => onDelete(t.id)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 11, cursor: "pointer" }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>
+                      quitar
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ─── Pestaña "Cartera" ──────────────────────────────────────────────────
+    function VsCarteraTab({ portfolio, onSave }) {
+      const transactions = portfolio.transactions || [];
+      const [staged, setStaged] = useState([]);
+      const [warnings, setWarnings] = useState([]);
+      const [importing, setImporting] = useState(false);
+      const [importError, setImportError] = useState("");
+      const [showManual, setShowManual] = useState(false);
+      const [filterAccount, setFilterAccount] = useState("all");
+      const [filterType, setFilterType] = useState("all");
+      const fileRefFunds = useRef(null);
+      const fileRefStocks = useRef(null);
+      const fileRefPP = useRef(null);
+
+      const existingKeys = useMemo(() => new Set(transactions.map(vsTxDedupeKey)), [transactions]);
+
+      const runImport = async (importerFn, inputRef) => {
+        const file = inputRef.current.files[0];
+        if (!file) return;
+        setImportError(""); setImporting(true);
+        try {
+          const { txs, warnings: w } = await importerFn(file);
+          const withIds = txs.map(t => ({ ...t, id: vsTxId(), _dup: existingKeys.has(vsTxDedupeKey(t)), _include: !existingKeys.has(vsTxDedupeKey(t)) }));
+          setStaged(prev => [...prev, ...withIds]);
+          setWarnings(w);
+        } catch (e) {
+          setImportError("Error al leer el archivo: " + e.message);
+        }
+        setImporting(false);
+        if (inputRef.current) inputRef.current.value = "";
+      };
+
+      const updateStaged = (id, patch) => setStaged(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
+      const removeStaged = (id) => setStaged(prev => prev.filter(t => t.id !== id));
+
+      const commitStaged = async () => {
+        const toCommit = staged.filter(t => t._include).map(({ _dup, _include, ...t }) => t);
+        if (toCommit.length === 0) return;
+        const next = { ...portfolio, transactions: [...transactions, ...toCommit] };
+        await onSave(next);
+        setStaged(prev => prev.filter(t => !t._include));
+      };
+
+      const deleteTx = async (id) => {
+        const next = { ...portfolio, transactions: transactions.filter(t => t.id !== id) };
+        await onSave(next);
+      };
+
+      const addManual = async (tx) => {
+        const next = { ...portfolio, transactions: [...transactions, { ...tx, id: vsTxId() }] };
+        await onSave(next);
+        setShowManual(false);
+      };
+
+      const accounts = useMemo(() => [...new Set(transactions.map(t => t.account))].sort(), [transactions]);
+      const filtered = transactions
+        .filter(t => filterAccount === "all" || t.account === filterAccount)
+        .filter(t => filterType === "all" || t.type === filterType)
+        .slice()
+        .sort((a, b) => b.date.localeCompare(a.date));
+
+      const importBtnStyle = { flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 8px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace", textAlign: "center" };
+
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+          <div style={{ alignSelf: "start" }}>
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 14, lineHeight: 1.5 }}>
+                MyInvestor (Inversis) para fondos y para valores/ETF, o exportación xlsx de Portfolio Performance.
+              </div>
+
+              <input ref={fileRefFunds} type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={() => runImport(vsImportInversisFunds, fileRefFunds)} />
+              <button style={{ ...importBtnStyle, marginBottom: 6, display: "block", width: "100%" }} onClick={() => fileRefFunds.current.click()} disabled={importing}>
+                📄 MyInvestor · Fondos (.xls)
+              </button>
+
+              <input ref={fileRefStocks} type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={() => runImport(vsImportInversisStocks, fileRefStocks)} />
+              <button style={{ ...importBtnStyle, marginBottom: 6, display: "block", width: "100%" }} onClick={() => fileRefStocks.current.click()} disabled={importing}>
+                📄 MyInvestor · Valores/ETF (.xlsx)
+              </button>
+
+              <input ref={fileRefPP} type="file" accept=".xlsx" style={{ display: "none" }} onChange={() => runImport(vsImportPP, fileRefPP)} />
+              <button style={{ ...importBtnStyle, display: "block", width: "100%" }} onClick={() => fileRefPP.current.click()} disabled={importing}>
+                📄 Portfolio Performance (.xlsx)
+              </button>
+
+              {importing && <div style={{ marginTop: 10, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>procesando…</div>}
+              {importError && <div style={{ marginTop: 10, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{importError}</div>}
+            </div>
+
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showManual ? 14 : 0 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Añadir manualmente</div>
+                <button onClick={() => setShowManual(v => !v)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
+                  {showManual ? "cerrar" : "+ nueva"}
+                </button>
+              </div>
+              {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
+            </div>
+          </div>
+
+          <div>
+            {staged.length > 0 && (
+              <VsTxStaging staged={staged} warnings={warnings} onUpdate={updateStaged} onRemove={removeStaged} onCommit={commitStaged} onDiscardAll={() => { setStaged([]); setWarnings([]); }} />
+            )}
+
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>
+                  Transacciones <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12, fontFamily: "'DM Mono',monospace" }}>({filtered.length}{filtered.length !== transactions.length ? ` de ${transactions.length}` : ""})</span>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <select value={filterAccount} onChange={e => setFilterAccount(e.target.value)}
+                    style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11 }}>
+                    <option value="all">Todas las cuentas</option>
+                    {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                  <select value={filterType} onChange={e => setFilterType(e.target.value)}
+                    style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11 }}>
+                    <option value="all">Todos los tipos</option>
+                    {VS_TX_TYPES.map(t => <option key={t} value={t}>{VS_TX_TYPE_LABEL[t]}</option>)}
+                  </select>
+                </div>
+              </div>
+              <VsTxTable transactions={filtered} onDelete={deleteTx} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const [tab, setTab] = useState("pool");
       const [factors, setFactors] = useState({});
       const [funds, setFunds] = useState({});
+      const [portfolio, setPortfolio] = useState({ transactions: [] });
       const [loading, setLoading] = useState(true);
       const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
@@ -15187,7 +15712,13 @@
         });
         vsLoadAnalyses(profileId).then(setSavedAnalyses);
         vsLoadFunds(profileId).then(setFunds);
+        vsLoadPortfolio(profileId).then(setPortfolio);
       }, [profileId]);
+
+      const handleSavePortfolio = async (next) => {
+        setPortfolio(next);
+        await vsSavePortfolio(profileId, next);
+      };
 
       const handleAdd = async (name, data) => {
         const next = { ...factors, [name]: data };
@@ -15248,6 +15779,7 @@
         { id: "pca", label: "Componentes", icon: "🔬" },
         { id: "backtest", label: "Backtest", icon: "📉" },
         { id: "saved", label: "Guardadas", icon: "💾" },
+        { id: "cartera", label: "Cartera", icon: "💼" },
       ];
 
       return (
@@ -15297,6 +15829,7 @@
                 {tab === "pca" && <VsPCATab factors={factors} funds={funds} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
+                {tab === "cartera" && <VsCarteraTab portfolio={portfolio} onSave={handleSavePortfolio} />}
               </>
             )}
           </div>
