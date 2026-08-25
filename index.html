@@ -15540,27 +15540,33 @@
     }
 
     // ─── Pestaña "Cartera" ──────────────────────────────────────────────────
+    const VS_IMPORT_SOURCES = {
+      inversis_funds: { label: "Fondos", importer: vsImportInversisFunds, accept: ".xls,.xlsx" },
+      inversis_stocks: { label: "Acciones y/o ETF", importer: vsImportInversisStocks, accept: ".xls,.xlsx" },
+      pp: { label: "Portfolio Performance", importer: vsImportPP, accept: ".xlsx" },
+    };
+
     function VsCarteraTab({ portfolio, onSave }) {
       const transactions = portfolio.transactions || [];
       const [staged, setStaged] = useState([]);
       const [warnings, setWarnings] = useState([]);
       const [importing, setImporting] = useState(false);
       const [importError, setImportError] = useState("");
+      const [importSource, setImportSource] = useState("inversis_funds");
       const [showManual, setShowManual] = useState(false);
       const [filterAccount, setFilterAccount] = useState("all");
       const [filterType, setFilterType] = useState("all");
-      const fileRefFunds = useRef(null);
-      const fileRefStocks = useRef(null);
-      const fileRefPP = useRef(null);
+      const fileRef = useRef(null);
 
       const existingKeys = useMemo(() => new Set(transactions.map(vsTxDedupeKey)), [transactions]);
 
-      const runImport = async (importerFn, inputRef) => {
-        const file = inputRef.current.files[0];
+      const runImport = async () => {
+        const file = fileRef.current.files[0];
         if (!file) return;
         setImportError(""); setImporting(true);
         try {
-          const { txs, warnings: w } = await importerFn(file);
+          const { importer } = VS_IMPORT_SOURCES[importSource];
+          const { txs, warnings: w } = await importer(file);
           const withIds = txs.map(t => ({ ...t, id: vsTxId(), _dup: existingKeys.has(vsTxDedupeKey(t)), _include: !existingKeys.has(vsTxDedupeKey(t)) }));
           setStaged(prev => [...prev, ...withIds]);
           setWarnings(w);
@@ -15568,7 +15574,7 @@
           setImportError("Error al leer el archivo: " + e.message);
         }
         setImporting(false);
-        if (inputRef.current) inputRef.current.value = "";
+        if (fileRef.current) fileRef.current.value = "";
       };
 
       const updateStaged = (id, patch) => setStaged(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
@@ -15600,7 +15606,8 @@
         .slice()
         .sort((a, b) => b.date.localeCompare(a.date));
 
-      const importBtnStyle = { flex: 1, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 8px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace", textAlign: "center" };
+      const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
+      const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
 
       return (
         <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
@@ -15608,22 +15615,22 @@
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
               <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 14, lineHeight: 1.5 }}>
-                MyInvestor (Inversis) para fondos y para valores/ETF, o exportación xlsx de Portfolio Performance.
+                Elige la fuente y sube el archivo exportado.
               </div>
 
-              <input ref={fileRefFunds} type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={() => runImport(vsImportInversisFunds, fileRefFunds)} />
-              <button style={{ ...importBtnStyle, marginBottom: 6, display: "block", width: "100%" }} onClick={() => fileRefFunds.current.click()} disabled={importing}>
-                📄 MyInvestor · Fondos (.xls)
-              </button>
+              <label style={labelStyle}>Fuente</label>
+              <select style={{ ...inputStyle, marginBottom: 14 }} value={importSource} onChange={e => setImportSource(e.target.value)}>
+                <optgroup label="MyInvestor">
+                  <option value="inversis_funds">Fondos</option>
+                  <option value="inversis_stocks">Acciones y/o ETF</option>
+                </optgroup>
+                <option value="pp">Portfolio Performance</option>
+              </select>
 
-              <input ref={fileRefStocks} type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={() => runImport(vsImportInversisStocks, fileRefStocks)} />
-              <button style={{ ...importBtnStyle, marginBottom: 6, display: "block", width: "100%" }} onClick={() => fileRefStocks.current.click()} disabled={importing}>
-                📄 MyInvestor · Valores/ETF (.xlsx)
-              </button>
-
-              <input ref={fileRefPP} type="file" accept=".xlsx" style={{ display: "none" }} onChange={() => runImport(vsImportPP, fileRefPP)} />
-              <button style={{ ...importBtnStyle, display: "block", width: "100%" }} onClick={() => fileRefPP.current.click()} disabled={importing}>
-                📄 Portfolio Performance (.xlsx)
+              <input ref={fileRef} type="file" accept={VS_IMPORT_SOURCES[importSource].accept} style={{ display: "none" }} onChange={runImport} />
+              <button style={{ width: "100%", background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 8px", fontSize: 12, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}
+                onClick={() => fileRef.current.click()} disabled={importing}>
+                📄 Importar archivo — {VS_IMPORT_SOURCES[importSource].label}
               </button>
 
               {importing && <div style={{ marginTop: 10, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>procesando…</div>}
@@ -15673,6 +15680,20 @@
 
 
     function VestaApp({ logoSlot, profileId, profileChip }) {
+      const VS_SECTIONS = [
+        { id: "fondos", label: "Análisis de fondos", tabs: [
+          { id: "pool", label: "Pool", icon: "🗂" },
+          { id: "test", label: "Analizar Fondo (RBSA)", icon: "📈" },
+          { id: "corr", label: "Correlación", icon: "📊" },
+          { id: "pca", label: "Componentes", icon: "🔬" },
+          { id: "backtest", label: "Backtest", icon: "📉" },
+          { id: "saved", label: "Guardadas", icon: "💾" },
+        ]},
+        { id: "cartera", label: "Seguimiento de cartera", tabs: [
+          { id: "cartera", label: "Cartera", icon: "💼" },
+        ]},
+      ];
+      const [section, setSection] = useState("fondos");
       const [tab, setTab] = useState("pool");
       const [factors, setFactors] = useState({});
       const [funds, setFunds] = useState({});
@@ -15772,15 +15793,11 @@
         setSavedAnalyses(prev => prev.filter(a => a.id !== id));
       };
 
-      const TABS = [
-        { id: "pool", label: "Pool", icon: "🗂" },
-        { id: "test", label: "Analizar Fondo (RBSA)", icon: "📈" },
-        { id: "corr", label: "Correlación", icon: "📊" },
-        { id: "pca", label: "Componentes", icon: "🔬" },
-        { id: "backtest", label: "Backtest", icon: "📉" },
-        { id: "saved", label: "Guardadas", icon: "💾" },
-        { id: "cartera", label: "Cartera", icon: "💼" },
-      ];
+      const TABS = VS_SECTIONS.find(s => s.id === section).tabs;
+      const changeSection = (id) => {
+        setSection(id);
+        setTab(VS_SECTIONS.find(s => s.id === id).tabs[0].id);
+      };
 
       return (
         <div style={{ minHeight: "100vh", background: "#060d14", display: "flex", flexDirection: "column" }}>
@@ -15793,6 +15810,15 @@
               </span>
             </div>
             {profileChip}
+          </div>
+
+          <div style={{ display: "flex", gap: 6, padding: "10px 20px", borderBottom: "1px solid #0d1825", background: "#080f18", flexShrink: 0, overflowX: "auto" }}>
+            {VS_SECTIONS.map(s => (
+              <button key={s.id} onClick={() => changeSection(s.id)}
+                style={{ background: section === s.id ? VS_A + "18" : "none", border: `1px solid ${section === s.id ? VS_A : "#1a2535"}`, color: section === s.id ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+                {s.label}
+              </button>
+            ))}
           </div>
 
           {isMobile ? (
