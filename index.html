@@ -13328,8 +13328,23 @@
     // estar abiertas a la vez, sin coordinación entre ellas).
     function VsInfoTip({ text, width = 220 }) {
       const [open, setOpen] = useState(false);
+      const wrapRef = useRef(null);
+
+      // Se cierra solo en cuanto se hace clic en cualquier otro sitio de la
+      // página — así una burbuja abierta nunca puede quedarse flotando
+      // encima de otro elemento (como una lista de fondos debajo) y
+      // "tragarse" el clic que iba dirigido a otra cosa.
+      useEffect(() => {
+        if (!open) return;
+        const handleOutside = (e) => {
+          if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+        };
+        document.addEventListener("mousedown", handleOutside);
+        return () => document.removeEventListener("mousedown", handleOutside);
+      }, [open]);
+
       return (
-        <span style={{ position: "relative", display: "inline-block", verticalAlign: "middle", marginLeft: 5 }}>
+        <span ref={wrapRef} style={{ position: "relative", display: "inline-block", verticalAlign: "middle", marginLeft: 5 }}>
           <button onClick={(e)=>{ e.stopPropagation(); e.preventDefault(); setOpen(v=>!v); }}
             style={{
               width: 14, height: 14, borderRadius: "50%", border: `1px solid ${open ? VS_A : "#3a4550"}`,
