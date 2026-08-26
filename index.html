@@ -15574,6 +15574,30 @@
       return body; // { url, price, currency, asOf, source }
     }
 
+    // ── Precio de acciones/ETF — Yahoo Finance (vía el mismo proxy) ───────
+    // Finect no cubre acciones sueltas ni ETF, así que para este panel se
+    // usa Yahoo: v8/finance/chart, el único endpoint no oficial que sigue
+    // funcionando sin crumb ni cookie de sesión. La resolución ISIN→ticker
+    // sigue el mismo patrón que con Finect (Tavily, con la búsqueda de
+    // Google como respaldo manual).
+    function vsYahooSearchUrl(isin) {
+      return `https://www.google.com/search?q=${encodeURIComponent("site:finance.yahoo.com/quote " + isin)}`;
+    }
+    async function vsFetchYahooQuote(ticker) {
+      const res = await fetch(`/api/vesta-quotes?ticker=${encodeURIComponent(ticker)}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al consultar Yahoo`);
+      return body; // { ticker, price, currency, asOf, source }
+    }
+    async function vsResolveYahooTicker(isin) {
+      const res = await fetch(`/api/vesta-quotes?yisin=${encodeURIComponent(isin)}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al resolver el ISIN`);
+      return body; // { ticker, price, currency, asOf, source }
+    }
+
     // Clave de deduplicación al reimportar: prioriza el `ref` de Inversis
     // (identificador único de operación en el extracto). Sin ref (PP, manual)
     // compone una clave con los campos — no es infalible pero cubre bien el
@@ -15822,8 +15846,18 @@
     }
 
     // ─── Fila de un valor en el catálogo — precio auto (Finect) o manual ──
-    function VsSecurityRow({ security, showFinect, moveLabel, onMove, onUpdate }) {
-      const [urlDraft, setUrlDraft] = useState(security.finectUrl || "");
+    // Config por fuente de precio — así VsSecurityRow y VsSecuritiesPanel
+    // no duplican la lógica de Finect y Yahoo, solo cambian de tabla según
+    // `mode`. `field` es la propiedad del catálogo donde vive el
+    // identificador (URL de Finect o ticker de Yahoo).
+    const VS_PRICE_SOURCES = {
+      finect: { field: "finectUrl", label: "URL Finect", placeholder: "URL Finect", fetchQuote: vsFetchFinectQuote, resolve: vsResolveFinectByIsin, searchUrl: vsFinectSearchUrl, resolvedField: "url" },
+      yahoo: { field: "yahooTicker", label: "Ticker Yahoo", placeholder: "ticker", fetchQuote: vsFetchYahooQuote, resolve: vsResolveYahooTicker, searchUrl: vsYahooSearchUrl, resolvedField: "ticker" },
+    };
+
+    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate }) {
+      const src = mode ? VS_PRICE_SOURCES[mode] : null;
+      const [fieldDraft, setFieldDraft] = useState((src && security[src.field]) || "");
       const [fetching, setFetching] = useState(false);
       const [resolving, setResolving] = useState(false);
       const [fetchError, setFetchError] = useState("");
@@ -15831,14 +15865,14 @@
       const [manualPrice, setManualPrice] = useState(security.price != null ? String(security.price) : "");
       const [manualDate, setManualDate] = useState(security.priceAsOf || "");
 
-      const saveUrl = () => { if (urlDraft.trim() !== (security.finectUrl || "")) onUpdate({ finectUrl: urlDraft.trim() || null }); };
+      const saveField = () => { if (src && fieldDraft.trim() !== (security[src.field] || "")) onUpdate({ [src.field]: fieldDraft.trim() || null }); };
 
       const refresh = async () => {
-        if (!security.finectUrl) return;
+        if (!src || !security[src.field]) return;
         setFetching(true); setFetchError("");
         try {
-          const q = await vsFetchFinectQuote(security.finectUrl);
-          onUpdate({ price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" });
+          const q = await src.fetchQuote(security[src.field]);
+          onUpdate({ price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode });
         } catch (e) {
           setFetchError(e.message);
         }
@@ -15846,11 +15880,13 @@
       };
 
       const resolve = async () => {
+        if (!src) return;
         setResolving(true); setFetchError("");
         try {
-          const q = await vsResolveFinectByIsin(security.isin);
-          setUrlDraft(q.url);
-          onUpdate({ finectUrl: q.url, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" });
+          const q = await src.resolve(security.isin);
+          const resolvedVal = q[src.resolvedField];
+          setFieldDraft(resolvedVal);
+          onUpdate({ [src.field]: resolvedVal, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode });
         } catch (e) {
           setFetchError(e.message);
         }
@@ -15883,7 +15919,7 @@
               <div>
                 <span style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700 }}>{security.price.toFixed(2)} {security.priceCurrency || "EUR"}</span>
                 <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
-                  {security.priceAsOf || "—"} · {security.priceSource === "manual" ? "manual" : "finect"}
+                  {security.priceAsOf || "—"} · {security.priceSource === "manual" ? "manual" : security.priceSource || "—"}
                 </div>
               </div>
             ) : <span style={{ color: "#5a7080", fontSize: 11 }}>sin precio</span>}
@@ -15896,9 +15932,9 @@
               </>
             ) : (
               <>
-                {showFinect && (
-                  <button onClick={refresh} disabled={!security.finectUrl || fetching} title="Actualizar precio"
-                    style={{ background: "none", border: "1px solid #1a2535", color: security.finectUrl ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: security.finectUrl && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
+                {src && (
+                  <button onClick={refresh} disabled={!security[src.field] || fetching} title="Actualizar precio"
+                    style={{ background: "none", border: "1px solid #1a2535", color: security[src.field] ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: security[src.field] && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
                     {fetching ? "…" : "🔄"}
                   </button>
                 )}
@@ -15908,16 +15944,16 @@
               </>
             )}
           </td>
-          {showFinect && (
+          {src && (
             <td style={{ ...cellStyle, width: 150, maxWidth: 150 }}>
               <div style={{ display: "flex", gap: 4 }}>
-                <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="URL Finect"
+                <input value={fieldDraft} onChange={e => setFieldDraft(e.target.value)} onBlur={saveField} placeholder={src.placeholder}
                   style={{ width: 80, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
                 <button onClick={resolve} disabled={resolving} title="Resolver automáticamente"
                   style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: resolving ? "not-allowed" : "pointer" }}>
                   {resolving ? "…" : "⚡"}
                 </button>
-                <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect"
+                <a href={src.searchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title={`Buscar en ${mode === "finect" ? "Finect" : "Yahoo"}`}
                   style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>🔍</a>
               </div>
               {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
@@ -15927,13 +15963,14 @@
       );
     }
 
-    function VsSecuritiesPanel({ title, securities, showFinect, moveLabel, onMove, onUpdateSecurity, onBulkUpdate }) {
+    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate }) {
       const [open, setOpen] = useState(false);
       const [bulkRefreshing, setBulkRefreshing] = useState(false);
       const [bulkResolving, setBulkResolving] = useState(false);
       const [bulkStatus, setBulkStatus] = useState("");
       if (securities.length === 0) return null;
       const priced = securities.filter(s => s.price != null).length;
+      const src = mode ? VS_PRICE_SOURCES[mode] : null;
 
       // Las dos acciones masivas acumulan los resultados en un objeto y
       // guardan UNA sola vez al final (onBulkUpdate), en vez de llamar a
@@ -15943,15 +15980,15 @@
       // entre sí según fueran resolviendo (todas leen el mismo punto de
       // partida). Acumular y guardar una vez evita ese pisoteo.
       const refreshAll = async () => {
-        const targets = securities.filter(s => s.finectUrl);
+        const targets = securities.filter(s => s[src.field]);
         if (targets.length === 0) return;
         setBulkRefreshing(true);
         const patches = {};
         let fail = 0;
         for (const s of targets) {
           try {
-            const q = await vsFetchFinectQuote(s.finectUrl);
-            patches[s.isin] = { price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" };
+            const q = await src.fetchQuote(s[src.field]);
+            patches[s.isin] = { price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode };
           } catch (e) { fail++; }
           setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
         }
@@ -15962,15 +15999,15 @@
       };
 
       const resolveAll = async () => {
-        const targets = securities.filter(s => !s.finectUrl);
+        const targets = securities.filter(s => !s[src.field]);
         if (targets.length === 0) return;
         setBulkResolving(true);
         const patches = {};
         let fail = 0;
         for (const s of targets) {
           try {
-            const q = await vsResolveFinectByIsin(s.isin);
-            patches[s.isin] = { finectUrl: q.url, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" };
+            const q = await src.resolve(s.isin);
+            patches[s.isin] = { [src.field]: q[src.resolvedField], price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode };
           } catch (e) { fail++; }
           setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
         }
@@ -15991,14 +16028,14 @@
               </div>
               <span style={{ color: "#7a90a8", fontSize: 12 }}>{open ? "ocultar ▲" : "mostrar ▼"}</span>
             </div>
-            {showFinect && (
+            {src && (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {bulkStatus && <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{bulkStatus}</span>}
-                <button onClick={resolveAll} disabled={bulkResolving || bulkRefreshing} title="Resolver ficha de Finect de todos los que aún no la tienen"
+                <button onClick={resolveAll} disabled={bulkResolving || bulkRefreshing} title={`Resolver ${src.label.toLowerCase()} de todos los que aún no la tienen`}
                   style={bulkBtnStyle(bulkResolving || bulkRefreshing)}>
                   {bulkResolving ? "…" : "⚡"} todos
                 </button>
-                <button onClick={refreshAll} disabled={bulkRefreshing || bulkResolving} title="Actualizar precio de todos los que ya tienen ficha"
+                <button onClick={refreshAll} disabled={bulkRefreshing || bulkResolving} title="Actualizar precio de todos los que ya tienen fuente"
                   style={bulkBtnStyle(bulkRefreshing || bulkResolving)}>
                   {bulkRefreshing ? "…" : "🔄"} todos
                 </button>
@@ -16007,17 +16044,17 @@
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: showFinect ? 560 : 380 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 560 : 380 }}>
                 <thead>
                   <tr>
-                    {(showFinect ? ["Valor", "Precio", "", "URL Finect"] : ["Valor", "Precio", ""]).map((h, i) => (
+                    {(src ? ["Valor", "Precio", "", src.label] : ["Valor", "Precio", ""]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {securities.map(s => (
-                    <VsSecurityRow key={s.isin} security={s} showFinect={showFinect} moveLabel={moveLabel}
+                    <VsSecurityRow key={s.isin} security={s} mode={mode} moveLabel={moveLabel}
                       onMove={() => onMove(s.isin)} onUpdate={patch => onUpdateSecurity(s.isin, patch)} />
                   ))}
                 </tbody>
@@ -16081,7 +16118,7 @@
           setNewSecurityDrafts(prev => {
             const next = { ...prev };
             for (const t of txs) {
-              if (t.isin && !securitiesCatalog[t.isin] && !(t.isin in next)) next[t.isin] = { name: t.name || "", finectUrl: "", assetType: "fund" };
+              if (t.isin && !securitiesCatalog[t.isin] && !(t.isin in next)) next[t.isin] = { name: t.name || "", finectUrl: "", yahooTicker: "", assetType: "fund" };
             }
             return next;
           });
@@ -16111,6 +16148,7 @@
           nextSecurities[isin] = {
             isin, name, currency: tx.currency || "EUR",
             finectUrl: (draft.finectUrl || "").trim() || null,
+            yahooTicker: (draft.yahooTicker || "").trim() || null,
             price: null, priceCurrency: null, priceAsOf: null, priceSource: null,
             assetType: draft.assetType || "fund",
           };
@@ -16132,7 +16170,7 @@
         // Si el ISIN cambió o es uno nuevo, se registra/actualiza también
         // en el catálogo — igual que al añadir una transacción manual.
         const nextSecurities = patch.isin
-          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
+          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, yahooTicker: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
           : securitiesCatalog;
         const next = { ...portfolio, transactions: transactions.map(t => t.id === id ? { ...t, ...patch } : t), securities: nextSecurities };
         await onSave(next);
@@ -16149,7 +16187,7 @@
 
       const addManual = async (tx) => {
         const nextSecurities = tx.isin
-          ? { ...securitiesCatalog, [tx.isin]: securitiesCatalog[tx.isin] || { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
+          ? { ...securitiesCatalog, [tx.isin]: securitiesCatalog[tx.isin] || { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR", finectUrl: null, yahooTicker: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
           : securitiesCatalog;
         const next = { ...portfolio, transactions: [...transactions, { ...tx, id: vsTxId() }], securities: nextSecurities };
         await onSave(next);
@@ -16179,16 +16217,17 @@
         updateSecurity(isin, { assetType: newType });
       };
 
-      // Resolución automática de ISIN→ficha de Finect para un valor nuevo
-      // aún sin confirmar — el precio que trae de propina se descarta aquí
-      // (se guardará ya normal vía "actualizar" tras confirmar el valor),
-      // solo se usa para rellenar la URL sin que el usuario tenga que
-      // buscarla a mano.
-      const resolveDraftFinect = async (isin) => {
+      // Resolución automática ISIN→fuente (Finect o Yahoo, según el tipo
+      // elegido) para un valor nuevo aún sin confirmar — el precio que
+      // trae de propina se descarta aquí (se guardará ya normal vía
+      // "actualizar" tras confirmar el valor), solo se usa para rellenar
+      // el campo sin que el usuario tenga que buscarlo a mano.
+      const resolveDraftSource = async (isin, mode) => {
+        const src = VS_PRICE_SOURCES[mode];
         setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: true, _resolveError: "" } }));
         try {
-          const q = await vsResolveFinectByIsin(isin);
-          setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: q.url, _resolving: false } }));
+          const q = await src.resolve(isin);
+          setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], [src.field]: q[src.resolvedField], _resolving: false } }));
         } catch (e) {
           setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: false, _resolveError: e.message } }));
         }
@@ -16259,8 +16298,8 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsSecuritiesPanel title="Fondos" securities={fundsList} showFinect={true} moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
-            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} showFinect={false} moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
+            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
+            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
           </div>
 
           <div>
@@ -16309,11 +16348,26 @@
                           type="text" value={draft.finectUrl} placeholder="opcional — pega aquí la ficha"
                           onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: e.target.value } }))}
                         />
-                        <button onClick={() => resolveDraftFinect(isin)} disabled={draft._resolving} title="Resolver automáticamente"
+                        <button onClick={() => resolveDraftSource(isin, "finect")} disabled={draft._resolving} title="Resolver automáticamente"
                           style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: draft._resolving ? "not-allowed" : "pointer" }}>
                           {draft._resolving ? "…" : "⚡"}
                         </button>
                         <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}>🔍</a>
+                      </div>
+                    )}
+                    {draft.assetType === "stock" && (
+                      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr auto auto", gap: 10, alignItems: "center" }}>
+                        <div style={{ fontSize: 10, color: "#5a7080" }}>Ticker Yahoo</div>
+                        <input
+                          style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 9px", fontSize: 11 }}
+                          type="text" value={draft.yahooTicker} placeholder="opcional — ej: AAPL, SWDA.MI"
+                          onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], yahooTicker: e.target.value } }))}
+                        />
+                        <button onClick={() => resolveDraftSource(isin, "yahoo")} disabled={draft._resolving} title="Resolver automáticamente"
+                          style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: draft._resolving ? "not-allowed" : "pointer" }}>
+                          {draft._resolving ? "…" : "⚡"}
+                        </button>
+                        <a href={vsYahooSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Yahoo" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}>🔍</a>
                       </div>
                     )}
                     {draft._resolveError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{draft._resolveError}</div>}
