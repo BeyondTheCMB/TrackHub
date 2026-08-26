@@ -1,11 +1,13 @@
 // api/vesta-quotes.js — Vercel serverless proxy para Vesta · Cartera.
-//// api/vesta-quotes.js — Vercel serverless proxy para Vesta · Cartera.
 //
-// Dos modos, según el parámetro que llegue:
-//   ?url=<ficha de Finect>   → lee el precio de esa ficha concreta.
+// Cuatro modos, según el parámetro que llegue:
+//   ?url=<ficha de Finect>   → precio de esa ficha (fondos/ETF vía Finect).
 //   ?isin=<ISIN>             → resuelve el ISIN a una ficha de Finect vía
-//                               la API oficial de Tavily, y de paso
-//                               devuelve ya su precio.
+//                               Tavily, y de paso devuelve ya su precio.
+//   ?ticker=<símbolo Yahoo>  → precio de ese ticker (acciones/ETF vía
+//                               Yahoo — lo que Finect no cubre).
+//   ?yisin=<ISIN>            → resuelve el ISIN a un ticker de Yahoo vía
+//                               Tavily, y de paso devuelve ya su precio.
 //
 // Por qué Tavily y no otra cosa: se probaron tres vías antes de esta,
 // todas descartadas por límites reales, no por error de configuración:
@@ -115,12 +117,70 @@ async function resolveIsinViaTavily(isin) {
   return normalizeFinectUrl(chosen.url) || chosen.url;
 }
 
+// ── Yahoo Finance — acciones/ETF (Finect no las cubre) ─────────────────
+// v8/finance/chart es el único endpoint no oficial de Yahoo que sigue
+// funcionando sin "crumb" ni cookie de sesión — v7/finance/quote (el de
+// cotizaciones en lote) ya lo exige y aun así da 429 con frecuencia. Un
+// símbolo por request, sin autenticación, con cabeceras de navegador para
+// no oler a bot.
+async function fetchYahooPrice(ticker) {
+  const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=1d&interval=1d`;
+  const r = await fetch(chartUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+      "Accept": "application/json",
+    },
+  });
+  let body = null;
+  try { body = await r.json(); } catch (e) {}
+  const result = body && body.chart && body.chart.result && body.chart.result[0];
+  if (!r.ok || !result || !result.meta || result.meta.regularMarketPrice == null) {
+    const apiErr = body && body.chart && body.chart.error && body.chart.error.description;
+    throw { status: r.ok ? 422 : 502, message: apiErr || `Yahoo respondió ${r.status} o sin precio para "${ticker}".` };
+  }
+  const meta = result.meta;
+  const asOf = meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString().slice(0, 10) : null;
+  return { price: meta.regularMarketPrice, currency: meta.currency || "EUR", asOf };
+}
+
+// Resolución ISIN→ticker de Yahoo, mismo patrón que con Finect: Tavily
+// buscando dentro de finance.yahoo.com, y se extrae el ticker del propio
+// path "/quote/{TICKER}/" del resultado.
+async function resolveTickerViaTavily(isin) {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) {
+    throw { status: 500, message: "Falta TAVILY_API_KEY como variable de entorno en Vercel." };
+  }
+  const r = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: isin,
+      search_depth: "basic",
+      max_results: 5,
+      include_domains: ["finance.yahoo.com"],
+    }),
+  });
+  let body = null;
+  try { body = await r.json(); } catch (e) {}
+  if (!r.ok) {
+    const msg = (body && (body.detail || body.message || body.error)) || `Tavily respondió ${r.status}`;
+    throw { status: r.status === 429 ? 429 : 502, message: typeof msg === "string" ? msg : JSON.stringify(msg) };
+  }
+  const results = (body && body.results) || [];
+  for (const it of results) {
+    const m = it.url && it.url.match(/\/quote\/([^/?]+)/i);
+    if (m) return decodeURIComponent(m[1]);
+  }
+  throw { status: 404, message: "No se encontró ticker de Yahoo para ese ISIN — prueba a buscarlo/ponerlo a mano." };
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  const { url, isin } = req.query;
+  const { url, isin, ticker, yisin } = req.query;
 
   try {
     if (url && typeof url === "string") {
@@ -141,7 +201,21 @@ export default async function handler(req, res) {
       return res.status(200).json({ url: resolvedUrl, ...q, source: "finect" });
     }
 
-    return res.status(400).json({ error: "Falta el parámetro 'url' o 'isin'." });
+    if (ticker && typeof ticker === "string") {
+      const q = await fetchYahooPrice(ticker.trim());
+      return res.status(200).json({ ticker: ticker.trim(), ...q, source: "yahoo" });
+    }
+
+    if (yisin && typeof yisin === "string") {
+      if (!/^[A-Za-z]{2}[A-Za-z0-9]{9}\d$/.test(yisin)) {
+        return res.status(400).json({ error: "Parámetro 'yisin' con formato inválido." });
+      }
+      const resolvedTicker = await resolveTickerViaTavily(yisin);
+      const q = await fetchYahooPrice(resolvedTicker);
+      return res.status(200).json({ ticker: resolvedTicker, ...q, source: "yahoo" });
+    }
+
+    return res.status(400).json({ error: "Falta el parámetro 'url', 'isin', 'ticker' o 'yisin'." });
   } catch (e) {
     const status = (e && e.status) || 500;
     const message = (e && e.message) || String(e);
