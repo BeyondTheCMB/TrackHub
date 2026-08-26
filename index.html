@@ -15249,7 +15249,7 @@
       [/CONTRASPLIT-ALTA/i, "split_in"],
       [/CONTRASPLIT-BAJA/i, "split_out"],
       [/DIVIDENDO/i, "dividend"],
-      [/SUSCRIP/i, "buy"],   // SUSCRIPCION, SUSCRIP.POR TRASPASO…
+      [/SUSCR/i, "buy"],     // SUSCRIPCION, SUSCR.POR TRASPASO I, SUSCRIP.POR TRASPASO…
       [/REEMB/i, "sell"],    // REEMBOLSO, REEMB.POR TRASPASO I…
       [/^COMPRA/i, "buy"],
       [/^VENTA/i, "sell"],
@@ -15322,6 +15322,132 @@
       return { txs, warnings };
     }
 
+    // ── Portfolio Performance — exportación XML nativa (.xml) ──────────────
+    // Formato muy distinto del xlsx plano de arriba: es el volcado completo
+    // del modelo interno de PP, con objetos deduplicados al estilo XStream —
+    // la primera vez que aparece un elemento se escribe entero; las
+    // siguientes veces se sustituye por <tag reference="../ruta/relativa"/>.
+    // Cada "../" sube un nodo padre; el resto de segmentos desciende por
+    // nombre de etiqueta (+ índice 1-based entre corchetes si hay varios).
+    // La ruta es relativa al propio nodo que lleva el atributo, no a su
+    // padre — verificado contra el documento real, no asumido.
+    //
+    // Cada compra/venta genera DOS objetos enlazados (el lado de caja en
+    // la cuenta y el lado de título en la cartera); se toma el importe y
+    // los títulos del lado portfolio-transaction para no duplicar cada
+    // operación, y los eventos de caja pura (aportaciones, dividendos...)
+    // se leen directamente de los account-transaction que no son buysell.
+    // querySelector/querySelectorAll no son fiables sobre XML en Chromium,
+    // así que todo el recorrido es manual sobre childNodes.
+    function vsXmlChildren(el, tag) {
+      const out = [];
+      for (let i = 0; i < el.childNodes.length; i++) {
+        const n = el.childNodes[i];
+        if (n.nodeType === 1 && n.tagName === tag) out.push(n);
+      }
+      return out;
+    }
+    function vsXmlChild(el, tag) { return vsXmlChildren(el, tag)[0] || null; }
+    function vsXmlText(el, tag) {
+      const c = vsXmlChild(el, tag);
+      return c ? c.textContent : null;
+    }
+    function vsXmlResolveRef(el) {
+      const ref = el.getAttribute("reference");
+      if (!ref) return el;
+      let cur = el;
+      for (const part of ref.split("/")) {
+        if (part === "" || part === ".") continue;
+        if (part === "..") { cur = cur.parentNode; continue; }
+        const m = part.match(/^([a-zA-Z-]+)(?:\[(\d+)\])?$/);
+        if (!m || !cur) return null;
+        const idx = m[2] ? parseInt(m[2], 10) - 1 : 0;
+        cur = vsXmlChildren(cur, m[1])[idx] || null;
+      }
+      return cur;
+    }
+    const VS_PP_XML_TYPE_MAP = {
+      BUY: "buy", SELL: "sell", DIVIDENDS: "dividend", DEPOSIT: "deposit",
+      REMOVAL: "withdrawal", INTEREST: "interest", INTEREST_CHARGE: "fee",
+      FEES: "fee", FEES_REFUND: "deposit", TAXES: "tax", TAX_REFUND: "deposit",
+    };
+    function vsSecurityInfo(secEl) {
+      if (!secEl) return { name: "", isin: null, currency: null };
+      const resolved = vsXmlResolveRef(secEl);
+      if (!resolved) return { name: "(valor no resuelto)", isin: null, currency: null };
+      return {
+        name: vsXmlText(resolved, "name") || "",
+        isin: vsXmlText(resolved, "isin"),
+        currency: vsXmlText(resolved, "currencyCode"),
+      };
+    }
+    function vsParsePPXmlDoc(doc) {
+      const txs = [], warnings = [];
+      const client = doc.documentElement;
+      const accountsEl = vsXmlChild(client, "accounts");
+      if (!accountsEl) return { txs, warnings: ["No se encontró <accounts> en el XML — ¿es una exportación de Portfolio Performance?"] };
+
+      for (const acc of vsXmlChildren(accountsEl, "account")) {
+        const accName = vsXmlText(acc, "name") || "Cuenta";
+        const accountLabel = `PP · ${accName}`;
+        const txsEl = vsXmlChild(acc, "transactions");
+        if (!txsEl) continue;
+        const accountTxEls = vsXmlChildren(txsEl, "account-transaction");
+
+        for (const at of accountTxEls) {
+          if (at.getAttribute("reference")) continue;
+          const typeEl = vsXmlChild(at, "type");
+          if (!typeEl) continue;
+          const crossEntry = vsXmlChild(at, "crossEntry");
+          if (crossEntry && crossEntry.getAttribute("class") === "buysell") continue;
+          const rawType = typeEl.textContent;
+          const type = VS_PP_XML_TYPE_MAP[rawType] || "unknown";
+          if (type === "unknown") warnings.push(`Cuenta "${accName}": tipo de operación no reconocido "${rawType}" — revisar manualmente.`);
+          const secInfo = vsSecurityInfo(vsXmlChild(at, "security"));
+          txs.push({
+            id: null, date: vsToISODate(vsXmlText(at, "date")), type,
+            isin: secInfo.isin, name: secInfo.name, shares: null, price: null,
+            amount: vsNum(vsXmlText(at, "amount")) / 100, fees: null, taxes: null,
+            currency: vsXmlText(at, "currencyCode") || secInfo.currency || "EUR",
+            account: accountLabel, source: "pp_xml", rawType, ref: vsXmlText(at, "uuid"),
+            market: null, cashImpact: true, note: null,
+          });
+        }
+
+        const seenPortfolios = new Set();
+        for (const at of accountTxEls) {
+          if (at.getAttribute("reference")) continue;
+          const crossEntry = vsXmlChild(at, "crossEntry");
+          if (!crossEntry || crossEntry.getAttribute("class") !== "buysell") continue;
+          const pf = vsXmlChild(crossEntry, "portfolio");
+          if (!pf || pf.getAttribute("reference")) continue;
+          const pfUuid = vsXmlText(pf, "uuid");
+          if (seenPortfolios.has(pfUuid)) continue;
+          seenPortfolios.add(pfUuid);
+          const pfName = vsXmlText(pf, "name") || "Cartera";
+          const pfTxsEl = vsXmlChild(pf, "transactions");
+          if (!pfTxsEl) continue;
+          for (const pt of vsXmlChildren(pfTxsEl, "portfolio-transaction")) {
+            const rawType = vsXmlText(pt, "type");
+            const type = VS_PP_XML_TYPE_MAP[rawType] || "unknown";
+            if (type === "unknown") warnings.push(`Cartera "${pfName}": tipo no reconocido "${rawType}" — revisar manualmente.`);
+            const secInfo = vsSecurityInfo(vsXmlChild(pt, "security"));
+            const amount = vsNum(vsXmlText(pt, "amount")) / 100;
+            const shares = vsNum(vsXmlText(pt, "shares")) / 1e8;
+            txs.push({
+              id: null, date: vsToISODate(vsXmlText(pt, "date")), type,
+              isin: secInfo.isin, name: secInfo.name, shares,
+              price: shares ? amount / shares : null, amount, fees: null, taxes: null,
+              currency: vsXmlText(pt, "currencyCode") || secInfo.currency || "EUR",
+              account: `PP · ${pfName}`, source: "pp_xml", rawType,
+              ref: vsXmlText(pt, "uuid"), market: null, cashImpact: true, note: null,
+            });
+          }
+        }
+      }
+      return { txs, warnings };
+    }
+
     // ── Lectura de fichero → filas de hoja (SheetJS) ───────────────────────
     // El export de fondos de Inversis es en realidad HTML con extensión
     // .xls declarando charset=iso-8859-1, mientras que el de valores/ETF es
@@ -15349,12 +15475,65 @@
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
       return vsParseInversisRows(rows, { source: "inversis" });
     }
+    // ── Portfolio Performance — exportación CSV plana (mismo esquema que el
+    // xlsx de vsParsePPRows, pero delimitado por ";" y con coma decimal —
+    // configuración regional española de PP). vsNum ya admite coma decimal
+    // (reemplaza "," por "."), así que basta con un parser CSV genérico
+    // (comillas dobles con escape "", CRLF) que produzca filas y reusar
+    // vsParsePPRows tal cual.
+    function vsParseCSV(text, delimiter) {
+      const rows = [];
+      let row = [], field = "", inQuotes = false, i = 0;
+      const n = text.length;
+      while (i < n) {
+        const c = text[i];
+        if (inQuotes) {
+          if (c === '"') {
+            if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+            inQuotes = false; i++; continue;
+          }
+          field += c; i++; continue;
+        }
+        if (c === '"') { inQuotes = true; i++; continue; }
+        if (c === delimiter) { row.push(field); field = ""; i++; continue; }
+        if (c === "\r") { i++; continue; }
+        if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+        field += c; i++;
+      }
+      if (field !== "" || row.length > 0) { row.push(field); rows.push(row); }
+      return rows.filter(r => !(r.length === 1 && r[0] === ""));
+    }
+
+    // Portfolio Performance ofrece tres exportaciones muy distintas: el xlsx
+    // plano de movimientos (vsParsePPRows), el CSV plano con el mismo
+    // esquema (vsParseCSV + vsParsePPRows), y el XML completo del modelo
+    // interno (vsParsePPXmlDoc) — se detecta por contenido, no por extensión,
+    // para que "Portfolio Performance" sea una sola opción sin preguntar cuál es.
     async function vsImportPP(file) {
       const buf = await vsReadFileAsArrayBuffer(file);
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+      const bytes = new Uint8Array(buf);
+      const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b; // xlsx real
+      if (isZip) {
+        const wb = XLSX.read(buf, { type: "array", cellDates: true });
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+        return vsParsePPRows(rows, { source: "pp", account: "Portfolio Performance" });
+      }
+      const text = new TextDecoder("utf-8").decode(buf);
+      if (text.trimStart().startsWith("<")) {
+        const doc = new DOMParser().parseFromString(text, "application/xml");
+        // getElementsByTagName en vez de querySelector: en Chromium,
+        // querySelector/querySelectorAll no son fiables sobre documentos XML.
+        const parseErrors = doc.getElementsByTagName("parsererror");
+        if (parseErrors.length > 0 || !doc.documentElement || doc.documentElement.tagName !== "client") {
+          throw new Error("El archivo XML no parece una exportación de Portfolio Performance (<client>).");
+        }
+        return vsParsePPXmlDoc(doc);
+      }
+      const delimiter = text.slice(0, text.indexOf("\n")).includes(";") ? ";" : ",";
+      const rows = vsParseCSV(text, delimiter);
       return vsParsePPRows(rows, { source: "pp", account: "Portfolio Performance" });
     }
+
 
     const vsTxId = () => "tx_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
@@ -15544,7 +15723,7 @@
     // ─── Pestaña "Cartera" ──────────────────────────────────────────────────
     const VS_IMPORT_SOURCES = {
       myinvestor: { label: "MyInvestor", importer: vsImportMyInvestor, accept: ".xls,.xlsx" },
-      pp: { label: "Portfolio Performance", importer: vsImportPP, accept: ".xlsx" },
+      pp: { label: "Portfolio Performance", importer: vsImportPP, accept: ".xlsx,.xml,.csv" },
     };
 
     function VsCarteraTab({ portfolio, onSave }) {
