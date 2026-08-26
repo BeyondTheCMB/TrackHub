@@ -15570,7 +15570,13 @@
       const res = await fetch(`/api/vesta-quotes?isin=${encodeURIComponent(isin)}`);
       let body = null;
       try { body = await res.json(); } catch (e) {}
-      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al resolver el ISIN`);
+      if (!res.ok || !body) {
+        const base = (body && body.error) || `Error ${res.status} al resolver el ISIN`;
+        // Si el proxy adjuntó un fragmento de la respuesta cruda de
+        // DuckDuckGo (p.ej. una página de bloqueo/captcha), se muestra
+        // detrás — ayuda a diagnosticar sin tener que ir a los logs de Vercel.
+        throw new Error(body && body.ddgBody ? `${base} — respuesta: ${body.ddgBody.slice(0, 200)}` : base);
+      }
       return body; // { url, price, currency, asOf, source }
     }
 
