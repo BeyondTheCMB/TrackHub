@@ -70,14 +70,22 @@ function extractFinectUrlFromDDG(html, isin) {
 }
 
 async function resolveIsinViaDDG(isin) {
-  const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:finect.com ${isin}`)}`;
+  // lite.duckduckgo.com en vez de html.duckduckgo.com: es el endpoint que
+  // usa su versión "sin JS", con menos protección anti-bot que la versión
+  // completa — no hay garantía de que esto sortee el bloqueo si es un
+  // bloqueo por rango de IP (habitual contra IPs de centros de datos como
+  // las de Vercel/AWS), pero es la vía más razonable a probar primero.
+  const ddgUrl = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(`site:finect.com ${isin}`)}`;
   const r = await fetch(ddgUrl, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      "Accept-Language": "es-ES,es;q=0.9",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+      "Referer": "https://lite.duckduckgo.com/",
+      "Sec-Fetch-Mode": "navigate",
     },
   });
-  if (!r.ok) throw { status: 502, message: `La búsqueda respondió ${r.status}` };
+  if (!r.ok) throw { status: 502, message: `La búsqueda respondió ${r.status}`, ddgBody: (await r.text()).slice(0, 500) };
   const html = await r.text();
   const url = extractFinectUrlFromDDG(html, isin);
   if (!url) throw { status: 404, message: "No se encontró ficha en Finect para ese ISIN — prueba a buscarlo a mano." };
@@ -125,6 +133,11 @@ export default async function handler(req, res) {
   } catch (e) {
     const status = (e && e.status) || 500;
     const message = (e && e.message) || String(e);
-    return res.status(status).json({ error: message });
+    // ddgBody: primeros caracteres de la respuesta cruda de DuckDuckGo
+    // cuando la búsqueda falla — para poder ver en la propia consola del
+    // navegador si es una página de bloqueo/captcha, y no tener que ir a
+    // buscarlo en los logs de Vercel.
+    const extra = (e && e.ddgBody) ? { ddgBody: e.ddgBody } : {};
+    return res.status(status).json({ error: message, ...extra });
   }
 }
