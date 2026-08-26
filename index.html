@@ -15571,8 +15571,23 @@
     }
 
     // ─── Formulario de alta manual ─────────────────────────────────────────
-    function VsManualTxForm({ accounts, securities, onAdd, onCancel }) {
-      const [f, setF] = useState({ date: "", type: "buy", securityIsin: "", isin: "", name: "", shares: "", amount: "", account: accounts[0] || "", currency: "EUR", note: "" });
+    function VsManualTxForm({ accounts, securities, initial, submitLabel, onAdd, onCancel }) {
+      const initF = () => {
+        if (!initial) return { date: "", type: "buy", securityIsin: "", isin: "", name: "", shares: "", amount: "", account: accounts[0] || "", currency: "EUR", note: "" };
+        // Si el ISIN de la transacción ya está en el catálogo, se
+        // preselecciona como "valor conocido"; si no (o no tiene ISIN),
+        // se editan nombre/ISIN a mano igual que para uno nuevo.
+        const knownIsin = initial.isin && securities.some(s => s.isin === initial.isin) ? initial.isin : "";
+        return {
+          date: initial.date || "", type: initial.type || "buy",
+          securityIsin: knownIsin, isin: initial.isin || "", name: initial.name || "",
+          shares: initial.shares != null ? String(initial.shares) : "",
+          amount: initial.amount != null ? String(initial.amount) : "",
+          account: initial.account || accounts[0] || "", currency: initial.currency || "EUR",
+          note: initial.note || "",
+        };
+      };
+      const [f, setF] = useState(initF);
       const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12 };
       const labelStyle = { display: "block", fontSize: 11, color: "#7a90a8", margin: "10px 0 4px", fontWeight: 500 };
@@ -15595,8 +15610,15 @@
           date: f.date, type: f.type, isin: sec.isin, name: sec.name,
           shares: needsShares ? vsNum(f.shares) : null,
           price: needsShares && vsNum(f.shares) && vsNum(f.amount) ? vsNum(f.amount) / vsNum(f.shares) : null,
-          amount: vsNum(f.amount), fees: null, taxes: null, currency: sec.currency,
-          account: f.account.trim() || "Manual", source: "manual", rawType: null, ref: null, market: null,
+          amount: vsNum(f.amount), fees: initial ? initial.fees : null, taxes: initial ? initial.taxes : null,
+          currency: sec.currency, account: f.account.trim() || "Manual",
+          // Al editar una transacción importada se conserva su procedencia
+          // (source/ref/rawType/market) — solo cambian los campos que el
+          // formulario deja tocar. Una nueva sí queda marcada como manual.
+          source: initial ? initial.source : "manual",
+          rawType: initial ? initial.rawType : null,
+          ref: initial ? initial.ref : null,
+          market: initial ? initial.market : null,
           cashImpact: VS_CASH_IMPACT[f.type], note: f.note.trim() || null,
         });
       };
@@ -15660,7 +15682,7 @@
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
             <button onClick={handleSave} disabled={!canSave}
               style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 700, cursor: canSave ? "pointer" : "not-allowed", opacity: canSave ? 1 : 0.4 }}>
-              Guardar transacción
+              {submitLabel || "Guardar transacción"}
             </button>
             <button onClick={onCancel}
               style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "9px 14px", fontSize: 12, cursor: "pointer" }}>
@@ -15729,7 +15751,8 @@
     }
 
     // ─── Tabla de transacciones guardadas ──────────────────────────────────
-    function VsTxTable({ transactions, onDelete }) {
+    function VsTxTable({ transactions, accounts, securities, onDelete, onEdit }) {
+      const [editingId, setEditingId] = useState(null);
       if (transactions.length === 0) {
         return <div style={{ textAlign: "center", padding: "28px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>Sin transacciones aún.</div>;
       }
@@ -15746,22 +15769,40 @@
             </thead>
             <tbody>
               {transactions.map(t => (
-                <tr key={t.id}>
-                  <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{t.date}</td>
-                  <td style={cellStyle}><VsTxTypeBadge type={t.type} /></td>
-                  <td style={{ ...cellStyle, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.name}>{t.name}</td>
-                  <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{t.shares != null ? t.shares : "—"}</td>
-                  <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{t.amount != null ? t.amount.toFixed(2) : "—"} {t.currency}</td>
-                  <td style={{ ...cellStyle, color: "#7a90a8", fontSize: 11, whiteSpace: "nowrap" }}>{t.account}</td>
-                  <td style={{ ...cellStyle, color: "#3a4550", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>{t.source}</td>
-                  <td style={cellStyle}>
-                    <button onClick={() => onDelete(t.id)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 11, cursor: "pointer" }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>
-                      quitar
-                    </button>
-                  </td>
-                </tr>
+                <React.Fragment key={t.id}>
+                  <tr>
+                    <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{t.date}</td>
+                    <td style={cellStyle}><VsTxTypeBadge type={t.type} /></td>
+                    <td style={{ ...cellStyle, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.name}>{t.name}</td>
+                    <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{t.shares != null ? t.shares : "—"}</td>
+                    <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{t.amount != null ? t.amount.toFixed(2) : "—"} {t.currency}</td>
+                    <td style={{ ...cellStyle, color: "#7a90a8", fontSize: 11, whiteSpace: "nowrap" }}>{t.account}</td>
+                    <td style={{ ...cellStyle, color: "#3a4550", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>{t.source}</td>
+                    <td style={{ ...cellStyle, whiteSpace: "nowrap" }}>
+                      <button onClick={() => setEditingId(editingId === t.id ? null : t.id)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 11, cursor: "pointer", marginRight: 6 }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = VS_A; e.currentTarget.style.color = VS_A; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>
+                        {editingId === t.id ? "cerrar" : "editar"}
+                      </button>
+                      <button onClick={() => onDelete(t.id)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 11, cursor: "pointer" }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>
+                        quitar
+                      </button>
+                    </td>
+                  </tr>
+                  {editingId === t.id && (
+                    <tr>
+                      <td colSpan={8} style={{ padding: "10px 0", borderBottom: "1px solid #1a2535" }}>
+                        <VsManualTxForm
+                          accounts={accounts} securities={securities} initial={t} submitLabel="Guardar cambios"
+                          onAdd={patch => { onEdit(t.id, patch); setEditingId(null); }}
+                          onCancel={() => setEditingId(null)}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -15976,6 +16017,16 @@
         await onSave(next);
       };
 
+      const updateTx = async (id, patch) => {
+        // Si el ISIN cambió o es uno nuevo, se registra/actualiza también
+        // en el catálogo — igual que al añadir una transacción manual.
+        const nextSecurities = patch.isin
+          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null } }
+          : securitiesCatalog;
+        const next = { ...portfolio, transactions: transactions.map(t => t.id === id ? { ...t, ...patch } : t), securities: nextSecurities };
+        await onSave(next);
+      };
+
       // Solo para pruebas mientras se valida la importación — vacía todas
       // las transacciones de golpe. No toca el catálogo de valores, ya
       // registrado, para no tener que renombrarlos otra vez.
@@ -16137,7 +16188,7 @@
                   </button>
                 </div>
               </div>
-              <VsTxTable transactions={filtered} onDelete={deleteTx} />
+              <VsTxTable transactions={filtered} accounts={accounts} securities={securitiesList} onDelete={deleteTx} onEdit={updateTx} />
             </div>
           </div>
         </div>
