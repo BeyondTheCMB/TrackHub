@@ -15837,6 +15837,15 @@
         await onSave(next);
       };
 
+      // Solo para pruebas mientras se valida la importación — vacía todas
+      // las transacciones de golpe. No toca el catálogo de valores, ya
+      // registrado, para no tener que renombrarlos otra vez.
+      const deleteAllTx = async () => {
+        if (transactions.length === 0) return;
+        if (!window.confirm(`¿Eliminar las ${transactions.length} transacciones? Esta acción no se puede deshacer.`)) return;
+        await onSave({ ...portfolio, transactions: [] });
+      };
+
       const addManual = async (tx) => {
         const nextSecurities = tx.isin
           ? { ...securitiesCatalog, [tx.isin]: { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR" } }
@@ -15964,6 +15973,11 @@
                     <option value="all">Todos los tipos</option>
                     {VS_TX_TYPES.map(t => <option key={t} value={t}>{VS_TX_TYPE_LABEL[t]}</option>)}
                   </select>
+                  <button onClick={deleteAllTx} disabled={transactions.length === 0}
+                    title="Solo para pruebas: elimina todas las transacciones"
+                    style={{ background: "none", border: "1px solid #7a1f1f", color: "#f87171", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: transactions.length ? "pointer" : "not-allowed", opacity: transactions.length ? 1 : 0.4 }}>
+                    vaciar todas
+                  </button>
                 </div>
               </div>
               <VsTxTable transactions={filtered} onDelete={deleteTx} />
@@ -15987,8 +16001,8 @@
           { id: "cartera", label: "Cartera", icon: "💼" },
         ]},
       ];
-      const [section, setSection] = useState("fondos");
-      const [tab, setTab] = useState("pool");
+      const [section, setSection] = useState("cartera");
+      const [tab, setTab] = useState("cartera");
       const [factors, setFactors] = useState({});
       const [funds, setFunds] = useState({});
       const [portfolio, setPortfolio] = useState({ transactions: [], securities: {} });
