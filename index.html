@@ -15809,7 +15809,7 @@
     }
 
     // ─── Fila de un valor en el catálogo — precio auto (Finect) o manual ──
-    function VsSecurityRow({ security, onUpdate }) {
+    function VsSecurityRow({ security, showFinect, moveLabel, onMove, onUpdate }) {
       const [urlDraft, setUrlDraft] = useState(security.finectUrl || "");
       const [fetching, setFetching] = useState(false);
       const [fetchError, setFetchError] = useState("");
@@ -15841,19 +15841,21 @@
       const cellStyle = { padding: "8px 8px", borderBottom: "1px solid #1a2535", verticalAlign: "top" };
       return (
         <tr>
-          <td style={{ ...cellStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={security.name}>
+          <td style={{ ...cellStyle, width: 170, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={security.name}>
             {security.name}
             <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#5a7080" }}>{security.isin}</div>
           </td>
-          <td style={cellStyle}>
-            <div style={{ display: "flex", gap: 6 }}>
-              <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="pega aquí la URL de Finect"
-                style={{ flex: 1, minWidth: 160, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 7px", fontSize: 11 }} />
-              <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: 11, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>buscar ↗</a>
-            </div>
-            {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
-          </td>
+          {showFinect && (
+            <td style={cellStyle}>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="pega aquí la URL de Finect"
+                  style={{ flex: 1, minWidth: 140, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 7px", fontSize: 11 }} />
+                <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 11, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>buscar ↗</a>
+              </div>
+              {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
+            </td>
+          )}
           <td style={cellStyle}>
             {editingManual ? (
               <div style={{ display: "flex", gap: 6 }}>
@@ -15879,11 +15881,14 @@
               </>
             ) : (
               <>
-                <button onClick={refresh} disabled={!security.finectUrl || fetching}
-                  style={{ background: "none", border: "1px solid #1a2535", color: security.finectUrl ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: security.finectUrl && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
-                  {fetching ? "…" : "actualizar"}
-                </button>
-                <button onClick={() => setEditingManual(true)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>manual</button>
+                {showFinect && (
+                  <button onClick={refresh} disabled={!security.finectUrl || fetching}
+                    style={{ background: "none", border: "1px solid #1a2535", color: security.finectUrl ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: security.finectUrl && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
+                    {fetching ? "…" : "actualizar"}
+                  </button>
+                )}
+                <button onClick={() => setEditingManual(true)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer", marginRight: 6 }}>manual</button>
+                <button onClick={onMove} title={moveLabel} style={{ background: "none", border: "1px solid #1a2535", color: "#5a7080", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>{moveLabel}</button>
               </>
             )}
           </td>
@@ -15891,7 +15896,7 @@
       );
     }
 
-    function VsSecuritiesPanel({ securities, onUpdateSecurity }) {
+    function VsSecuritiesPanel({ title, securities, showFinect, moveLabel, onMove, onUpdateSecurity }) {
       const [open, setOpen] = useState(false);
       if (securities.length === 0) return null;
       const priced = securities.filter(s => s.price != null).length;
@@ -15899,22 +15904,25 @@
         <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setOpen(v => !v)}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>
-              Valores <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12, fontFamily: "'DM Mono',monospace" }}>({priced} de {securities.length} con precio)</span>
+              {title} <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12, fontFamily: "'DM Mono',monospace" }}>({priced} de {securities.length} con precio)</span>
             </div>
             <span style={{ color: "#7a90a8", fontSize: 12 }}>{open ? "ocultar ▲" : "mostrar ▼"}</span>
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 680 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: showFinect ? 560 : 380 }}>
                 <thead>
                   <tr>
-                    {["Valor", "Ficha de Finect", "Precio", ""].map((h, i) => (
+                    {(showFinect ? ["Valor", "URL Finect", "Precio", ""] : ["Valor", "Precio", ""]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {securities.map(s => <VsSecurityRow key={s.isin} security={s} onUpdate={patch => onUpdateSecurity(s.isin, patch)} />)}
+                  {securities.map(s => (
+                    <VsSecurityRow key={s.isin} security={s} showFinect={showFinect} moveLabel={moveLabel}
+                      onMove={() => onMove(s.isin)} onUpdate={patch => onUpdateSecurity(s.isin, patch)} />
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -15936,6 +15944,13 @@
         () => Object.values(securitiesCatalog).sort((a, b) => a.name.localeCompare(b.name)),
         [securitiesCatalog]
       );
+      // Fondos usan Finect (ISIN→ficha); acciones/ETF no tienen ficha en
+      // Finect y se gestionarán vía Yahoo — de ahí la separación en dos
+      // paneles. assetType ausente (valores creados antes de este campo)
+      // se trata como fondo por defecto; se puede mover con el botón de
+      // cada fila.
+      const fundsList = useMemo(() => securitiesList.filter(s => (s.assetType || "fund") === "fund"), [securitiesList]);
+      const stocksList = useMemo(() => securitiesList.filter(s => s.assetType === "stock"), [securitiesList]);
       const [staged, setStaged] = useState([]);
       const [warnings, setWarnings] = useState([]);
       const [importing, setImporting] = useState(false);
@@ -15969,7 +15984,7 @@
           setNewSecurityDrafts(prev => {
             const next = { ...prev };
             for (const t of txs) {
-              if (t.isin && !securitiesCatalog[t.isin] && !(t.isin in next)) next[t.isin] = { name: t.name || "", finectUrl: "" };
+              if (t.isin && !securitiesCatalog[t.isin] && !(t.isin in next)) next[t.isin] = { name: t.name || "", finectUrl: "", assetType: "fund" };
             }
             return next;
           });
@@ -16000,6 +16015,7 @@
             isin, name, currency: tx.currency || "EUR",
             finectUrl: (draft.finectUrl || "").trim() || null,
             price: null, priceCurrency: null, priceAsOf: null, priceSource: null,
+            assetType: draft.assetType || "fund",
           };
         }
         const renamedCommit = toCommit.map(t => t.isin && nextSecurities[t.isin] ? { ...t, name: nextSecurities[t.isin].name } : t);
@@ -16019,7 +16035,7 @@
         // Si el ISIN cambió o es uno nuevo, se registra/actualiza también
         // en el catálogo — igual que al añadir una transacción manual.
         const nextSecurities = patch.isin
-          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null } }
+          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
           : securitiesCatalog;
         const next = { ...portfolio, transactions: transactions.map(t => t.id === id ? { ...t, ...patch } : t), securities: nextSecurities };
         await onSave(next);
@@ -16036,7 +16052,7 @@
 
       const addManual = async (tx) => {
         const nextSecurities = tx.isin
-          ? { ...securitiesCatalog, [tx.isin]: securitiesCatalog[tx.isin] || { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null } }
+          ? { ...securitiesCatalog, [tx.isin]: securitiesCatalog[tx.isin] || { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR", finectUrl: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
           : securitiesCatalog;
         const next = { ...portfolio, transactions: [...transactions, { ...tx, id: vsTxId() }], securities: nextSecurities };
         await onSave(next);
@@ -16046,6 +16062,12 @@
       const updateSecurity = async (isin, patch) => {
         const next = { ...portfolio, securities: { ...securitiesCatalog, [isin]: { ...securitiesCatalog[isin], ...patch } } };
         await onSave(next);
+      };
+
+      const moveSecurityType = (isin) => {
+        const current = securitiesCatalog[isin];
+        const newType = (current.assetType || "fund") === "fund" ? "stock" : "fund";
+        updateSecurity(isin, { assetType: newType });
       };
 
       const accounts = useMemo(() => [...new Set(transactions.map(t => t.account))].sort(), [transactions]);
@@ -16113,7 +16135,8 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsSecuritiesPanel securities={securitiesList} onUpdateSecurity={updateSecurity} />
+            <VsSecuritiesPanel title="Fondos" securities={fundsList} showFinect={true} moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} />
+            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} showFinect={false} moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} />
           </div>
 
           <div>
@@ -16145,15 +16168,26 @@
                         onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], name: e.target.value } }))}
                       />
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "140px 1fr auto", gap: 10, alignItems: "center" }}>
-                      <div style={{ fontSize: 10, color: "#5a7080" }}>URL de Finect</div>
-                      <input
+                    <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center", marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: "#5a7080" }}>Tipo</div>
+                      <select
                         style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 9px", fontSize: 11 }}
-                        type="text" value={draft.finectUrl} placeholder="opcional — pega aquí la ficha"
-                        onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: e.target.value } }))}
-                      />
-                      <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: VS_A, whiteSpace: "nowrap" }}>buscar ↗</a>
+                        value={draft.assetType} onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], assetType: e.target.value } }))}>
+                        <option value="fund">Fondo</option>
+                        <option value="stock">Acción / ETF</option>
+                      </select>
                     </div>
+                    {draft.assetType === "fund" && (
+                      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr auto", gap: 10, alignItems: "center" }}>
+                        <div style={{ fontSize: 10, color: "#5a7080" }}>URL de Finect</div>
+                        <input
+                          style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 9px", fontSize: 11 }}
+                          type="text" value={draft.finectUrl} placeholder="opcional — pega aquí la ficha"
+                          onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: e.target.value } }))}
+                        />
+                        <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: VS_A, whiteSpace: "nowrap" }}>buscar ↗</a>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
