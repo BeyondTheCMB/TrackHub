@@ -1,28 +1,30 @@
 // api/vesta-quotes.js — Vercel serverless proxy para Vesta · Cartera.
+//// api/vesta-quotes.js — Vercel serverless proxy para Vesta · Cartera.
 //
 // Dos modos, según el parámetro que llegue:
 //   ?url=<ficha de Finect>   → lee el precio de esa ficha concreta.
 //   ?isin=<ISIN>             → resuelve el ISIN a una ficha de Finect vía
-//                               la API oficial de Google Custom Search, y
-//                               de paso devuelve ya su precio.
+//                               la API oficial de Tavily, y de paso
+//                               devuelve ya su precio.
 //
-// Por qué la API oficial y no scraping del buscador: se probó scraping
-// directo de DuckDuckGo (y antes se pensó en Google) desde el propio
-// proxy — bloqueado de forma deliberada por ser tráfico desde IP de
-// datacenter (Vercel/AWS), confirmado con la página de error real, no una
-// suposición. La API de Google Custom Search es tráfico autorizado (con
-// clave), así que no choca con eso — el coste es depender de una clave y
-// de una cuota (100 consultas/día en el nivel gratuito), más que
-// suficiente para algo que solo se dispara una vez por valor nuevo.
+// Por qué Tavily y no otra cosa: se probaron tres vías antes de esta,
+// todas descartadas por límites reales, no por error de configuración:
+//   - Scraping de DuckDuckGo desde el proxy: bloqueado por ser tráfico de
+//     IP de datacenter (Vercel/AWS) — confirmado con la página de error
+//     real de DuckDuckGo.
+//   - API de Bing Search: retirada por Microsoft el 11 de agosto de 2025,
+//     sin altas nuevas ni reemplazo directo.
+//   - API oficial de Google Custom Search JSON: cerrada a proyectos
+//     nuevos durante 2026 — 403 aunque todo esté bien configurado.
+// Tavily es una API pensada para búsquedas programáticas (agentes/IA), con
+// plan gratuito de 1.000 consultas/mes sin tarjeta — de sobra para algo
+// que solo se dispara una vez por valor nuevo. Su plan gratuito también
+// podría cambiar en el futuro (como le pasó a Brave a mitad de 2026); si
+// deja de estar disponible, el 🔍 manual sigue siendo la vía segura.
 //
 // ── Configuración necesaria en Vercel (Settings → Environment Variables) ──
-//   GOOGLE_CSE_API_KEY  → clave de la API de Google Cloud Console, con la
-//                          "Custom Search API" habilitada.
-//   GOOGLE_CSE_CX       → ID del motor de búsqueda programable creado en
-//                          https://programmablesearchengine.google.com/
-//                          (recomendado: configurarlo para buscar solo en
-//                          finect.com, así basta con mandar el ISIN como
-//                          consulta sin necesidad de "site:").
+//   TAVILY_API_KEY  → clave gratuita de https://tavily.com (empieza por
+//                      "tvly-"), sin necesidad de tarjeta.
 //
 // AVISO: la extracción del precio se hace convirtiendo el HTML a texto
 // plano (quitando etiquetas) y aplicando una expresión regular sobre ese
@@ -74,7 +76,7 @@ async function fetchFinectPrice(url) {
 
 // Normaliza la URL: recorta espacios, admite http(s) y con/sin "www.", y
 // con/sin protocolo — cubre tanto lo que alguien pegue a mano como lo que
-// devuelva la API de Google.
+// devuelva Tavily.
 function normalizeFinectUrl(raw) {
   const trimmed = String(raw).trim();
   const m = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?finect\.com\/fondos-inversion\/(.+)$/i);
@@ -82,30 +84,35 @@ function normalizeFinectUrl(raw) {
   return `https://www.finect.com/fondos-inversion/${m[1]}`;
 }
 
-async function resolveIsinViaGoogleCSE(isin) {
-  const apiKey = process.env.GOOGLE_CSE_API_KEY;
-  const cx = process.env.GOOGLE_CSE_CX;
-  if (!apiKey || !cx) {
-    throw { status: 500, message: "Faltan GOOGLE_CSE_API_KEY / GOOGLE_CSE_CX como variables de entorno en Vercel." };
+async function resolveIsinViaTavily(isin) {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) {
+    throw { status: 500, message: "Falta TAVILY_API_KEY como variable de entorno en Vercel." };
   }
-  // "site:finect.com" de más por si el motor programable no está
-  // restringido a ese dominio — no estorba si ya lo está.
-  const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(apiKey)}&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(`site:finect.com ${isin}`)}`;
-  const r = await fetch(searchUrl);
+  const r = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: isin,
+      search_depth: "basic",
+      max_results: 5,
+      include_domains: ["finect.com"],
+    }),
+  });
   let body = null;
   try { body = await r.json(); } catch (e) {}
   if (!r.ok) {
-    const msg = (body && body.error && body.error.message) || `Google Custom Search respondió ${r.status}`;
-    throw { status: r.status === 429 ? 429 : 502, message: msg };
+    const msg = (body && (body.detail || body.message || body.error)) || `Tavily respondió ${r.status}`;
+    throw { status: r.status === 429 ? 429 : 502, message: typeof msg === "string" ? msg : JSON.stringify(msg) };
   }
-  const items = (body && body.items) || [];
+  const results = (body && body.results) || [];
   const isinUpper = isin.toUpperCase();
   const isFinectFund = (link) => /^https:\/\/(?:www\.)?finect\.com\/fondos-inversion\//i.test(link);
-  const exact = items.find(it => isFinectFund(it.link) && it.link.toUpperCase().includes(isinUpper));
-  const fallback = items.find(it => isFinectFund(it.link));
+  const exact = results.find(it => isFinectFund(it.url) && it.url.toUpperCase().includes(isinUpper));
+  const fallback = results.find(it => isFinectFund(it.url));
   const chosen = exact || fallback;
   if (!chosen) throw { status: 404, message: "No se encontró ficha en Finect para ese ISIN — prueba a buscarlo a mano." };
-  return normalizeFinectUrl(chosen.link) || chosen.link;
+  return normalizeFinectUrl(chosen.url) || chosen.url;
 }
 
 export default async function handler(req, res) {
@@ -129,7 +136,7 @@ export default async function handler(req, res) {
       if (!/^[A-Za-z]{2}[A-Za-z0-9]{9}\d$/.test(isin)) {
         return res.status(400).json({ error: "Parámetro 'isin' con formato inválido." });
       }
-      const resolvedUrl = await resolveIsinViaGoogleCSE(isin);
+      const resolvedUrl = await resolveIsinViaTavily(isin);
       const q = await fetchFinectPrice(resolvedUrl);
       return res.status(200).json({ url: resolvedUrl, ...q, source: "finect" });
     }
