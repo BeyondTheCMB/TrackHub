@@ -15845,17 +15845,6 @@
             {security.name}
             <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#5a7080" }}>{security.isin}</div>
           </td>
-          {showFinect && (
-            <td style={cellStyle}>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="pega aquí la URL de Finect"
-                  style={{ flex: 1, minWidth: 140, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 7px", fontSize: 11 }} />
-                <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect"
-                  style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>🔍</a>
-              </div>
-              {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
-            </td>
-          )}
           <td style={cellStyle}>
             {editingManual ? (
               <div style={{ display: "flex", gap: 6 }}>
@@ -15893,6 +15882,17 @@
               </>
             )}
           </td>
+          {showFinect && (
+            <td style={{ ...cellStyle, width: 130, maxWidth: 130 }}>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="URL Finect"
+                  style={{ width: 90, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
+                <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect"
+                  style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>🔍</a>
+              </div>
+              {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
+            </td>
+          )}
         </tr>
       );
     }
@@ -15914,7 +15914,7 @@
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: showFinect ? 560 : 380 }}>
                 <thead>
                   <tr>
-                    {(showFinect ? ["Valor", "URL Finect", "Precio", ""] : ["Valor", "Precio", ""]).map((h, i) => (
+                    {(showFinect ? ["Valor", "Precio", "", "URL Finect"] : ["Valor", "Precio", ""]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
