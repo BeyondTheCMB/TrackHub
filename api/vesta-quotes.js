@@ -14,14 +14,29 @@
 // de Finect se hace a mano en el cliente (botón 🔍 que abre una búsqueda
 // de Google en el propio navegador del usuario, donde sí funciona).
 //
-// AVISO: la extracción del precio es una expresión regular sobre el HTML
-// de la ficha, ajustada a lo que se ve en la página hoy ("358,74€" seguido
-// de "Fecha de valor liquidativo: 24/08/2026"). No he podido probarla
-// contra el HTML real y desplegado — trátala como primer borrador a
-// validar, no como algo ya verificado end-to-end.
+// AVISO: la extracción del precio se hace convirtiendo el HTML a texto
+// plano (quitando etiquetas) y aplicando una expresión regular sobre ese
+// texto — no sobre el HTML crudo. Hizo falta este paso intermedio porque
+// en la ficha real el precio y el símbolo de euro están en dos <span>
+// hermanos ("<span>358,74</span><span>€</span>"), no como texto plano
+// contiguo; una regex sobre el HTML crudo nunca los habría encontrado
+// juntos. Sigue siendo un ajuste sobre el formato de hoy, no algo
+// blindado ante cualquier cambio futuro de Finect.
 //
 // Uso: GET /api/vesta-quotes?url=https://www.finect.com/fondos-inversion/ES0112611001-Azvalor_internacional_fi
 // Respuesta: { price: 358.74, currency: "EUR", asOf: "2026-08-24", source: "finect" }
+
+const HTML_ENTITIES = { "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&euro;": "€" };
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&euro;/g, m => HTML_ENTITIES[m])
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 async function fetchFinectPrice(url) {
   const r = await fetch(url, {
@@ -33,15 +48,17 @@ async function fetchFinectPrice(url) {
   });
   if (!r.ok) throw { status: 502, message: `Finect respondió ${r.status}` };
   const html = await r.text();
+  const text = htmlToText(html);
 
   // Precio: número con formato español (punto de miles, coma decimal)
-  // inmediatamente seguido del símbolo de euro.
-  const priceMatch = html.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*€/);
+  // seguido del símbolo de euro — ya sobre el texto plano, así que da
+  // igual cuántas etiquetas hubiera entre el número y el símbolo.
+  const priceMatch = text.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*€/);
   if (!priceMatch) throw { status: 422, message: "No se encontró un precio en la página — puede que Finect haya cambiado el formato de la ficha." };
   const price = parseFloat(priceMatch[1].replace(/\./g, "").replace(",", "."));
 
   // Fecha del valor liquidativo, formato DD/MM/YYYY en el texto de la página.
-  const dateMatch = html.match(/valor liquidativo[^0-9]{0,40}(\d{2})\/(\d{2})\/(\d{4})/i);
+  const dateMatch = text.match(/valor liquidativo[^0-9]{0,40}(\d{2})\/(\d{2})\/(\d{4})/i);
   const asOf = dateMatch ? `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}` : null;
 
   return { price, currency: "EUR", asOf };
