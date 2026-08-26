@@ -15786,12 +15786,45 @@
         .slice()
         .sort((a, b) => b.date.localeCompare(a.date));
 
+      // KPI de comprobación: capital neto invertido en posiciones (compras
+      // menos ventas, en valor absoluto — no en flujo de caja de la cuenta).
+      // No cuenta aportaciones/retiradas/dividendos/comisiones ni splits
+      // (cashImpact:false), solo compra/venta de activos. "Valor actual" es
+      // igual al invertido de momento, a la espera del motor de precios;
+      // sirve para comprobar de un vistazo que el importe total cuadra con
+      // lo que esperas tras importar.
+      const kpis = useMemo(() => {
+        let invested = 0;
+        for (const t of transactions) {
+          if (t.type === "buy") invested += (t.amount || 0);
+          else if (t.type === "sell") invested -= (t.amount || 0);
+        }
+        return { invested, currentValue: invested };
+      }, [transactions]);
+      const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
+      const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" };
+      const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
+      const kpiValueStyle = { fontFamily: "'Playfair Display',serif", fontWeight: 900, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
 
       return (
-        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
-          <div style={{ alignSelf: "start" }}>
+        <div style={{ padding: 20 }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+            <div style={kpiCardStyle}>
+              <div style={kpiLabelStyle}>Total invertido</div>
+              <div style={kpiValueStyle}>{fmtEUR(kpis.invested)}</div>
+            </div>
+            <div style={kpiCardStyle}>
+              <div style={kpiLabelStyle}>Valor actual</div>
+              <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
+              <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>= invertido, pendiente de motor de precios</div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20 }}>
+            <div style={{ alignSelf: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
               <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 14, lineHeight: 1.5 }}>
@@ -15852,9 +15885,9 @@
             </div>
           </div>
         </div>
+        </div>
       );
     }
-
 
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const VS_SECTIONS = [
