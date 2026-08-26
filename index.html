@@ -11757,13 +11757,18 @@
 
     // ── Cartera (vs_portfolio) ────────────────────────────────────────────
     // Mismo patrón que vs_funds: una fila JSON por perfil, con
-    // { transactions: [...] } dentro. Fase 0 = solo modelo de datos +
-    // importación; el motor de cálculo (TTWROR/XIRR) llega en la fase
-    // siguiente, sobre esta misma tabla.
+    // { transactions: [...], securities: { ISIN: {isin,name,currency} } }
+    // dentro. `securities` es el catálogo de valores ya registrados —
+    // permite reutilizar nombre/ISIN/divisa al añadir una compra/venta
+    // manual sin volver a escribirlos, y mantiene un nombre consistente
+    // para todas las transacciones de un mismo ISIN. Fase 0 = solo modelo
+    // de datos + importación; el motor de cálculo (TTWROR/XIRR) llega en
+    // la fase siguiente, sobre esta misma tabla.
     const vsLoadPortfolio = async (profileId) => {
-      if (!profileId) return { transactions: [] };
+      if (!profileId) return { transactions: [], securities: {} };
       const { data } = await _sb.from("vs_portfolio").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
-      return (data && data.data) ? data.data : { transactions: [] };
+      const p = (data && data.data) ? data.data : {};
+      return { transactions: p.transactions || [], securities: p.securities || {} };
     };
     const vsSavePortfolio = async (profileId, portfolioObj) => {
       await _sb.from("vs_portfolio").upsert({ user_id: _sbUser.id, profile_id: profileId, data: portfolioObj }, { onConflict: "user_id,profile_id" });
@@ -15547,21 +15552,31 @@
     }
 
     // ─── Formulario de alta manual ─────────────────────────────────────────
-    function VsManualTxForm({ accounts, onAdd, onCancel }) {
-      const [f, setF] = useState({ date: "", type: "buy", isin: "", name: "", shares: "", amount: "", account: accounts[0] || "", currency: "EUR", note: "" });
+    function VsManualTxForm({ accounts, securities, onAdd, onCancel }) {
+      const [f, setF] = useState({ date: "", type: "buy", securityIsin: "", isin: "", name: "", shares: "", amount: "", account: accounts[0] || "", currency: "EUR", note: "" });
       const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12 };
       const labelStyle = { display: "block", fontSize: 11, color: "#7a90a8", margin: "10px 0 4px", fontWeight: 500 };
-      const needsShares = !["deposit", "withdrawal", "fee", "tax", "interest"].includes(f.type);
-      const canSave = f.date && f.type && f.name.trim() && f.amount !== "";
+      // Tipos ligados a un valor concreto (compra/venta/dividendo/split) —
+      // para estos el ISIN es obligatorio, ya que el motor de precios lo
+      // necesitará para casar la transacción con su cotización.
+      const needsSecurity = !["deposit", "withdrawal", "fee", "tax", "interest"].includes(f.type);
+      const needsShares = needsSecurity;
+      const usingKnownSecurity = needsSecurity && f.securityIsin !== "";
+      const selectedSecurity = usingKnownSecurity ? securities.find(s => s.isin === f.securityIsin) : null;
+      const canSave = f.date && f.type && f.amount !== "" &&
+        (!needsSecurity || usingKnownSecurity || (f.name.trim() && f.isin.trim()));
 
       const handleSave = () => {
         if (!canSave) return;
+        const sec = usingKnownSecurity
+          ? { isin: selectedSecurity.isin, name: selectedSecurity.name, currency: selectedSecurity.currency || "EUR" }
+          : { isin: f.isin.trim() || null, name: f.name.trim(), currency: f.currency || "EUR" };
         onAdd({
-          date: f.date, type: f.type, isin: f.isin.trim() || null, name: f.name.trim(),
+          date: f.date, type: f.type, isin: sec.isin, name: sec.name,
           shares: needsShares ? vsNum(f.shares) : null,
           price: needsShares && vsNum(f.shares) && vsNum(f.amount) ? vsNum(f.amount) / vsNum(f.shares) : null,
-          amount: vsNum(f.amount), fees: null, taxes: null, currency: f.currency || "EUR",
+          amount: vsNum(f.amount), fees: null, taxes: null, currency: sec.currency,
           account: f.account.trim() || "Manual", source: "manual", rawType: null, ref: null, market: null,
           cashImpact: VS_CASH_IMPACT[f.type], note: f.note.trim() || null,
         });
@@ -15581,19 +15596,34 @@
               </select>
             </div>
           </div>
-          <label style={labelStyle}>Nombre del valor</label>
-          <input style={inputStyle} type="text" value={f.name} onChange={set("name")} placeholder="ej: Azvalor Internacional FI" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={labelStyle}>ISIN <span style={{fontWeight:400}}>(opcional)</span></label>
+
+          {needsSecurity && securities.length > 0 && (
+            <>
+              <label style={labelStyle}>Valor</label>
+              <select style={inputStyle} value={f.securityIsin} onChange={set("securityIsin")}>
+                <option value="">+ Nuevo valor</option>
+                {securities.map(s => <option key={s.isin} value={s.isin}>{s.name} ({s.isin})</option>)}
+              </select>
+            </>
+          )}
+
+          {needsSecurity && usingKnownSecurity ? (
+            <div style={{ marginTop: 10, fontSize: 12, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>
+              {selectedSecurity.name} · {selectedSecurity.isin} · {selectedSecurity.currency || "EUR"}
+            </div>
+          ) : needsSecurity && (
+            <>
+              <label style={labelStyle}>Nombre del valor</label>
+              <input style={inputStyle} type="text" value={f.name} onChange={set("name")} placeholder="ej: Azvalor Internacional FI" />
+              <label style={labelStyle}>ISIN</label>
               <input style={inputStyle} type="text" value={f.isin} onChange={set("isin")} placeholder="ES0000000000" />
-            </div>
-            <div>
-              <label style={labelStyle}>Cuenta</label>
-              <input style={inputStyle} type="text" list="vs-accounts" value={f.account} onChange={set("account")} placeholder="ej: MyInvestor · Fondos" />
-              <datalist id="vs-accounts">{accounts.map(a => <option key={a} value={a} />)}</datalist>
-            </div>
-          </div>
+            </>
+          )}
+
+          <label style={labelStyle}>Cuenta</label>
+          <input style={inputStyle} type="text" list="vs-accounts" value={f.account} onChange={set("account")} placeholder="ej: MyInvestor · Fondos" />
+          <datalist id="vs-accounts">{accounts.map(a => <option key={a} value={a} />)}</datalist>
+
           <div style={{ display: "grid", gridTemplateColumns: needsShares ? "1fr 1fr" : "1fr", gap: 12 }}>
             {needsShares && (
               <div>
@@ -15728,6 +15758,11 @@
 
     function VsCarteraTab({ portfolio, onSave }) {
       const transactions = portfolio.transactions || [];
+      const securitiesCatalog = portfolio.securities || {};
+      const securitiesList = useMemo(
+        () => Object.values(securitiesCatalog).sort((a, b) => a.name.localeCompare(b.name)),
+        [securitiesCatalog]
+      );
       const [staged, setStaged] = useState([]);
       const [warnings, setWarnings] = useState([]);
       const [importing, setImporting] = useState(false);
@@ -15736,6 +15771,10 @@
       const [showManual, setShowManual] = useState(false);
       const [filterAccount, setFilterAccount] = useState("all");
       const [filterType, setFilterType] = useState("all");
+      // ISIN -> nombre en edición para valores nuevos detectados al
+      // importar, pendientes de que el usuario los confirme antes de
+      // guardarse en el catálogo (portfolio.securities).
+      const [newSecurityNames, setNewSecurityNames] = useState({});
       const fileRef = useRef(null);
 
       const existingKeys = useMemo(() => new Set(transactions.map(vsTxDedupeKey)), [transactions]);
@@ -15750,6 +15789,17 @@
           const withIds = txs.map(t => ({ ...t, id: vsTxId(), _dup: existingKeys.has(vsTxDedupeKey(t)), _include: !existingKeys.has(vsTxDedupeKey(t)) }));
           setStaged(prev => [...prev, ...withIds]);
           setWarnings(w);
+          // Detecta ISIN presentes en el lote que aún no están en el
+          // catálogo, y prepara un nombre editable por defecto (el que
+          // trae el propio import) para que el usuario los confirme antes
+          // de guardarlos como valores registrados.
+          setNewSecurityNames(prev => {
+            const next = { ...prev };
+            for (const t of txs) {
+              if (t.isin && !securitiesCatalog[t.isin] && !(t.isin in next)) next[t.isin] = t.name || "";
+            }
+            return next;
+          });
         } catch (e) {
           setImportError("Error al leer el archivo: " + e.message);
         }
@@ -15763,9 +15813,23 @@
       const commitStaged = async () => {
         const toCommit = staged.filter(t => t._include).map(({ _dup, _include, ...t }) => t);
         if (toCommit.length === 0) return;
-        const next = { ...portfolio, transactions: [...transactions, ...toCommit] };
+        // Vuelca los nombres confirmados de valores nuevos al catálogo, y
+        // renombra las transacciones de ese ISIN al nombre elegido — así
+        // todas las operaciones del mismo valor quedan con un nombre
+        // consistente, sea cual sea el que trajera el fichero de origen.
+        const nextSecurities = { ...securitiesCatalog };
+        for (const isin of Object.keys(newSecurityNames)) {
+          const tx = toCommit.find(t => t.isin === isin);
+          if (!tx) continue;
+          const name = (newSecurityNames[isin] || "").trim() || tx.name;
+          nextSecurities[isin] = { isin, name, currency: tx.currency || "EUR" };
+        }
+        const renamedCommit = toCommit.map(t => t.isin && nextSecurities[t.isin] ? { ...t, name: nextSecurities[t.isin].name } : t);
+        const next = { ...portfolio, transactions: [...transactions, ...renamedCommit], securities: nextSecurities };
         await onSave(next);
         setStaged(prev => prev.filter(t => !t._include));
+        const committedIsins = new Set(toCommit.map(t => t.isin));
+        setNewSecurityNames(prev => Object.fromEntries(Object.entries(prev).filter(([isin]) => !committedIsins.has(isin))));
       };
 
       const deleteTx = async (id) => {
@@ -15774,7 +15838,10 @@
       };
 
       const addManual = async (tx) => {
-        const next = { ...portfolio, transactions: [...transactions, { ...tx, id: vsTxId() }] };
+        const nextSecurities = tx.isin
+          ? { ...securitiesCatalog, [tx.isin]: { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR" } }
+          : securitiesCatalog;
+        const next = { ...portfolio, transactions: [...transactions, { ...tx, id: vsTxId() }], securities: nextSecurities };
         await onSave(next);
         setShowManual(false);
       };
@@ -15841,7 +15908,7 @@
                   {showManual ? "cerrar" : "+ nueva"}
                 </button>
               </div>
-              {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
+              {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
           </div>
 
@@ -15858,8 +15925,27 @@
               </div>
             </div>
 
+            {Object.keys(newSecurityNames).length > 0 && (
+              <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Valores nuevos detectados</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
+                  Confirma o corrige el nombre con el que quieres registrarlos — se usará en todas sus transacciones.
+                </div>
+                {Object.entries(newSecurityNames).map(([isin, name]) => (
+                  <div key={isin} style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 10, alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#7a90a8" }}>{isin}</div>
+                    <input
+                      style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 9px", fontSize: 12 }}
+                      type="text" value={name}
+                      onChange={e => setNewSecurityNames(prev => ({ ...prev, [isin]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
             {staged.length > 0 && (
-              <VsTxStaging staged={staged} warnings={warnings} onUpdate={updateStaged} onRemove={removeStaged} onCommit={commitStaged} onDiscardAll={() => { setStaged([]); setWarnings([]); }} />
+              <VsTxStaging staged={staged} warnings={warnings} onUpdate={updateStaged} onRemove={removeStaged} onCommit={commitStaged} onDiscardAll={() => { setStaged([]); setWarnings([]); setNewSecurityNames({}); }} />
             )}
 
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
@@ -15905,7 +15991,7 @@
       const [tab, setTab] = useState("pool");
       const [factors, setFactors] = useState({});
       const [funds, setFunds] = useState({});
-      const [portfolio, setPortfolio] = useState({ transactions: [] });
+      const [portfolio, setPortfolio] = useState({ transactions: [], securities: {} });
       const [loading, setLoading] = useState(true);
       const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
