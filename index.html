@@ -16114,8 +16114,6 @@
               </div>
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
-
-            <VsSecuritiesPanel securities={securitiesList} onUpdateSecurity={updateSecurity} />
           </div>
 
           <div>
@@ -16130,6 +16128,8 @@
                 <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>= invertido, pendiente de motor de precios</div>
               </div>
             </div>
+
+            <VsSecuritiesPanel securities={securitiesList} onUpdateSecurity={updateSecurity} />
 
             {Object.keys(newSecurityDrafts).length > 0 && (
               <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
