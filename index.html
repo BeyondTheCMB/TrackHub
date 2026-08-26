@@ -15561,11 +15561,11 @@
       return body; // { price, currency, asOf, source }
     }
     // Resolución automática ISIN→ficha de Finect vía la API oficial de
-    // Google Custom Search (resuelta en el proxy, con clave) — de paso
-    // trae ya el precio, así que un solo clic sustituye "abrir Google,
-    // copiar, pegar". A diferencia del intento anterior con scraping de
-    // buscador, esto sí es tráfico autorizado y no debería bloquearse por
-    // IP de datacenter.
+    // Tavily (resuelta en el proxy, con clave) — de paso trae ya el
+    // precio, así que un solo clic sustituye "abrir Google, copiar,
+    // pegar". Tercera vía probada tras el scraping de buscador y la API
+    // de Google (ambas descartadas por límites ajenos a la config) — esta
+    // sí es tráfico autorizado.
     async function vsResolveFinectByIsin(isin) {
       const res = await fetch(`/api/vesta-quotes?isin=${encodeURIComponent(isin)}`);
       let body = null;
@@ -15927,17 +15927,83 @@
       );
     }
 
-    function VsSecuritiesPanel({ title, securities, showFinect, moveLabel, onMove, onUpdateSecurity }) {
+    function VsSecuritiesPanel({ title, securities, showFinect, moveLabel, onMove, onUpdateSecurity, onBulkUpdate }) {
       const [open, setOpen] = useState(false);
+      const [bulkRefreshing, setBulkRefreshing] = useState(false);
+      const [bulkResolving, setBulkResolving] = useState(false);
+      const [bulkStatus, setBulkStatus] = useState("");
       if (securities.length === 0) return null;
       const priced = securities.filter(s => s.price != null).length;
+
+      // Las dos acciones masivas acumulan los resultados en un objeto y
+      // guardan UNA sola vez al final (onBulkUpdate), en vez de llamar a
+      // onUpdateSecurity una vez por fila — si cada llamada disparase su
+      // propio guardado, cada una partiría del mismo estado de
+      // `securities` capturado al pulsar el botón y se irían pisando
+      // entre sí según fueran resolviendo (todas leen el mismo punto de
+      // partida). Acumular y guardar una vez evita ese pisoteo.
+      const refreshAll = async () => {
+        const targets = securities.filter(s => s.finectUrl);
+        if (targets.length === 0) return;
+        setBulkRefreshing(true);
+        const patches = {};
+        let fail = 0;
+        for (const s of targets) {
+          try {
+            const q = await vsFetchFinectQuote(s.finectUrl);
+            patches[s.isin] = { price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" };
+          } catch (e) { fail++; }
+          setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
+        }
+        if (Object.keys(patches).length > 0) await onBulkUpdate(patches);
+        setBulkRefreshing(false);
+        setBulkStatus(fail > 0 ? `Hecho — ${fail} con error` : "Hecho ✓");
+        setTimeout(() => setBulkStatus(""), 3000);
+      };
+
+      const resolveAll = async () => {
+        const targets = securities.filter(s => !s.finectUrl);
+        if (targets.length === 0) return;
+        setBulkResolving(true);
+        const patches = {};
+        let fail = 0;
+        for (const s of targets) {
+          try {
+            const q = await vsResolveFinectByIsin(s.isin);
+            patches[s.isin] = { finectUrl: q.url, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" };
+          } catch (e) { fail++; }
+          setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
+        }
+        if (Object.keys(patches).length > 0) await onBulkUpdate(patches);
+        setBulkResolving(false);
+        setBulkStatus(fail > 0 ? `Hecho — ${fail} con error` : "Hecho ✓");
+        setTimeout(() => setBulkStatus(""), 3000);
+      };
+
+      const bulkBtnStyle = (active) => ({ background: "none", border: "1px solid #1a2535", color: active ? "#3a4550" : "#7a90a8", borderRadius: 6, padding: "4px 8px", fontSize: 12, cursor: active ? "not-allowed" : "pointer" });
+
       return (
         <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setOpen(v => !v)}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>
-              {title} <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12, fontFamily: "'DM Mono',monospace" }}>({priced} de {securities.length} con precio)</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setOpen(v => !v)}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>
+                {title} <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12, fontFamily: "'DM Mono',monospace" }}>({priced} de {securities.length} con precio)</span>
+              </div>
+              <span style={{ color: "#7a90a8", fontSize: 12 }}>{open ? "ocultar ▲" : "mostrar ▼"}</span>
             </div>
-            <span style={{ color: "#7a90a8", fontSize: 12 }}>{open ? "ocultar ▲" : "mostrar ▼"}</span>
+            {showFinect && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {bulkStatus && <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{bulkStatus}</span>}
+                <button onClick={resolveAll} disabled={bulkResolving || bulkRefreshing} title="Resolver ficha de Finect de todos los que aún no la tienen"
+                  style={bulkBtnStyle(bulkResolving || bulkRefreshing)}>
+                  {bulkResolving ? "…" : "⚡"} todos
+                </button>
+                <button onClick={refreshAll} disabled={bulkRefreshing || bulkResolving} title="Actualizar precio de todos los que ya tienen ficha"
+                  style={bulkBtnStyle(bulkRefreshing || bulkResolving)}>
+                  {bulkRefreshing ? "…" : "🔄"} todos
+                </button>
+              </div>
+            )}
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
@@ -16095,6 +16161,18 @@
         await onSave(next);
       };
 
+      // Guardado único para las acciones masivas del panel de Valores —
+      // `patches` es { isin: patchParcial, ... }, ya acumulado por el
+      // panel tras resolver/actualizar todos uno a uno.
+      const bulkUpdateSecurities = async (patches) => {
+        const nextSecurities = { ...securitiesCatalog };
+        for (const [isin, patch] of Object.entries(patches)) {
+          nextSecurities[isin] = { ...nextSecurities[isin], ...patch };
+        }
+        const next = { ...portfolio, securities: nextSecurities };
+        await onSave(next);
+      };
+
       const moveSecurityType = (isin) => {
         const current = securitiesCatalog[isin];
         const newType = (current.assetType || "fund") === "fund" ? "stock" : "fund";
@@ -16181,8 +16259,8 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsSecuritiesPanel title="Fondos" securities={fundsList} showFinect={true} moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} />
-            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} showFinect={false} moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} />
+            <VsSecuritiesPanel title="Fondos" securities={fundsList} showFinect={true} moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
+            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} showFinect={false} moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
           </div>
 
           <div>
