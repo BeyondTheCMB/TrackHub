@@ -15560,6 +15560,19 @@
       if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al consultar Finect`);
       return body; // { price, currency, asOf, source }
     }
+    // Resolución automática ISIN→ficha de Finect (vía DuckDuckGo, sin API
+    // key, resuelto en el proxy) — de paso trae ya el precio, así que un
+    // solo clic sustituye "abrir Google, copiar, pegar". Es la pieza más
+    // frágil de las dos que hace el proxy: si DuckDuckGo cambia su HTML de
+    // resultados o no indexa la ficha, esto falla y toca volver al enlace
+    // de búsqueda manual (🔍) de siempre.
+    async function vsResolveFinectByIsin(isin) {
+      const res = await fetch(`/api/vesta-quotes?isin=${encodeURIComponent(isin)}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al resolver el ISIN`);
+      return body; // { url, price, currency, asOf, source }
+    }
 
     // Clave de deduplicación al reimportar: prioriza el `ref` de Inversis
     // (identificador único de operación en el extracto). Sin ref (PP, manual)
@@ -15812,6 +15825,7 @@
     function VsSecurityRow({ security, showFinect, moveLabel, onMove, onUpdate }) {
       const [urlDraft, setUrlDraft] = useState(security.finectUrl || "");
       const [fetching, setFetching] = useState(false);
+      const [resolving, setResolving] = useState(false);
       const [fetchError, setFetchError] = useState("");
       const [editingManual, setEditingManual] = useState(false);
       const [manualPrice, setManualPrice] = useState(security.price != null ? String(security.price) : "");
@@ -15829,6 +15843,18 @@
           setFetchError(e.message);
         }
         setFetching(false);
+      };
+
+      const resolve = async () => {
+        setResolving(true); setFetchError("");
+        try {
+          const q = await vsResolveFinectByIsin(security.isin);
+          setUrlDraft(q.url);
+          onUpdate({ finectUrl: q.url, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "finect" });
+        } catch (e) {
+          setFetchError(e.message);
+        }
+        setResolving(false);
       };
 
       const saveManual = () => {
@@ -15850,6 +15876,10 @@
               <div style={{ display: "flex", gap: 6 }}>
                 <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="pega aquí la URL de Finect"
                   style={{ flex: 1, minWidth: 140, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 7px", fontSize: 11 }} />
+                <button onClick={resolve} disabled={resolving} title="Resolver automáticamente"
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: resolving ? "not-allowed" : "pointer" }}>
+                  {resolving ? "…" : "⚡"}
+                </button>
                 <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect"
                   style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>🔍</a>
               </div>
@@ -16071,6 +16101,21 @@
         updateSecurity(isin, { assetType: newType });
       };
 
+      // Resolución automática de ISIN→ficha de Finect para un valor nuevo
+      // aún sin confirmar — el precio que trae de propina se descarta aquí
+      // (se guardará ya normal vía "actualizar" tras confirmar el valor),
+      // solo se usa para rellenar la URL sin que el usuario tenga que
+      // buscarla a mano.
+      const resolveDraftFinect = async (isin) => {
+        setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: true, _resolveError: "" } }));
+        try {
+          const q = await vsResolveFinectByIsin(isin);
+          setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: q.url, _resolving: false } }));
+        } catch (e) {
+          setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: false, _resolveError: e.message } }));
+        }
+      };
+
       const accounts = useMemo(() => [...new Set(transactions.map(t => t.account))].sort(), [transactions]);
       const filtered = transactions
         .filter(t => filterAccount === "all" || t.account === filterAccount)
@@ -16126,7 +16171,7 @@
               {importError && <div style={{ marginTop: 10, fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace" }}>{importError}</div>}
             </div>
 
-            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showManual ? 14 : 0 }}>
                 <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Añadir manualmente</div>
                 <button onClick={() => setShowManual(v => !v)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
@@ -16179,16 +16224,21 @@
                       </select>
                     </div>
                     {draft.assetType === "fund" && (
-                      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr auto", gap: 10, alignItems: "center" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr auto auto", gap: 10, alignItems: "center" }}>
                         <div style={{ fontSize: 10, color: "#5a7080" }}>URL de Finect</div>
                         <input
                           style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 9px", fontSize: 11 }}
                           type="text" value={draft.finectUrl} placeholder="opcional — pega aquí la ficha"
                           onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: e.target.value } }))}
                         />
+                        <button onClick={() => resolveDraftFinect(isin)} disabled={draft._resolving} title="Resolver automáticamente"
+                          style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: draft._resolving ? "not-allowed" : "pointer" }}>
+                          {draft._resolving ? "…" : "⚡"}
+                        </button>
                         <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}>🔍</a>
                       </div>
                     )}
+                    {draft._resolveError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{draft._resolveError}</div>}
                   </div>
                 ))}
               </div>
