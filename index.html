@@ -15759,10 +15759,10 @@
       const cellStyle = { padding: "7px 8px", borderBottom: "1px solid #1a2535" };
       return (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 760 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 560 }}>
             <thead>
               <tr>
-                {["Fecha", "Tipo", "Valor", "Títulos", "Importe", "Cuenta", "Origen", ""].map((h, i) => (
+                {["Fecha", "Tipo", "Valor", "Títulos", "Importe", ""].map((h, i) => (
                   <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                 ))}
               </tr>
@@ -15776,8 +15776,6 @@
                     <td style={{ ...cellStyle, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.name}>{t.name}</td>
                     <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{t.shares != null ? t.shares : "—"}</td>
                     <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{t.amount != null ? t.amount.toFixed(2) : "—"} {t.currency}</td>
-                    <td style={{ ...cellStyle, color: "#7a90a8", fontSize: 11, whiteSpace: "nowrap" }}>{t.account}</td>
-                    <td style={{ ...cellStyle, color: "#3a4550", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>{t.source}</td>
                     <td style={{ ...cellStyle, whiteSpace: "nowrap" }}>
                       <button onClick={() => setEditingId(editingId === t.id ? null : t.id)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 11, cursor: "pointer", marginRight: 6 }}
                         onMouseEnter={e => { e.currentTarget.style.borderColor = VS_A; e.currentTarget.style.color = VS_A; }}
@@ -15793,7 +15791,7 @@
                   </tr>
                   {editingId === t.id && (
                     <tr>
-                      <td colSpan={8} style={{ padding: "10px 0", borderBottom: "1px solid #1a2535" }}>
+                      <td colSpan={6} style={{ padding: "10px 0", borderBottom: "1px solid #1a2535" }}>
                         <VsManualTxForm
                           accounts={accounts} securities={securities} initial={t} submitLabel="Guardar cambios"
                           onAdd={patch => { onEdit(t.id, patch); setEditingId(null); }}
@@ -16081,7 +16079,7 @@
       const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
 
       return (
-        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "460px 1fr", gap: 20, padding: 20 }}>
           <div style={{ alignSelf: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
@@ -16114,6 +16112,8 @@
               </div>
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
+
+            <VsSecuritiesPanel securities={securitiesList} onUpdateSecurity={updateSecurity} />
           </div>
 
           <div>
@@ -16128,8 +16128,6 @@
                 <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>= invertido, pendiente de motor de precios</div>
               </div>
             </div>
-
-            <VsSecuritiesPanel securities={securitiesList} onUpdateSecurity={updateSecurity} />
 
             {Object.keys(newSecurityDrafts).length > 0 && (
               <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
