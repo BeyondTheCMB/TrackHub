@@ -15850,8 +15850,8 @@
               <div style={{ display: "flex", gap: 6 }}>
                 <input value={urlDraft} onChange={e => setUrlDraft(e.target.value)} onBlur={saveUrl} placeholder="pega aquí la URL de Finect"
                   style={{ flex: 1, minWidth: 140, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 7px", fontSize: 11 }} />
-                <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer"
-                  style={{ fontSize: 11, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>buscar ↗</a>
+                <a href={vsFinectSearchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect"
+                  style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>🔍</a>
               </div>
               {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
             </td>
@@ -15882,12 +15882,13 @@
             ) : (
               <>
                 {showFinect && (
-                  <button onClick={refresh} disabled={!security.finectUrl || fetching}
-                    style={{ background: "none", border: "1px solid #1a2535", color: security.finectUrl ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: security.finectUrl && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
-                    {fetching ? "…" : "actualizar"}
+                  <button onClick={refresh} disabled={!security.finectUrl || fetching} title="Actualizar precio"
+                    style={{ background: "none", border: "1px solid #1a2535", color: security.finectUrl ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: security.finectUrl && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
+                    {fetching ? "…" : "🔄"}
                   </button>
                 )}
-                <button onClick={() => setEditingManual(true)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer", marginRight: 6 }}>manual</button>
+                <button onClick={() => setEditingManual(true)} title="Precio manual"
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}>✋</button>
                 <button onClick={onMove} title={moveLabel} style={{ background: "none", border: "1px solid #1a2535", color: "#5a7080", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>{moveLabel}</button>
               </>
             )}
@@ -16101,7 +16102,7 @@
       const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
 
       return (
-        <div style={{ display: "grid", gridTemplateColumns: "640px 1fr", gap: 20, padding: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "560px 1fr", gap: 20, padding: 20 }}>
           <div style={{ alignSelf: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
@@ -16185,7 +16186,7 @@
                           type="text" value={draft.finectUrl} placeholder="opcional — pega aquí la ficha"
                           onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], finectUrl: e.target.value } }))}
                         />
-                        <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: VS_A, whiteSpace: "nowrap" }}>buscar ↗</a>
+                        <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}>🔍</a>
                       </div>
                     )}
                   </div>
