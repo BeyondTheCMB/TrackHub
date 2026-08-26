@@ -15807,24 +15807,11 @@
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
       const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" };
       const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
-      const kpiValueStyle = { fontFamily: "'Playfair Display',serif", fontWeight: 900, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
+      const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
 
       return (
-        <div style={{ padding: 20 }}>
-          <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-            <div style={kpiCardStyle}>
-              <div style={kpiLabelStyle}>Total invertido</div>
-              <div style={kpiValueStyle}>{fmtEUR(kpis.invested)}</div>
-            </div>
-            <div style={kpiCardStyle}>
-              <div style={kpiLabelStyle}>Valor actual</div>
-              <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
-              <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>= invertido, pendiente de motor de precios</div>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20 }}>
-            <div style={{ alignSelf: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, padding: 20 }}>
+          <div style={{ alignSelf: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
               <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 14, lineHeight: 1.5 }}>
@@ -15859,6 +15846,18 @@
           </div>
 
           <div>
+            <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+              <div style={kpiCardStyle}>
+                <div style={kpiLabelStyle}>Total invertido</div>
+                <div style={kpiValueStyle}>{fmtEUR(kpis.invested)}</div>
+              </div>
+              <div style={kpiCardStyle}>
+                <div style={kpiLabelStyle}>Valor actual</div>
+                <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
+                <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>= invertido, pendiente de motor de precios</div>
+              </div>
+            </div>
+
             {staged.length > 0 && (
               <VsTxStaging staged={staged} warnings={warnings} onUpdate={updateStaged} onRemove={removeStaged} onCommit={commitStaged} onDiscardAll={() => { setStaged([]); setWarnings([]); }} />
             )}
@@ -15884,7 +15883,6 @@
               <VsTxTable transactions={filtered} onDelete={deleteTx} />
             </div>
           </div>
-        </div>
         </div>
       );
     }
