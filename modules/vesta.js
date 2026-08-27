@@ -4126,8 +4126,8 @@
       const [editName, setEditName] = useState("");
       const [editParent, setEditParent] = useState("");
       const [editColor, setEditColor] = useState("");
-      // Ids de tags con el desplegable de "valores asignados" abierto, y el
-      // ISIN elegido en el <select> de cada uno mientras no se confirma.
+      // Ids de tags con el desplegable de "valores asignados" abierto, y
+      // los ISIN marcados (checkboxes) en cada uno mientras no se confirman.
       const [expandedAssign, setExpandedAssign] = useState(() => new Set());
       const [addDraft, setAddDraft] = useState({});
 
@@ -4138,11 +4138,18 @@
         return m;
       }, [securities]);
       const toggleAssignExpand = (id) => setExpandedAssign(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+      const toggleDraftIsin = (tagId, isin) => setAddDraft(prev => {
+        const cur = prev[tagId] || [];
+        return { ...prev, [tagId]: cur.includes(isin) ? cur.filter(x => x !== isin) : [...cur, isin] };
+      });
+      // Añade de golpe todos los ISIN marcados con checkbox — cada uno es
+      // un toggle independiente (el padre ya garantiza que solo llegan
+      // aquí los que estaban sin asignar), así que basta con recorrerlos.
       const addAssignment = (tagId) => {
-        const isin = addDraft[tagId];
-        if (!isin) return;
-        onToggleAssignment(isin, tagId);
-        setAddDraft(prev => ({ ...prev, [tagId]: "" }));
+        const isins = addDraft[tagId] || [];
+        if (isins.length === 0) return;
+        for (const isin of isins) onToggleAssignment(isin, tagId);
+        setAddDraft(prev => ({ ...prev, [tagId]: [] }));
       };
 
       const submitNew = async () => {
@@ -4268,16 +4275,26 @@
                               {securities.length === 0 ? "Aún no hay valores en el catálogo." : "Todos los valores del catálogo ya llevan esta etiqueta."}
                             </div>
                           ) : (
-                            <div style={{ display: "flex", gap: 6 }}>
-                              <select value={addDraft[t.id] || ""} onChange={e => setAddDraft(prev => ({ ...prev, [t.id]: e.target.value }))} style={{ ...selectStyle, flex: 1, maxWidth: 260 }}>
-                                <option value="">— elegir valor —</option>
-                                {unassigned.map(s => <option key={s.isin} value={s.isin}>{s.name}</option>)}
-                              </select>
-                              <button onClick={() => addAssignment(t.id)} disabled={!addDraft[t.id]}
-                                style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: addDraft[t.id] ? "pointer" : "not-allowed", opacity: addDraft[t.id] ? 1 : 0.5 }}>
-                                añadir
+                            <>
+                              <div style={{ maxHeight: 170, overflowY: "auto", background: "#060d14", border: "1px solid #1a2535", borderRadius: 6, padding: 4, marginBottom: 8, maxWidth: 320 }}>
+                                {unassigned.map(s => {
+                                  const checked = (addDraft[t.id] || []).includes(s.isin);
+                                  return (
+                                    <div key={s.isin} onClick={() => toggleDraftIsin(t.id, s.isin)}
+                                      style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", cursor: "pointer", borderRadius: 4, fontSize: 11.5 }}
+                                      onMouseEnter={e => { e.currentTarget.style.background = "#0d1825"; }}
+                                      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                                      <input type="checkbox" checked={checked} onChange={() => {}} style={{ pointerEvents: "none", accentColor: VS_A }} />
+                                      <span style={{ color: "#cbd5e1" }}>{s.name}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <button onClick={() => addAssignment(t.id)} disabled={(addDraft[t.id] || []).length === 0}
+                                style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: (addDraft[t.id] || []).length ? "pointer" : "not-allowed", opacity: (addDraft[t.id] || []).length ? 1 : 0.5 }}>
+                                añadir{(addDraft[t.id] || []).length > 0 ? ` (${(addDraft[t.id] || []).length})` : ""}
                               </button>
-                            </div>
+                            </>
                           )}
                         </div>
                       )}
