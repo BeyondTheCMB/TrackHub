@@ -4116,7 +4116,7 @@
     // rama (reparent) y borrar (en cascada: subetiquetas + desasignación
     // de todos los valores que las llevaran). Mismo patrón visual
     // colapsable que VsSecuritiesPanel.
-    function VsTagsPanel({ tags, securities, onAdd, onUpdate, onDelete, onToggleAssignment }) {
+    function VsTagsPanel({ tags, securities, onAdd, onUpdate, onDelete, onToggleAssignment, onBulkAssign }) {
       const [open, setOpen] = useState(tags.length > 0);
       const [showNew, setShowNew] = useState(false);
       const [draftName, setDraftName] = useState("");
@@ -4142,13 +4142,14 @@
         const cur = prev[tagId] || [];
         return { ...prev, [tagId]: cur.includes(isin) ? cur.filter(x => x !== isin) : [...cur, isin] };
       });
-      // Añade de golpe todos los ISIN marcados con checkbox — cada uno es
-      // un toggle independiente (el padre ya garantiza que solo llegan
-      // aquí los que estaban sin asignar), así que basta con recorrerlos.
+      // Añade de golpe todos los ISIN marcados con checkbox en una sola
+      // escritura (onBulkAssign) — llamar a onToggleAssignment una vez por
+      // ISIN pisaría los cambios entre sí, ya que cada llamada partiría del
+      // mismo catálogo capturado antes del primer guardado.
       const addAssignment = (tagId) => {
         const isins = addDraft[tagId] || [];
         if (isins.length === 0) return;
-        for (const isin of isins) onToggleAssignment(isin, tagId);
+        onBulkAssign(tagId, isins);
         setAddDraft(prev => ({ ...prev, [tagId]: [] }));
       };
 
@@ -4990,16 +4991,30 @@
       const updateSecurityTagIds = async (isin, tagIds) => {
         await updateSecurity(isin, { tagIds });
       };
-      // Alterna la pertenencia de un valor a un tag concreto — usado tanto
-      // desde el panel de Etiquetas (añadir/quitar por desplegable) como en
-      // cualquier otro sitio que quiera hacer un toggle puntual sin tener
-      // que recalcular el array completo de tagIds a mano.
+      // Alterna la pertenencia de un valor a un tag concreto — usado para
+      // quitar un valor suelto (chip ×) desde el panel de Etiquetas.
       const toggleSecurityTag = async (isin, tagId) => {
         const sec = securitiesCatalog[isin];
         if (!sec) return;
         const current = sec.tagIds || [];
         const nextIds = current.includes(tagId) ? current.filter(id => id !== tagId) : [...current, tagId];
         await updateSecurity(isin, { tagIds: nextIds });
+      };
+      // Añade un tag a varios valores de golpe (checkboxes del panel de
+      // Etiquetas) en una única escritura — si se hiciera con N llamadas a
+      // toggleSecurityTag seguidas, cada una partiría del mismo
+      // securitiesCatalog capturado antes de que React re-renderizase con
+      // el cambio anterior, y solo sobreviviría la última.
+      const bulkAssignTag = async (tagId, isins) => {
+        const nextSecurities = { ...securitiesCatalog };
+        for (const isin of isins) {
+          const sec = nextSecurities[isin];
+          if (!sec) continue;
+          const current = sec.tagIds || [];
+          if (!current.includes(tagId)) nextSecurities[isin] = { ...sec, tagIds: [...current, tagId] };
+        }
+        const next = { ...portfolio, securities: nextSecurities };
+        await onSave(next);
       };
       const addTag = async (tag) => {
         const next = { ...portfolio, tags: [...tags, { id: vsTagId(), name: tag.name, parentId: tag.parentId || null, color: tag.color }] };
@@ -5119,7 +5134,7 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsTagsPanel tags={tags} securities={securitiesList} onAdd={addTag} onUpdate={updateTag} onDelete={deleteTag} onToggleAssignment={toggleSecurityTag} />
+            <VsTagsPanel tags={tags} securities={securitiesList} onAdd={addTag} onUpdate={updateTag} onDelete={deleteTag} onToggleAssignment={toggleSecurityTag} onBulkAssign={bulkAssignTag} />
 
             <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
             <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
