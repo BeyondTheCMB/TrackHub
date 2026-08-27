@@ -1661,7 +1661,7 @@
     // Botón "ⓘ" reutilizable — clic para mostrar/ocultar una breve
     // explicación flotante. Cada instancia es independiente (varias pueden
     // estar abiertas a la vez, sin coordinación entre ellas).
-    function VsInfoTip({ text, width = 220 }) {
+    function VsInfoTip({ text, width = 220, align = "left" }) {
       const [open, setOpen] = useState(false);
       const wrapRef = useRef(null);
 
@@ -1691,7 +1691,8 @@
           </button>
           {open && (
             <div onClick={e=>e.stopPropagation()} style={{
-              position: "absolute", zIndex: 30, top: 18, left: 0, width,
+              position: "absolute", zIndex: 30, top: 18,
+              ...(align === "right" ? { right: 0 } : { left: 0 }), width,
               background: "#12181f", border: "1px solid #1a2535", borderRadius: 8,
               padding: "9px 11px", fontSize: 10, color: "#9aaabb", lineHeight: 1.55,
               boxShadow: "0 4px 14px rgba(0,0,0,0.45)", fontFamily: "'DM Mono',monospace",
@@ -4115,7 +4116,7 @@
     // rama (reparent) y borrar (en cascada: subetiquetas + desasignación
     // de todos los valores que las llevaran). Mismo patrón visual
     // colapsable que VsSecuritiesPanel.
-    function VsTagsPanel({ tags, securities, onAdd, onUpdate, onDelete }) {
+    function VsTagsPanel({ tags, securities, onAdd, onUpdate, onDelete, onToggleAssignment }) {
       const [open, setOpen] = useState(tags.length > 0);
       const [showNew, setShowNew] = useState(false);
       const [draftName, setDraftName] = useState("");
@@ -4125,6 +4126,10 @@
       const [editName, setEditName] = useState("");
       const [editParent, setEditParent] = useState("");
       const [editColor, setEditColor] = useState("");
+      // Ids de tags con el desplegable de "valores asignados" abierto, y el
+      // ISIN elegido en el <select> de cada uno mientras no se confirma.
+      const [expandedAssign, setExpandedAssign] = useState(() => new Set());
+      const [addDraft, setAddDraft] = useState({});
 
       const flat = useMemo(() => vsFlattenTagTree(tags), [tags]);
       const countByTag = useMemo(() => {
@@ -4132,6 +4137,13 @@
         for (const s of securities) for (const id of (s.tagIds || [])) m.set(id, (m.get(id) || 0) + 1);
         return m;
       }, [securities]);
+      const toggleAssignExpand = (id) => setExpandedAssign(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+      const addAssignment = (tagId) => {
+        const isin = addDraft[tagId];
+        if (!isin) return;
+        onToggleAssignment(isin, tagId);
+        setAddDraft(prev => ({ ...prev, [tagId]: "" }));
+      };
 
       const submitNew = async () => {
         const name = draftName.trim();
@@ -4205,32 +4217,74 @@
               </div>
             ) : (
               <div style={{ marginTop: 14 }}>
-                {flat.map(t => (
-                  <div key={t.id} style={{ padding: "6px 4px", paddingLeft: 4 + t.depth * 18, display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid #16202c", flexWrap: "wrap" }}>
-                    {editingId === t.id ? (
-                      <>
-                        {colorSwatch(editColor, setEditColor, 13)}
-                        <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...smallInputStyle, width: 140 }} />
-                        <select value={editParent} onChange={e => setEditParent(e.target.value)} style={selectStyle}>
-                          <option value="">— raíz —</option>
-                          {flat.filter(x => x.id !== t.id && !vsTagDescendantIds(tags, t.id).includes(x.id)).map(x => <option key={x.id} value={x.id}>{"—".repeat(x.depth)} {x.name}</option>)}
-                        </select>
-                        <button onClick={submitEdit} style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>guardar</button>
-                        <button onClick={() => setEditingId(null)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer" }}>cancelar</button>
-                      </>
-                    ) : (
-                      <>
-                        <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color, flexShrink: 0 }} />
-                        <span style={{ flex: 1, fontSize: 12.5 }}>{t.name}</span>
-                        <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{countByTag.get(t.id) || 0} valor{(countByTag.get(t.id) || 0) === 1 ? "" : "es"}</span>
-                        <button onClick={() => startEdit(t)} title="Editar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 12, cursor: "pointer" }}><VsIcon name="edit" /></button>
-                        <button onClick={() => removeTag(t)} title="Eliminar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 11, cursor: "pointer" }}
-                          onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
-                          onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>quitar</button>
-                      </>
-                    )}
-                  </div>
-                ))}
+                {flat.map(t => {
+                  const assigned = securities.filter(s => (s.tagIds || []).includes(t.id)).sort((a, b) => a.name.localeCompare(b.name));
+                  const unassigned = securities.filter(s => !(s.tagIds || []).includes(t.id)).sort((a, b) => a.name.localeCompare(b.name));
+                  const isAssignOpen = expandedAssign.has(t.id);
+                  return (
+                    <div key={t.id} style={{ borderBottom: "1px solid #16202c" }}>
+                      <div style={{ padding: "6px 4px", paddingLeft: 4 + t.depth * 18, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        {editingId === t.id ? (
+                          <>
+                            {colorSwatch(editColor, setEditColor, 13)}
+                            <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...smallInputStyle, width: 140 }} />
+                            <select value={editParent} onChange={e => setEditParent(e.target.value)} style={selectStyle}>
+                              <option value="">— raíz —</option>
+                              {flat.filter(x => x.id !== t.id && !vsTagDescendantIds(tags, t.id).includes(x.id)).map(x => <option key={x.id} value={x.id}>{"—".repeat(x.depth)} {x.name}</option>)}
+                            </select>
+                            <button onClick={submitEdit} style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>guardar</button>
+                            <button onClick={() => setEditingId(null)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer" }}>cancelar</button>
+                          </>
+                        ) : (
+                          <>
+                            <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color, flexShrink: 0 }} />
+                            <span style={{ flex: 1, fontSize: 12.5 }}>{t.name}</span>
+                            <button onClick={() => toggleAssignExpand(t.id)} title="Gestionar valores asignados"
+                              style={{ background: "none", border: "none", color: "#5a7080", fontFamily: "'DM Mono',monospace", fontSize: 10, cursor: "pointer", padding: "2px 4px" }}
+                              onMouseEnter={e => { e.currentTarget.style.color = VS_A; }}
+                              onMouseLeave={e => { e.currentTarget.style.color = "#5a7080"; }}>
+                              {countByTag.get(t.id) || 0} valor{(countByTag.get(t.id) || 0) === 1 ? "" : "es"} {isAssignOpen ? "▾" : "▸"}
+                            </button>
+                            <button onClick={() => startEdit(t)} title="Editar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 12, cursor: "pointer" }}><VsIcon name="edit" /></button>
+                            <button onClick={() => removeTag(t)} title="Eliminar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 11, cursor: "pointer" }}
+                              onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
+                              onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>quitar</button>
+                          </>
+                        )}
+                      </div>
+                      {isAssignOpen && editingId !== t.id && (
+                        <div style={{ paddingLeft: 22 + t.depth * 18, paddingRight: 4, paddingBottom: 12 }}>
+                          {assigned.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
+                              {assigned.map(s => (
+                                <span key={s.isin} style={{ display: "inline-flex", alignItems: "center", gap: 5, background: t.color + "18", border: `1px solid ${t.color}45`, color: "#cbd5e1", borderRadius: 20, padding: "3px 8px", fontSize: 11 }}>
+                                  {s.name}
+                                  <span onClick={() => onToggleAssignment(s.isin, t.id)} title="Quitar" style={{ cursor: "pointer", opacity: 0.75, fontWeight: 700, color: "#f87171" }}>×</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {unassigned.length === 0 ? (
+                            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                              {securities.length === 0 ? "Aún no hay valores en el catálogo." : "Todos los valores del catálogo ya llevan esta etiqueta."}
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <select value={addDraft[t.id] || ""} onChange={e => setAddDraft(prev => ({ ...prev, [t.id]: e.target.value }))} style={{ ...selectStyle, flex: 1, maxWidth: 260 }}>
+                                <option value="">— elegir valor —</option>
+                                {unassigned.map(s => <option key={s.isin} value={s.isin}>{s.name}</option>)}
+                              </select>
+                              <button onClick={() => addAssignment(t.id)} disabled={!addDraft[t.id]}
+                                style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: addDraft[t.id] ? "pointer" : "not-allowed", opacity: addDraft[t.id] ? 1 : 0.5 }}>
+                                añadir
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )
           )}
@@ -4920,6 +4974,17 @@
       const updateSecurityTagIds = async (isin, tagIds) => {
         await updateSecurity(isin, { tagIds });
       };
+      // Alterna la pertenencia de un valor a un tag concreto — usado tanto
+      // desde el panel de Etiquetas (añadir/quitar por desplegable) como en
+      // cualquier otro sitio que quiera hacer un toggle puntual sin tener
+      // que recalcular el array completo de tagIds a mano.
+      const toggleSecurityTag = async (isin, tagId) => {
+        const sec = securitiesCatalog[isin];
+        if (!sec) return;
+        const current = sec.tagIds || [];
+        const nextIds = current.includes(tagId) ? current.filter(id => id !== tagId) : [...current, tagId];
+        await updateSecurity(isin, { tagIds: nextIds });
+      };
       const addTag = async (tag) => {
         const next = { ...portfolio, tags: [...tags, { id: vsTagId(), name: tag.name, parentId: tag.parentId || null, color: tag.color }] };
         await onSave(next);
@@ -5004,7 +5069,7 @@
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
 
       return (
-        <div style={{ display: "grid", gridTemplateColumns: "720px 1fr", gap: 20, padding: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, padding: 20 }}>
           <div style={{ alignSelf: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Importar movimientos</div>
@@ -5038,7 +5103,7 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsTagsPanel tags={tags} securities={securitiesList} onAdd={addTag} onUpdate={updateTag} onDelete={deleteTag} />
+            <VsTagsPanel tags={tags} securities={securitiesList} onAdd={addTag} onUpdate={updateTag} onDelete={deleteTag} onToggleAssignment={toggleSecurityTag} />
 
             <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
             <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
@@ -5232,7 +5297,7 @@
             <div style={kpiValueStyle}>{vsPortfolioFmtEUR(kpis.invested)}</div>
           </div>
           <div style={kpiCardStyle}>
-            <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={infoText} width={210} /></div>
+            <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={infoText} width={210} align="right" /></div>
             <div style={kpiLabelStyle}>Valor actual</div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ ...kpiValueStyle, color: VS_A }}>{vsPortfolioFmtEUR(kpis.currentValue)}</div>
@@ -5391,7 +5456,7 @@
         return (
           <div style={{ padding: 20 }}>
             <div style={{ textAlign: "center", padding: "40px 0", color: "#5a7080", fontSize: 13, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>
-              Aún no hay transacciones — importa o añade movimientos en la pestaña "Transacciones".
+              Aún no hay transacciones — importa o añade movimientos en la pestaña "Configuración".
             </div>
           </div>
         );
@@ -5482,7 +5547,7 @@
                   <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
                     {tags.length === 0 ? (
                       <div style={{ fontSize: 12, color: "#5a7080", fontFamily: "'DM Mono',monospace", padding: "8px 0" }}>
-                        Aún no has creado etiquetas — hazlo desde el panel "Etiquetas" en la pestaña "Transacciones".
+                        Aún no has creado etiquetas — hazlo desde el panel "Etiquetas" en la pestaña "Configuración".
                       </div>
                     ) : (
                       <>
@@ -5531,7 +5596,7 @@
         ]},
         { id: "cartera", label: "Seguimiento de cartera", tabs: [
           { id: "resumen", label: "Mi cartera", icon: "📊" },
-          { id: "cartera", label: "Transacciones", icon: "💼" },
+          { id: "cartera", label: "Configuración", icon: "💼" },
         ]},
       ];
       const [section, setSection] = useState("cartera");
