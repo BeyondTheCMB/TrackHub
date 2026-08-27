@@ -4778,7 +4778,14 @@
               </div>
               <div style={kpiCardStyle}>
                 <div style={kpiLabelStyle}>Valor actual</div>
-                <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                  <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
+                  {kpis.invested > 0 && (
+                    <div style={{ fontSize: 13, fontWeight: 700, color: vsChangeColor(kpis.currentValue - kpis.invested), fontFamily: "'DM Mono',monospace" }}>
+                      {vsFmtSignedEUR(kpis.currentValue - kpis.invested)} ({vsFmtPct(((kpis.currentValue - kpis.invested) / kpis.invested) * 100)})
+                    </div>
+                  )}
+                </div>
                 <div style={{ fontSize: 10, color: kpis.unpricedHeld > 0 ? "#f59e0b" : "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
                   {kpis.heldCount === 0
                     ? "sin posiciones abiertas"
@@ -4903,11 +4910,32 @@
         if (shares <= 1e-9) continue;
         const hasPrice = !!(sec && sec.price != null);
         const value = hasPrice ? shares * sec.price : Math.max(invested, 0);
-        rows.push({ isin, name, shares, invested, value, hasPrice });
+        // Cambio desde el coste — solo tiene sentido si de verdad hay
+        // precio de mercado (si no, value==invested por el propio
+        // fallback y el cambio saldría siempre 0, engañoso).
+        const change = hasPrice ? value - invested : null;
+        const changePct = hasPrice && invested > 0 ? (change / invested) * 100 : null;
+        rows.push({ isin, name, shares, invested, value, hasPrice, change, changePct });
       }
       rows.sort((a, b) => b.value - a.value);
       const totalValue = rows.reduce((s, r) => s + r.value, 0);
       return { rows: rows.map(r => ({ ...r, pct: totalValue > 0 ? (r.value / totalValue) * 100 : 0 })), anomalies, totalValue };
+    }
+
+    // Color y formato compartidos para cifras de ganancia/pérdida — verde
+    // si es positivo, rojo si es negativo, gris si no hay dato.
+    function vsChangeColor(n) {
+      if (n == null) return "#5a7080";
+      return n > 0 ? "#34d399" : n < 0 ? "#f87171" : "#7a90a8";
+    }
+    function vsFmtPct(n) {
+      if (n == null) return "—";
+      return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
+    }
+    function vsFmtSignedEUR(n) {
+      if (n == null) return "—";
+      const s = Math.abs(n).toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+      return `${n > 0 ? "+" : n < 0 ? "-" : ""}${s}`;
     }
 
     const VS_ALLOCATION_COLORS = [VS_A, VS_B, "#f59e0b", "#34d399", "#f87171", "#60a5fa", "#fb923c", "#4ade80", "#e879f9", "#facc15"];
@@ -4972,6 +5000,8 @@
         () => vsComputeAllocation(transactions, securitiesCatalog),
         [transactions, securitiesCatalog]
       );
+      const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
+      const totalChangePct = totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null;
       const [hoveredIsin, setHoveredIsin] = useState(null);
       const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
 
@@ -5015,7 +5045,7 @@
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5, minWidth: 400 }}>
                     <thead>
                       <tr>
-                        {["", "Valor", "Títulos", "Invertido", "Valor actual", "%"].map((h, i) => (
+                        {["", "Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
                           <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em", padding: "3px 6px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                         ))}
                       </tr>
@@ -5034,6 +5064,7 @@
                             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
                             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
                             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
+                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
                             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
                           </tr>
                         );
@@ -5044,8 +5075,11 @@
                         <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                         <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontWeight: 700 }}>Total</td>
                         <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(rows.reduce((s, r) => s + r.invested, 0))}</td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalInvested)}</td>
                         <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalChangePct) }}>
+                          {vsFmtPct(totalChangePct)}
+                        </td>
                         <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                       </tr>
                     </tfoot>
