@@ -69,10 +69,10 @@
     // de datos + importación; el motor de cálculo (TTWROR/XIRR) llega en
     // la fase siguiente, sobre esta misma tabla.
     const vsLoadPortfolio = async (profileId) => {
-      if (!profileId) return { transactions: [], securities: {} };
+      if (!profileId) return { transactions: [], securities: {}, tags: [] };
       const { data } = await _sb.from("vs_portfolio").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
       const p = (data && data.data) ? data.data : {};
-      return { transactions: p.transactions || [], securities: p.securities || {} };
+      return { transactions: p.transactions || [], securities: p.securities || {}, tags: p.tags || [] };
     };
     const vsSavePortfolio = async (profileId, portfolioObj) => {
       await _sb.from("vs_portfolio").upsert({ user_id: _sbUser.id, profile_id: profileId, data: portfolioObj }, { onConflict: "user_id,profile_id" });
@@ -3960,6 +3960,284 @@
       return invested;
     }
 
+    // ── Etiquetas · Fase 3 — clasificación jerárquica y personalizable ────
+    // Sin taxonomía predefinida: el usuario crea el árbol entero desde
+    // cero. Cada tag es { id, name, parentId, color }, guardado en
+    // portfolio.tags (mismo patrón JSON que transactions/securities, sin
+    // tabla nueva en Supabase). Un valor puede llevar varios tagIds a la
+    // vez — no son exclusivos entre sí — lo que permite que convivan ejes
+    // distintos en el mismo árbol (clase de activo, estilo de gestión,
+    // tamaño...) según el propio usuario decida organizarlo.
+    const vsTagId = () => "tag_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    const VS_TAG_COLORS = ["#a78bfa", "#22d3ee", "#f59e0b", "#34d399", "#f87171", "#60a5fa", "#fb923c", "#4ade80", "#e879f9", "#facc15", "#7a90a8", "#fda4af"];
+
+    const vsTagsById = (tags) => new Map(tags.map(t => [t.id, t]));
+    const vsTagsByParent = (tags) => {
+      const map = new Map();
+      for (const t of tags) {
+        const key = t.parentId || null;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(t);
+      }
+      for (const arr of map.values()) arr.sort((a, b) => a.name.localeCompare(b.name));
+      return map;
+    };
+    // Todos los ids descendientes de un tag (sin incluirse a sí mismo) —
+    // para borrado en cascada y para el roll-up de valores al agrupar.
+    function vsTagDescendantIds(tags, tagId) {
+      const byParent = vsTagsByParent(tags);
+      const out = [];
+      const walk = (id) => { for (const child of (byParent.get(id) || [])) { out.push(child.id); walk(child.id); } };
+      walk(tagId);
+      return out;
+    }
+    // Cadena raíz→tag (ids, inclusive). `seen` evita colgarse si algún día
+    // hubiera un ciclo corrupto en los datos.
+    function vsTagAncestorChain(tagsById, tagId) {
+      const chain = []; const seen = new Set(); let cur = tagsById.get(tagId);
+      while (cur && !seen.has(cur.id)) { seen.add(cur.id); chain.unshift(cur.id); cur = cur.parentId ? tagsById.get(cur.parentId) : null; }
+      return chain;
+    }
+    // "Renta Variable › Acciones › Indexada" — para tooltips.
+    function vsTagPathLabel(tagsById, tagId) {
+      const tag = tagsById.get(tagId);
+      if (!tag) return "";
+      return vsTagAncestorChain(tagsById, tagId).map(id => tagsById.get(id).name).join(" › ");
+    }
+    // Lista plana en orden de árbol (profundo primero, ramas alfabéticas)
+    // con profundidad — para pintar selects/menús indentados sin recorrer
+    // el árbol de nuevo en cada sitio que lo necesita.
+    function vsFlattenTagTree(tags) {
+      const byParent = vsTagsByParent(tags);
+      const out = [];
+      const walk = (parentId, depth) => { for (const t of (byParent.get(parentId) || [])) { out.push({ ...t, depth }); walk(t.id, depth + 1); } };
+      walk(null, 0);
+      return out;
+    }
+    // Reparte las filas de asignación (vsComputeAllocation) sobre el árbol
+    // de tags: cada tag acumula el valor de todo lo que lleve ese tag o
+    // cualquiera de sus descendientes, así "Renta Variable" suma sola lo
+    // que haya debajo en "Acciones", "Fondos", etc. Si un valor lleva tags
+    // de dos ramas raíz distintas a la vez (ejes independientes conviviendo
+    // en el árbol) contribuye entero a las dos — es multi-etiquetado a
+    // propósito, no un bug; el total de una rama puede por tanto no sumar
+    // el 100% de la cartera.
+    function vsBuildTagAllocationTree(rows, tags) {
+      const tagsById = vsTagsById(tags);
+      const byParent = vsTagsByParent(tags);
+      const acc = new Map(); // tagId -> { value, invested, directRows: [] }
+      const ensure = (id) => { if (!acc.has(id)) acc.set(id, { value: 0, invested: 0, directRows: [] }); return acc.get(id); };
+      const untagged = { value: 0, invested: 0, rows: [] };
+      for (const row of rows) {
+        const tagIds = (row.tagIds || []).filter(id => tagsById.has(id));
+        if (tagIds.length === 0) {
+          untagged.value += row.value; untagged.invested += row.invested; untagged.rows.push(row);
+          continue;
+        }
+        const touched = new Set();
+        for (const tid of tagIds) for (const anc of vsTagAncestorChain(tagsById, tid)) touched.add(anc);
+        for (const id of touched) { const n = ensure(id); n.value += row.value; n.invested += row.invested; }
+        for (const tid of tagIds) ensure(tid).directRows.push(row);
+      }
+      const buildBranch = (parentId) => (byParent.get(parentId) || [])
+        .map(t => {
+          const n = ensure(t.id);
+          return { tag: t, value: n.value, invested: n.invested, directRows: n.directRows, children: buildBranch(t.id) };
+        })
+        .filter(node => node.value > 0 || node.directRows.length > 0 || node.children.length > 0)
+        .sort((a, b) => b.value - a.value);
+      return { branches: buildBranch(null), untagged };
+    }
+
+    // Chips de solo lectura (tabla de asignación) — muestra los tags de un
+    // valor con su color, o un guion si no tiene ninguno.
+    function VsTagChips({ tagIds, tagsById }) {
+      const list = (tagIds || []).map(id => tagsById.get(id)).filter(Boolean);
+      if (list.length === 0) return <span style={{ color: "#3a4550", fontSize: 10 }}>—</span>;
+      return (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+          {list.map(t => (
+            <span key={t.id} title={vsTagPathLabel(tagsById, t.id)}
+              style={{ background: t.color + "22", border: `1px solid ${t.color}55`, color: t.color, borderRadius: 20, padding: "1px 6px", fontSize: 9.5, fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>
+              {t.name}
+            </span>
+          ))}
+        </div>
+      );
+    }
+
+    // Editor de asignación (catálogo de valores) — chips con opción de
+    // quitar + un desplegable inline (no popover, para no pelearse con el
+    // overflow:auto de las tablas) con todo el árbol indentado como lista
+    // de check.
+    function VsTagAssign({ tags, selectedIds, onChange }) {
+      const [open, setOpen] = useState(false);
+      const tagsById = useMemo(() => vsTagsById(tags), [tags]);
+      const flat = useMemo(() => vsFlattenTagTree(tags), [tags]);
+      const selected = selectedIds || [];
+      const toggleTag = (id) => onChange(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+      return (
+        <div>
+          {selected.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
+              {selected.map(id => tagsById.get(id)).filter(Boolean).map(t => (
+                <span key={t.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: t.color + "22", border: `1px solid ${t.color}55`, color: t.color, borderRadius: 20, padding: "2px 7px", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>
+                  {t.name}
+                  <span onClick={() => toggleTag(t.id)} title="Quitar" style={{ cursor: "pointer", opacity: 0.75, fontWeight: 700 }}>×</span>
+                </span>
+              ))}
+            </div>
+          )}
+          <button onClick={() => setOpen(v => !v)} style={{ background: "none", border: "1px dashed #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+            {open ? "cerrar" : "+ etiqueta"}
+          </button>
+          {open && (
+            <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto", background: "#060d14", border: "1px solid #1a2535", borderRadius: 6, padding: 4, minWidth: 160 }}>
+              {flat.length === 0 ? (
+                <div style={{ fontSize: 10, color: "#5a7080", padding: "4px 2px" }}>Sin etiquetas creadas — usa el panel "Etiquetas" de arriba.</div>
+              ) : flat.map(t => (
+                <div key={t.id} onClick={() => toggleTag(t.id)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", paddingLeft: 4 + t.depth * 14, cursor: "pointer", borderRadius: 4, fontSize: 11 }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "#0d1825"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                  <span style={{ width: 11, textAlign: "center", color: VS_A, fontSize: 10 }}>{selected.includes(t.id) ? "✓" : ""}</span>
+                  <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: t.color, flexShrink: 0 }} />
+                  <span style={{ color: "#cbd5e1" }}>{t.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Panel de gestión del árbol de etiquetas — crear, renombrar, mover de
+    // rama (reparent) y borrar (en cascada: subetiquetas + desasignación
+    // de todos los valores que las llevaran). Mismo patrón visual
+    // colapsable que VsSecuritiesPanel.
+    function VsTagsPanel({ tags, securities, onAdd, onUpdate, onDelete }) {
+      const [open, setOpen] = useState(tags.length > 0);
+      const [showNew, setShowNew] = useState(false);
+      const [draftName, setDraftName] = useState("");
+      const [draftParent, setDraftParent] = useState("");
+      const [draftColor, setDraftColor] = useState(VS_TAG_COLORS[0]);
+      const [editingId, setEditingId] = useState(null);
+      const [editName, setEditName] = useState("");
+      const [editParent, setEditParent] = useState("");
+      const [editColor, setEditColor] = useState("");
+
+      const flat = useMemo(() => vsFlattenTagTree(tags), [tags]);
+      const countByTag = useMemo(() => {
+        const m = new Map();
+        for (const s of securities) for (const id of (s.tagIds || [])) m.set(id, (m.get(id) || 0) + 1);
+        return m;
+      }, [securities]);
+
+      const submitNew = async () => {
+        const name = draftName.trim();
+        if (!name) return;
+        await onAdd({ name, parentId: draftParent || null, color: draftColor });
+        setDraftName(""); setDraftParent(""); setDraftColor(VS_TAG_COLORS[Math.floor(Math.random() * VS_TAG_COLORS.length)]);
+        setShowNew(false); setOpen(true);
+      };
+      const startEdit = (t) => { setEditingId(t.id); setEditName(t.name); setEditParent(t.parentId || ""); setEditColor(t.color); };
+      const submitEdit = async () => {
+        const name = editName.trim();
+        if (!name) return;
+        await onUpdate(editingId, { name, parentId: editParent || null, color: editColor });
+        setEditingId(null);
+      };
+      const removeTag = async (t) => {
+        const descendants = vsTagDescendantIds(tags, t.id);
+        const affected = [t.id, ...descendants].reduce((s, id) => s + (countByTag.get(id) || 0), 0);
+        const parts = [descendants.length > 0 ? `se eliminarán también sus ${descendants.length} subetiqueta${descendants.length === 1 ? "" : "s"}` : null,
+          affected > 0 ? `${affected} valor(es) perderán esta clasificación` : null].filter(Boolean).join(" y ");
+        const msg = `¿Eliminar "${t.name}"?${parts ? ` (${parts})` : ""}`;
+        if (!window.confirm(msg)) return;
+        await onDelete(t.id);
+      };
+
+      const selectStyle = { background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 8px", fontSize: 11 };
+      const smallInputStyle = { background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 8px", fontSize: 11 };
+      const colorSwatch = (value, onPick, size = 15) => (
+        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+          {VS_TAG_COLORS.map(c => (
+            <div key={c} onClick={() => onPick(c)}
+              style={{ width: size, height: size, borderRadius: 4, background: c, cursor: "pointer", border: value === c ? "2px solid #fff" : "2px solid transparent" }} />
+          ))}
+        </div>
+      );
+
+      return (
+        <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setOpen(v => !v)}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>
+                Etiquetas <span style={{ color: "#5a7080", fontWeight: 400, fontSize: 12, fontFamily: "'DM Mono',monospace" }}>({tags.length})</span>
+              </div>
+              <span style={{ color: "#7a90a8", fontSize: 12 }}>{open ? "ocultar ▲" : "mostrar ▼"}</span>
+            </div>
+            <button onClick={() => { setOpen(true); setShowNew(v => !v); }} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
+              {showNew ? "cerrar" : "+ nueva"}
+            </button>
+          </div>
+
+          {showNew && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a2535" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                <input value={draftName} onChange={e => setDraftName(e.target.value)} placeholder="nombre (ej. Renta Variable)" style={{ ...smallInputStyle, flex: 1, minWidth: 140 }} />
+                <select value={draftParent} onChange={e => setDraftParent(e.target.value)} style={selectStyle}>
+                  <option value="">— etiqueta raíz —</option>
+                  {flat.map(t => <option key={t.id} value={t.id}>{"—".repeat(t.depth)} {t.name}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                {colorSwatch(draftColor, setDraftColor)}
+                <button onClick={submitNew} disabled={!draftName.trim()} style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: draftName.trim() ? "pointer" : "not-allowed" }}>crear</button>
+              </div>
+            </div>
+          )}
+
+          {open && (
+            tags.length === 0 ? (
+              <div style={{ marginTop: 14, textAlign: "center", padding: "16px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>
+                Sin etiquetas todavía — crea la primera con "+ nueva". Puedes anidarlas después (ej. Renta Variable → Acciones, Fondos, Indexada...).
+              </div>
+            ) : (
+              <div style={{ marginTop: 14 }}>
+                {flat.map(t => (
+                  <div key={t.id} style={{ padding: "6px 4px", paddingLeft: 4 + t.depth * 18, display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid #16202c", flexWrap: "wrap" }}>
+                    {editingId === t.id ? (
+                      <>
+                        {colorSwatch(editColor, setEditColor, 13)}
+                        <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...smallInputStyle, width: 140 }} />
+                        <select value={editParent} onChange={e => setEditParent(e.target.value)} style={selectStyle}>
+                          <option value="">— raíz —</option>
+                          {flat.filter(x => x.id !== t.id && !vsTagDescendantIds(tags, t.id).includes(x.id)).map(x => <option key={x.id} value={x.id}>{"—".repeat(x.depth)} {x.name}</option>)}
+                        </select>
+                        <button onClick={submitEdit} style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>guardar</button>
+                        <button onClick={() => setEditingId(null)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer" }}>cancelar</button>
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color, flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontSize: 12.5 }}>{t.name}</span>
+                        <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{countByTag.get(t.id) || 0} valor{(countByTag.get(t.id) || 0) === 1 ? "" : "es"}</span>
+                        <button onClick={() => startEdit(t)} title="Editar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 12, cursor: "pointer" }}><VsIcon name="edit" /></button>
+                        <button onClick={() => removeTag(t)} title="Eliminar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 11, cursor: "pointer" }}
+                          onMouseEnter={e => { e.currentTarget.style.borderColor = "#f87171"; e.currentTarget.style.color = "#f87171"; }}
+                          onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a2535"; e.currentTarget.style.color = "#7a90a8"; }}>quitar</button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          )}
+        </div>
+      );
+    }
+
     // ─── Formulario de alta manual ─────────────────────────────────────────
     function VsManualTxForm({ accounts, securities, initial, submitLabel, onAdd, onCancel }) {
       const initF = () => {
@@ -4229,7 +4507,7 @@
       yahoo: { field: "yahooTicker", label: "Ticker Yahoo", placeholder: "ticker", fetchQuote: vsFetchYahooQuote, resolve: vsResolveYahooTicker, searchUrl: vsYahooSearchUrl, resolvedField: "ticker" },
     };
 
-    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate, onRename }) {
+    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate, onRename, tags, onUpdateTagIds }) {
       const src = mode ? VS_PRICE_SOURCES[mode] : null;
       const [fieldDraft, setFieldDraft] = useState((src && security[src.field]) || "");
       const [fetching, setFetching] = useState(false);
@@ -4381,11 +4659,14 @@
               {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
             </td>
           )}
+          <td style={{ ...cellStyle, width: 170, maxWidth: 190 }}>
+            <VsTagAssign tags={tags} selectedIds={security.tagIds} onChange={ids => onUpdateTagIds(ids)} />
+          </td>
         </tr>
       );
     }
 
-    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate, onRenameSecurity }) {
+    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate, onRenameSecurity, tags, onUpdateTagIds }) {
       const [open, setOpen] = useState(false);
       const [bulkRefreshing, setBulkRefreshing] = useState(false);
       const [bulkResolving, setBulkResolving] = useState(false);
@@ -4466,10 +4747,10 @@
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 560 : 380 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 720 : 540 }}>
                 <thead>
                   <tr>
-                    {(src ? ["Valor", "Precio", "", src.label] : ["Valor", "Precio", ""]).map((h, i) => (
+                    {(src ? ["Valor", "Precio", "", src.label, "Etiquetas"] : ["Valor", "Precio", "", "Etiquetas"]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
@@ -4478,7 +4759,8 @@
                   {securities.map(s => (
                     <VsSecurityRow key={s.isin} security={s} mode={mode} moveLabel={moveLabel}
                       onMove={() => onMove(s.isin)} onUpdate={patch => onUpdateSecurity(s.isin, patch)}
-                      onRename={patch => onRenameSecurity(s.isin, patch)} />
+                      onRename={patch => onRenameSecurity(s.isin, patch)}
+                      tags={tags} onUpdateTagIds={ids => onUpdateTagIds(s.isin, ids)} />
                   ))}
                 </tbody>
               </table>
@@ -4497,6 +4779,7 @@
     function VsCarteraTab({ portfolio, onSave }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
+      const tags = portfolio.tags || [];
       const securitiesList = useMemo(
         () => Object.values(securitiesCatalog).sort((a, b) => a.name.localeCompare(b.name)),
         [securitiesCatalog]
@@ -4573,7 +4856,7 @@
             finectUrl: (draft.finectUrl || "").trim() || null,
             yahooTicker: (draft.yahooTicker || "").trim() || null,
             price: null, priceCurrency: null, priceAsOf: null, priceSource: null,
-            assetType: draft.assetType || "fund",
+            assetType: draft.assetType || "fund", tagIds: [],
           };
         }
         const renamedCommit = toCommit.map(t => t.isin && nextSecurities[t.isin] ? { ...t, name: nextSecurities[t.isin].name } : t);
@@ -4593,7 +4876,7 @@
         // Si el ISIN cambió o es uno nuevo, se registra/actualiza también
         // en el catálogo — igual que al añadir una transacción manual.
         const nextSecurities = patch.isin
-          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, yahooTicker: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
+          ? { ...securitiesCatalog, [patch.isin]: securitiesCatalog[patch.isin] || { isin: patch.isin, name: patch.name, currency: patch.currency || "EUR", finectUrl: null, yahooTicker: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund", tagIds: [] } }
           : securitiesCatalog;
         const next = { ...portfolio, transactions: transactions.map(t => t.id === id ? { ...t, ...patch } : t), securities: nextSecurities };
         await onSave(next);
@@ -4610,7 +4893,7 @@
 
       const addManual = async (tx) => {
         const nextSecurities = tx.isin
-          ? { ...securitiesCatalog, [tx.isin]: securitiesCatalog[tx.isin] || { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR", finectUrl: null, yahooTicker: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund" } }
+          ? { ...securitiesCatalog, [tx.isin]: securitiesCatalog[tx.isin] || { isin: tx.isin, name: tx.name, currency: tx.currency || "EUR", finectUrl: null, yahooTicker: null, price: null, priceCurrency: null, priceAsOf: null, priceSource: null, assetType: "fund", tagIds: [] } }
           : securitiesCatalog;
         const next = { ...portfolio, transactions: [...transactions, { ...tx, id: vsTxId() }], securities: nextSecurities };
         await onSave(next);
@@ -4631,6 +4914,33 @@
           nextSecurities[isin] = { ...nextSecurities[isin], ...patch };
         }
         const next = { ...portfolio, securities: nextSecurities };
+        await onSave(next);
+      };
+
+      const updateSecurityTagIds = async (isin, tagIds) => {
+        await updateSecurity(isin, { tagIds });
+      };
+      const addTag = async (tag) => {
+        const next = { ...portfolio, tags: [...tags, { id: vsTagId(), name: tag.name, parentId: tag.parentId || null, color: tag.color }] };
+        await onSave(next);
+      };
+      const updateTag = async (id, patch) => {
+        const next = { ...portfolio, tags: tags.map(t => t.id === id ? { ...t, ...patch } : t) };
+        await onSave(next);
+      };
+      // Borrado en cascada: se lleva también las subetiquetas y desasigna
+      // el tag (y sus descendientes) de cualquier valor que los llevara,
+      // para no dejar tagIds "huérfanos" apuntando a un tag que ya no existe.
+      const deleteTag = async (id) => {
+        const toRemove = new Set([id, ...vsTagDescendantIds(tags, id)]);
+        const nextTags = tags.filter(t => !toRemove.has(t.id));
+        const nextSecurities = { ...securitiesCatalog };
+        for (const [isin, sec] of Object.entries(securitiesCatalog)) {
+          if (!sec.tagIds || sec.tagIds.length === 0) continue;
+          const filtered = sec.tagIds.filter(tid => !toRemove.has(tid));
+          if (filtered.length !== sec.tagIds.length) nextSecurities[isin] = { ...sec, tagIds: filtered };
+        }
+        const next = { ...portfolio, tags: nextTags, securities: nextSecurities };
         await onSave(next);
       };
 
@@ -4728,8 +5038,10 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} />
-            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} />
+            <VsTagsPanel tags={tags} securities={securitiesList} onAdd={addTag} onUpdate={updateTag} onDelete={deleteTag} />
+
+            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
+            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
           </div>
 
           <div>
@@ -4854,7 +5166,7 @@
         // fallback y el cambio saldría siempre 0, engañoso).
         const change = hasPrice ? value - invested : null;
         const changePct = hasPrice && invested > 0 ? (change / invested) * 100 : null;
-        rows.push({ isin, name, shares, invested, value, hasPrice, change, changePct });
+        rows.push({ isin, name, shares, invested, value, hasPrice, change, changePct, tagIds: (sec && sec.tagIds) || [] });
       }
       rows.sort((a, b) => b.value - a.value);
       const totalValue = rows.reduce((s, r) => s + r.value, 0);
@@ -5006,9 +5318,59 @@
       );
     }
 
+    // Fila (grupo o valor suelto) de la vista "por etiqueta" — recursiva:
+    // cada tag se pinta a sí mismo y, si está expandido, sus valores
+    // asignados directamente y sus subetiquetas debajo, indentadas un
+    // nivel más. Misma cuadrícula de columnas que la tabla "por valor"
+    // para que ambas vistas compartan cabecera.
+    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR }) {
+      const hasChildren = node.children && node.children.length > 0;
+      const hasDirect = node.directRows && node.directRows.length > 0;
+      const expandable = hasChildren || hasDirect;
+      const isOpen = expanded.has(node.tag.id);
+      const weightPct = totalValue > 0 ? (node.value / totalValue) * 100 : 0;
+      const changePct = node.invested > 0 ? ((node.value - node.invested) / node.invested) * 100 : null;
+      const cellStyle = { padding: "5px 7px", borderBottom: "1px solid #16202c" };
+      return (
+        <React.Fragment>
+          <tr style={{ cursor: expandable ? "pointer" : "default" }} onClick={() => expandable && onToggle(node.tag.id)}>
+            <td style={cellStyle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: node.tag.color }} /></td>
+            <td style={{ ...cellStyle, paddingLeft: 7 + depth * 16, fontWeight: depth === 0 ? 700 : 500 }}>
+              {expandable && <span style={{ color: "#5a7080", marginRight: 5, display: "inline-block", width: 8 }}>{isOpen ? "▾" : "▸"}</span>}
+              {node.tag.name}
+            </td>
+            <td style={cellStyle}></td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(node.invested)}</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(node.value)}</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(changePct) }}>{vsFmtPct(changePct)}</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{weightPct.toFixed(1)}%</td>
+          </tr>
+          {isOpen && hasDirect && node.directRows.map(r => {
+            const rChangePct = r.invested > 0 ? ((r.value - r.invested) / r.invested) * 100 : null;
+            const rWeight = totalValue > 0 ? (r.value / totalValue) * 100 : 0;
+            return (
+              <tr key={node.tag.id + "_" + r.isin} style={{ opacity: 0.85 }}>
+                <td style={cellStyle}></td>
+                <td style={{ ...cellStyle, paddingLeft: 7 + (depth + 1) * 16, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#9aaabb" }} title={r.name}>{r.name}</td>
+                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
+                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
+                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.value)}</td>
+                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(rChangePct) }}>{vsFmtPct(rChangePct)}</td>
+                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{rWeight.toFixed(1)}%</td>
+              </tr>
+            );
+          })}
+          {isOpen && hasChildren && node.children.map(child => (
+            <VsTagAllocGroupRows key={child.tag.id} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} totalValue={totalValue} fmtEUR={fmtEUR} />
+          ))}
+        </React.Fragment>
+      );
+    }
+
     function VsMiCarteraTab({ portfolio }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
+      const tags = portfolio.tags || [];
       const { rows, anomalies, totalValue } = useMemo(
         () => vsComputeAllocation(transactions, securitiesCatalog),
         [transactions, securitiesCatalog]
@@ -5017,7 +5379,13 @@
       const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
       const totalChangePct = totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null;
       const [hoveredIsin, setHoveredIsin] = useState(null);
+      const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
       const fmtEUR = vsPortfolioFmtEUR;
+      const tagsById = useMemo(() => vsTagsById(tags), [tags]);
+      const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
+      const [expandedTags, setExpandedTags] = useState(() => new Set(tagTree.branches.map(b => b.tag.id)));
+      const toggleTag = (id) => setExpandedTags(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+      const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
 
       if (transactions.length === 0) {
         return (
@@ -5051,56 +5419,99 @@
           )}
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Asignación por valor</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Asignación por valor</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setViewMode("valor")} style={segBtnStyle(viewMode === "valor")}>Por valor</button>
+                <button onClick={() => setViewMode("tag")} style={segBtnStyle(viewMode === "tag")}>Por etiqueta</button>
+              </div>
+            </div>
             {rows.length === 0 ? (
               <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin posiciones abiertas.</div>
             ) : (
               <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "center" }}>
                 <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
-                <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
-                    <thead>
-                      <tr>
-                        {["", "Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
-                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((r, i) => {
-                        const isHovered = hoveredIsin === r.isin;
-                        return (
-                          <tr key={r.isin} onMouseEnter={() => setHoveredIsin(r.isin)} onMouseLeave={() => setHoveredIsin(null)}
-                            style={{ background: isHovered ? "#a78bfa0f" : "transparent", cursor: "default" }}>
-                            <td style={cellStyle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length] }} /></td>
-                            <td style={{ ...cellStyle, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>
-                              {r.name}
-                              {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
-                            </td>
-                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
-                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
-                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
-                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
-                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontWeight: 700 }}>Total</td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalInvested)}</td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalChangePct) }}>
-                          {vsFmtPct(totalChangePct)}
-                        </td>
-                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
+                {viewMode === "valor" ? (
+                  <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 520 }}>
+                      <thead>
+                        <tr>
+                          {["", "Valor", "Etiquetas", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
+                            <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r, i) => {
+                          const isHovered = hoveredIsin === r.isin;
+                          return (
+                            <tr key={r.isin} onMouseEnter={() => setHoveredIsin(r.isin)} onMouseLeave={() => setHoveredIsin(null)}
+                              style={{ background: isHovered ? "#a78bfa0f" : "transparent", cursor: "default" }}>
+                              <td style={cellStyle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length] }} /></td>
+                              <td style={{ ...cellStyle, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>
+                                {r.name}
+                                {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
+                              </td>
+                              <td style={cellStyle}><VsTagChips tagIds={r.tagIds} tagsById={tagsById} /></td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontWeight: 700 }}>Total</td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalInvested)}</td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalChangePct) }}>
+                            {vsFmtPct(totalChangePct)}
+                          </td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
+                    {tags.length === 0 ? (
+                      <div style={{ fontSize: 12, color: "#5a7080", fontFamily: "'DM Mono',monospace", padding: "8px 0" }}>
+                        Aún no has creado etiquetas — hazlo desde el panel "Etiquetas" en la pestaña "Transacciones".
+                      </div>
+                    ) : (
+                      <>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
+                          <thead>
+                            <tr>
+                              {["", "Etiqueta / Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
+                                <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tagTree.branches.map(b => (
+                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} />
+                            ))}
+                            {tagTree.untagged.rows.length > 0 && (
+                              <VsTagAllocGroupRows
+                                node={{ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, value: tagTree.untagged.value, invested: tagTree.untagged.invested, directRows: tagTree.untagged.rows, children: [] }}
+                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} />
+                            )}
+                          </tbody>
+                        </table>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 8 }}>
+                          Si un valor lleva etiquetas de más de una rama, cuenta en cada una — los grupos pueden solapar y no sumar el 100%.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -5127,7 +5538,7 @@
       const [tab, setTab] = useState("resumen");
       const [factors, setFactors] = useState({});
       const [funds, setFunds] = useState({});
-      const [portfolio, setPortfolio] = useState({ transactions: [], securities: {} });
+      const [portfolio, setPortfolio] = useState({ transactions: [], securities: {}, tags: [] });
       const [loading, setLoading] = useState(true);
       const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
