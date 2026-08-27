@@ -4239,11 +4239,10 @@
                           <>
                             <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color, flexShrink: 0 }} />
                             <span style={{ flex: 1, fontSize: 12.5 }}>{t.name}</span>
-                            <button onClick={() => toggleAssignExpand(t.id)} title="Gestionar valores asignados"
-                              style={{ background: "none", border: "none", color: "#5a7080", fontFamily: "'DM Mono',monospace", fontSize: 10, cursor: "pointer", padding: "2px 4px" }}
-                              onMouseEnter={e => { e.currentTarget.style.color = VS_A; }}
-                              onMouseLeave={e => { e.currentTarget.style.color = "#5a7080"; }}>
-                              {countByTag.get(t.id) || 0} valor{(countByTag.get(t.id) || 0) === 1 ? "" : "es"} {isAssignOpen ? "▾" : "▸"}
+                            <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{countByTag.get(t.id) || 0} valor{(countByTag.get(t.id) || 0) === 1 ? "" : "es"}</span>
+                            <button onClick={() => toggleAssignExpand(t.id)} title="Añadir o quitar valores"
+                              style={{ background: isAssignOpen ? VS_A + "18" : "none", border: `1px solid ${isAssignOpen ? VS_A : "#1a2535"}`, color: isAssignOpen ? VS_A : "#7a90a8", borderRadius: 6, padding: "4px 8px", fontSize: 13, cursor: "pointer", lineHeight: 1 }}>
+                              +
                             </button>
                             <button onClick={() => startEdit(t)} title="Editar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 12, cursor: "pointer" }}><VsIcon name="edit" /></button>
                             <button onClick={() => removeTag(t)} title="Eliminar" style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 7px", fontSize: 11, cursor: "pointer" }}
