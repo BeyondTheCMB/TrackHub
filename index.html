@@ -15867,12 +15867,22 @@
 
       const saveField = () => { if (src && fieldDraft.trim() !== (security[src.field] || "")) onUpdate({ [src.field]: fieldDraft.trim() || null }); };
 
+      // El proxy adjunta originalPrice/originalCurrency/fxRate cuando ha
+      // tenido que convertir a EUR (valores que cotizan en USD, GBP...) —
+      // se guardan para poder mostrar de un vistazo que la conversión se
+      // aplicó, en vez de solo confiar en que el número ya esté bien.
+      const priceUpdate = (q) => ({
+        price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode,
+        priceOriginalValue: q.originalPrice != null ? q.originalPrice : null,
+        priceOriginalCurrency: q.originalCurrency || null,
+      });
+
       const refresh = async () => {
         if (!src || !security[src.field]) return;
         setFetching(true); setFetchError("");
         try {
           const q = await src.fetchQuote(security[src.field]);
-          onUpdate({ price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode });
+          onUpdate(priceUpdate(q));
         } catch (e) {
           setFetchError(e.message);
         }
@@ -15886,7 +15896,7 @@
           const q = await src.resolve(security.isin);
           const resolvedVal = q[src.resolvedField];
           setFieldDraft(resolvedVal);
-          onUpdate({ [src.field]: resolvedVal, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode });
+          onUpdate({ [src.field]: resolvedVal, ...priceUpdate(q) });
         } catch (e) {
           setFetchError(e.message);
         }
@@ -15921,6 +15931,11 @@
                 <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
                   {security.priceAsOf || "—"} · {security.priceSource === "manual" ? "manual" : security.priceSource || "—"}
                 </div>
+                {security.priceOriginalCurrency && (
+                  <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                    conv. desde {security.priceOriginalValue.toFixed(2)} {security.priceOriginalCurrency}
+                  </div>
+                )}
               </div>
             ) : <span style={{ color: "#5a7080", fontSize: 11 }}>sin precio</span>}
           </td>
@@ -15988,7 +16003,7 @@
         for (const s of targets) {
           try {
             const q = await src.fetchQuote(s[src.field]);
-            patches[s.isin] = { price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode };
+            patches[s.isin] = { price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode, priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
           } catch (e) { fail++; }
           setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
         }
@@ -16007,7 +16022,7 @@
         for (const s of targets) {
           try {
             const q = await src.resolve(s.isin);
-            patches[s.isin] = { [src.field]: q[src.resolvedField], price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode };
+            patches[s.isin] = { [src.field]: q[src.resolvedField], price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode, priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
           } catch (e) { fail++; }
           setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
         }
