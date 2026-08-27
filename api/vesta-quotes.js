@@ -123,7 +123,11 @@ async function resolveIsinViaTavily(isin) {
 // cotizaciones en lote) ya lo exige y aun así da 429 con frecuencia. Un
 // símbolo por request, sin autenticación, con cabeceras de navegador para
 // no oler a bot.
-async function fetchYahooPrice(ticker) {
+//
+// Sin conversión — algunos valores cotizan nativamente en USD o GBP(X), y
+// Yahoo los devuelve tal cual en esa divisa. fetchYahooRaw es la pieza
+// base; fetchYahooPrice (más abajo) la envuelve con la conversión a EUR.
+async function fetchYahooRaw(ticker) {
   const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=1d&interval=1d`;
   const r = await fetch(chartUrl, {
     headers: {
@@ -140,7 +144,40 @@ async function fetchYahooPrice(ticker) {
   }
   const meta = result.meta;
   const asOf = meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString().slice(0, 10) : null;
-  return { price: meta.regularMarketPrice, currency: meta.currency || "EUR", asOf };
+  // Las acciones del mercado británico cotizan a menudo en peniques
+  // ("GBp"/"GBX", 1/100 de libra) en vez de en libras — hay que
+  // normalizarlo a GBP antes de convertir, o la conversión saldría 100
+  // veces más alta de lo real.
+  const rawCurrency = meta.currency || "EUR";
+  const isPence = /^GBp$/i.test(rawCurrency) || /^GBX$/i.test(rawCurrency);
+  const price = isPence ? meta.regularMarketPrice / 100 : meta.regularMarketPrice;
+  const currency = isPence ? "GBP" : rawCurrency.toUpperCase();
+  return { price, currency, asOf };
+}
+
+// Convierte a EUR cuando el valor cotiza en otra divisa, usando el propio
+// Yahoo como fuente del tipo de cambio (par "{DIVISA}EUR=X", p.ej.
+// "USDEUR=X" o "GBPEUR=X" — confirmado que existen con ese formato). Si
+// el par de cambio no se puede consultar, se falla explícitamente en vez
+// de devolver un precio en la divisa original sin avisar — mejor un error
+// visible que un número silenciosamente mal convertido.
+async function fetchYahooPrice(ticker) {
+  const raw = await fetchYahooRaw(ticker);
+  if (raw.currency === "EUR") return raw;
+  let fx;
+  try {
+    fx = await fetchYahooRaw(`${raw.currency}EUR=X`);
+  } catch (e) {
+    throw { status: 502, message: `Precio obtenido en ${raw.currency} pero no se pudo convertir a EUR (par ${raw.currency}EUR=X no disponible en Yahoo).` };
+  }
+  return {
+    price: raw.price * fx.price,
+    currency: "EUR",
+    asOf: raw.asOf,
+    originalPrice: raw.price,
+    originalCurrency: raw.currency,
+    fxRate: fx.price,
+  };
 }
 
 // Resolución ISIN→ticker de Yahoo, mismo patrón que con Finect: Tavily
