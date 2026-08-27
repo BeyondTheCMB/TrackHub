@@ -4952,7 +4952,7 @@
               <>
                 <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{hoveredRow.name}</div>
                 <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 21, marginTop: 2 }}>{fmtEUR(hoveredRow.value)}</div>
-                <div style={{ fontSize: 12, color: VS_A, fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{hoveredRow.pct.toFixed(1)}%</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: VS_A, fontFamily: "'DM Mono',monospace", marginTop: 3 }}>{hoveredRow.pct.toFixed(1)}%</div>
               </>
             ) : (
               <>
@@ -4985,7 +4985,7 @@
         );
       }
 
-      const cellStyle = { padding: "5px 8px", borderBottom: "1px solid #16202c" };
+      const cellStyle = { padding: "3px 6px", borderBottom: "1px solid #16202c" };
       return (
         <div style={{ padding: 20 }}>
           {anomalies.length > 0 && (
@@ -5009,14 +5009,14 @@
             {rows.length === 0 ? (
               <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin posiciones abiertas.</div>
             ) : (
-              <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "center" }}>
                 <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
                 <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 420 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5, minWidth: 400 }}>
                     <thead>
                       <tr>
                         {["", "Valor", "Títulos", "Invertido", "Valor actual", "%"].map((h, i) => (
-                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em", padding: "4px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em", padding: "3px 6px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
