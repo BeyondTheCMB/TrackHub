@@ -4198,6 +4198,27 @@
       );
     }
 
+    // ─── Iconos — SVG trazados a mano, sin librería (mismo criterio que el
+    // resto de gráficos de Vesta: nada externo, control total del trazo).
+    // stroke="currentColor" para heredar el color del botón que los
+    // envuelve (gris normal, violeta en hover, gris apagado en disabled)
+    // sin tener que repetir color en cada uso.
+    const VS_ICON_PATHS = {
+      search: (<><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>),
+      zap: (<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />),
+      refresh: (<><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></>),
+      edit: (<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />),
+      tag: (<><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2.59 12.59a2 2 0 0 1-.83-1.63V4a2 2 0 0 1 2-2h6.96a2 2 0 0 1 1.63.83l8.24 8.24a2 2 0 0 1 0 2.83z" /><line x1="7" y1="7" x2="7.01" y2="7" /></>),
+    };
+    function VsIcon({ name, size = 13 }) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+          style={{ display: "inline-block", verticalAlign: "middle" }}>
+          {VS_ICON_PATHS[name]}
+        </svg>
+      );
+    }
+
     // ─── Fila de un valor en el catálogo — precio auto (Finect) o manual ──
     // Config por fuente de precio — así VsSecurityRow y VsSecuritiesPanel
     // no duplican la lógica de Finect y Yahoo, solo cambian de tabla según
@@ -4334,13 +4355,13 @@
                 {src && (
                   <button onClick={refresh} disabled={!security[src.field] || fetching} title="Actualizar precio"
                     style={{ background: "none", border: "1px solid #1a2535", color: security[src.field] ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: security[src.field] && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
-                    {fetching ? "…" : "🔄"}
+                    {fetching ? "…" : <VsIcon name="refresh" />}
                   </button>
                 )}
                 <button onClick={() => { setEditingManual(true); setEditingInfo(false); }} title="Precio manual"
-                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}>✋</button>
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}><VsIcon name="tag" /></button>
                 <button onClick={openEditInfo} title="Editar nombre / ISIN"
-                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}>✏️</button>
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}><VsIcon name="edit" /></button>
                 <button onClick={onMove} title={moveLabel} style={{ background: "none", border: "1px solid #1a2535", color: "#5a7080", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>{moveLabel}</button>
               </>
             )}
@@ -4352,10 +4373,10 @@
                   style={{ width: 80, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
                 <button onClick={resolve} disabled={resolving} title="Resolver automáticamente"
                   style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: resolving ? "not-allowed" : "pointer" }}>
-                  {resolving ? "…" : "⚡"}
+                  {resolving ? "…" : <VsIcon name="zap" />}
                 </button>
                 <a href={src.searchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title={`Buscar en ${mode === "finect" ? "Finect" : "Yahoo"}`}
-                  style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}>🔍</a>
+                  style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}><VsIcon name="search" /></a>
               </div>
               {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
             </td>
@@ -4434,11 +4455,11 @@
                 {bulkStatus && <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{bulkStatus}</span>}
                 <button onClick={resolveAll} disabled={bulkResolving || bulkRefreshing} title={`Resolver ${src.label.toLowerCase()} de todos los que aún no la tienen`}
                   style={bulkBtnStyle(bulkResolving || bulkRefreshing)}>
-                  {bulkResolving ? "…" : "⚡"} todos
+                  {bulkResolving ? "…" : <VsIcon name="zap" />} todos
                 </button>
                 <button onClick={refreshAll} disabled={bulkRefreshing || bulkResolving} title="Actualizar precio de todos los que ya tienen fuente"
                   style={bulkBtnStyle(bulkRefreshing || bulkResolving)}>
-                  {bulkRefreshing ? "…" : "🔄"} todos
+                  {bulkRefreshing ? "…" : <VsIcon name="refresh" />} todos
                 </button>
               </div>
             )}
@@ -4803,9 +4824,9 @@
                         />
                         <button onClick={() => resolveDraftSource(isin, "finect")} disabled={draft._resolving} title="Resolver automáticamente"
                           style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: draft._resolving ? "not-allowed" : "pointer" }}>
-                          {draft._resolving ? "…" : "⚡"}
+                          {draft._resolving ? "…" : <VsIcon name="zap" />}
                         </button>
-                        <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}>🔍</a>
+                        <a href={vsFinectSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Finect" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}><VsIcon name="search" /></a>
                       </div>
                     )}
                     {draft.assetType === "stock" && (
@@ -4818,9 +4839,9 @@
                         />
                         <button onClick={() => resolveDraftSource(isin, "yahoo")} disabled={draft._resolving} title="Resolver automáticamente"
                           style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: draft._resolving ? "not-allowed" : "pointer" }}>
-                          {draft._resolving ? "…" : "⚡"}
+                          {draft._resolving ? "…" : <VsIcon name="zap" />}
                         </button>
-                        <a href={vsYahooSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Yahoo" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}>🔍</a>
+                        <a href={vsYahooSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Yahoo" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}><VsIcon name="search" /></a>
                       </div>
                     )}
                     {draft._resolveError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{draft._resolveError}</div>}
