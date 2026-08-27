@@ -4912,27 +4912,56 @@
 
     const VS_ALLOCATION_COLORS = [VS_A, VS_B, "#f59e0b", "#34d399", "#f87171", "#60a5fa", "#fb923c", "#4ade80", "#e879f9", "#facc15"];
 
-    function VsAllocationDonut({ rows }) {
-      const size = 220, r = 80, cx = 110, cy = 110, strokeWidth = 30;
+    // Donut interactivo: el hover vive en el padre (VsMiCarteraTab) para
+    // poder sincronizarlo con la fila correspondiente de la tabla en los
+    // dos sentidos — pasar el ratón por un gajo resalta su fila, y
+    // viceversa. La etiqueta central es deliberadamente mínima al pasar
+    // el ratón: nombre, valor y % — nada más, para no saturar; sin hover
+    // muestra el valor total de la cartera.
+    function VsAllocationDonut({ rows, totalValue, hoveredIsin, onHover, fmtEUR }) {
+      const size = 300, r = 118, cx = 150, cy = 150, strokeWidth = 34;
       const circumference = 2 * Math.PI * r;
       let cumulative = 0;
+      const hoveredRow = rows.find(row => row.isin === hoveredIsin);
       return (
-        <svg viewBox={`0 0 ${size} ${size}`} style={{ width: 220, height: 220, flexShrink: 0 }}>
-          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a2535" strokeWidth={strokeWidth} />
-          {rows.map((row, i) => {
-            const dash = Math.max((row.pct / 100) * circumference, 0);
-            const el = (
-              <circle key={row.isin} cx={cx} cy={cy} r={r} fill="none"
-                stroke={VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length]} strokeWidth={strokeWidth}
-                strokeDasharray={`${dash} ${circumference - dash}`}
-                strokeDashoffset={-cumulative}
-                transform={`rotate(-90 ${cx} ${cy})`}
-              />
-            );
-            cumulative += dash;
-            return el;
-          })}
-        </svg>
+        <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+          <svg viewBox={`0 0 ${size} ${size}`} style={{ width: size, height: size }}>
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a2535" strokeWidth={strokeWidth} />
+            {rows.map((row, i) => {
+              const dash = Math.max((row.pct / 100) * circumference, 0);
+              const isHovered = hoveredIsin === row.isin;
+              const el = (
+                <circle key={row.isin} cx={cx} cy={cy} r={r} fill="none"
+                  stroke={VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length]}
+                  strokeWidth={isHovered ? strokeWidth + 10 : strokeWidth}
+                  strokeDasharray={`${dash} ${circumference - dash}`}
+                  strokeDashoffset={-cumulative}
+                  transform={`rotate(-90 ${cx} ${cy})`}
+                  opacity={hoveredIsin && !isHovered ? 0.35 : 1}
+                  style={{ cursor: "pointer", transition: "stroke-width 120ms ease, opacity 120ms ease" }}
+                  onMouseEnter={() => onHover(row.isin)}
+                  onMouseLeave={() => onHover(null)}
+                />
+              );
+              cumulative += dash;
+              return el;
+            })}
+          </svg>
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", pointerEvents: "none", padding: "0 60px" }}>
+            {hoveredRow ? (
+              <>
+                <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{hoveredRow.name}</div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 21, marginTop: 2 }}>{fmtEUR(hoveredRow.value)}</div>
+                <div style={{ fontSize: 12, color: VS_A, fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{hoveredRow.pct.toFixed(1)}%</div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em" }}>Valor total</div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 22, marginTop: 2 }}>{fmtEUR(totalValue)}</div>
+              </>
+            )}
+          </div>
+        </div>
       );
     }
 
@@ -4943,6 +4972,7 @@
         () => vsComputeAllocation(transactions, securitiesCatalog),
         [transactions, securitiesCatalog]
       );
+      const [hoveredIsin, setHoveredIsin] = useState(null);
       const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
 
       if (transactions.length === 0) {
@@ -4955,7 +4985,7 @@
         );
       }
 
-      const cellStyle = { padding: "8px 8px", borderBottom: "1px solid #1a2535" };
+      const cellStyle = { padding: "5px 8px", borderBottom: "1px solid #16202c" };
       return (
         <div style={{ padding: 20 }}>
           {anomalies.length > 0 && (
@@ -4974,45 +5004,49 @@
             </div>
           )}
 
-          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 16 }}>Asignación por valor</div>
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Asignación por valor</div>
             {rows.length === 0 ? (
               <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin posiciones abiertas.</div>
             ) : (
-              <div style={{ display: "flex", gap: 28, flexWrap: "wrap", alignItems: "flex-start" }}>
-                <VsAllocationDonut rows={rows} />
-                <div style={{ flex: 1, minWidth: 280, overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 480 }}>
+              <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+                <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
+                <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 420 }}>
                     <thead>
                       <tr>
                         {["", "Valor", "Títulos", "Invertido", "Valor actual", "%"].map((h, i) => (
-                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em", padding: "4px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map((r, i) => (
-                        <tr key={r.isin}>
-                          <td style={cellStyle}><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length] }} /></td>
-                          <td style={{ ...cellStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>
-                            {r.name}
-                            {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
-                          </td>
-                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
-                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
-                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
-                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
-                        </tr>
-                      ))}
+                      {rows.map((r, i) => {
+                        const isHovered = hoveredIsin === r.isin;
+                        return (
+                          <tr key={r.isin} onMouseEnter={() => setHoveredIsin(r.isin)} onMouseLeave={() => setHoveredIsin(null)}
+                            style={{ background: isHovered ? "#a78bfa0f" : "transparent", cursor: "default" }}>
+                            <td style={cellStyle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length] }} /></td>
+                            <td style={{ ...cellStyle, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>
+                              {r.name}
+                              {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
+                            </td>
+                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
+                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
+                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
+                            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                     <tfoot>
                       <tr>
-                        <td style={cellStyle}></td>
-                        <td style={{ ...cellStyle, fontWeight: 700 }}>Total</td>
-                        <td style={cellStyle}></td>
-                        <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(rows.reduce((s, r) => s + r.invested, 0))}</td>
-                        <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
-                        <td style={cellStyle}></td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontWeight: 700 }}>Total</td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(rows.reduce((s, r) => s + r.invested, 0))}</td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
+                        <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                       </tr>
                     </tfoot>
                   </table>
