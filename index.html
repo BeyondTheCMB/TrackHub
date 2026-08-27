@@ -15627,6 +15627,35 @@
       return positions;
     }
 
+    // Coste neto invertido en un ISIN, heredando el de su(s) ISIN de
+    // origen cuando la posición viene de un split (mismo split_in/
+    // split_out, misma fecha) — sin esto, el ISIN nuevo tras un split
+    // aparece con 0€ invertidos porque solo cuenta sus propias
+    // compras/ventas, y el coste real se queda "atrapado" en el ISIN
+    // viejo que ya no tiene posición abierta. `visited` evita bucles
+    // si algún día hubiera un ciclo raro en los datos.
+    function vsInvestedForIsin(isin, transactions, visited) {
+      visited = visited || new Set();
+      if (visited.has(isin)) return 0;
+      visited.add(isin);
+      let invested = 0;
+      for (const t of transactions) {
+        if (t.isin !== isin) continue;
+        if (t.type === "buy") invested += (t.amount || 0);
+        else if (t.type === "sell") invested -= (t.amount || 0);
+      }
+      const splitIns = transactions.filter(t => t.isin === isin && t.type === "split_in");
+      for (const si of splitIns) {
+        const predecessors = new Set(
+          transactions.filter(t => t.type === "split_out" && t.date === si.date).map(t => t.isin)
+        );
+        for (const pred of predecessors) {
+          if (pred !== isin) invested += vsInvestedForIsin(pred, transactions, visited);
+        }
+      }
+      return invested;
+    }
+
     // ─── Formulario de alta manual ─────────────────────────────────────────
     function VsManualTxForm({ accounts, securities, initial, submitLabel, onAdd, onCancel }) {
       const initF = () => {
@@ -16306,13 +16335,7 @@
             currentValue += shares * sec.price;
           } else {
             unpricedHeld++;
-            let costBasis = 0;
-            for (const t of transactions) {
-              if (t.isin !== isin) continue;
-              if (t.type === "buy") costBasis += (t.amount || 0);
-              else if (t.type === "sell") costBasis -= (t.amount || 0);
-            }
-            currentValue += Math.max(costBasis, 0);
+            currentValue += Math.max(vsInvestedForIsin(isin, transactions), 0);
           }
         }
         return { invested, currentValue, heldCount, unpricedHeld };
@@ -16492,12 +16515,7 @@
       for (const [isin, shares] of Object.entries(positions)) {
         const sec = securitiesCatalog[isin];
         const name = (sec && sec.name) || (transactions.find(t => t.isin === isin) || {}).name || isin;
-        let invested = 0;
-        for (const t of transactions) {
-          if (t.isin !== isin) continue;
-          if (t.type === "buy") invested += (t.amount || 0);
-          else if (t.type === "sell") invested -= (t.amount || 0);
-        }
+        const invested = vsInvestedForIsin(isin, transactions);
         if (shares < -1e-9) { anomalies.push({ isin, name, shares, invested }); continue; }
         if (shares <= 1e-9) continue;
         const hasPrice = !!(sec && sec.price != null);
