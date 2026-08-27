@@ -4687,49 +4687,11 @@
         .slice()
         .sort((a, b) => b.date.localeCompare(a.date));
 
-      // "Total invertido": capital neto en posiciones (compras menos
-      // ventas, en valor absoluto — no en flujo de caja de la cuenta). No
-      // cuenta aportaciones/retiradas/dividendos/comisiones ni splits.
-      //
-      // "Valor actual": títulos que tienes ahora mismo de cada valor
-      // (vsComputePositions) × su precio de mercado del catálogo — los
-      // precios ya vienen normalizados a EUR (Finect y la conversión de
-      // Yahoo lo garantizan). Para un valor sin precio todavía, se usa su
-      // coste neto invertido como estimación provisional en vez de
-      // dejarlo en 0, para no distorsionar el total mientras se van
-      // completando precios — pero se cuenta cuántos quedan así para
-      // poder avisar de que el número es parcial.
-      const kpis = useMemo(() => {
-        let invested = 0;
-        for (const t of transactions) {
-          if (t.type === "buy") invested += (t.amount || 0);
-          else if (t.type === "sell") invested -= (t.amount || 0);
-        }
-
-        const positions = vsComputePositions(transactions);
-        let currentValue = 0;
-        let heldCount = 0;
-        let unpricedHeld = 0;
-        for (const [isin, shares] of Object.entries(positions)) {
-          if (shares <= 1e-9) continue; // posición cerrada (o negativa por algún desajuste de datos)
-          heldCount++;
-          const sec = securitiesCatalog[isin];
-          if (sec && sec.price != null) {
-            currentValue += shares * sec.price;
-          } else {
-            unpricedHeld++;
-            currentValue += Math.max(vsInvestedForIsin(isin, transactions), 0);
-          }
-        }
-        return { invested, currentValue, heldCount, unpricedHeld };
-      }, [transactions, securitiesCatalog]);
-      const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+      const kpis = useMemo(() => vsComputePortfolioKpis(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
+      const fmtEUR = vsPortfolioFmtEUR;
 
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
-      const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" };
-      const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
-      const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
 
       return (
         <div style={{ display: "grid", gridTemplateColumns: "720px 1fr", gap: 20, padding: 20 }}>
@@ -4771,30 +4733,7 @@
           </div>
 
           <div>
-            <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
-              <div style={kpiCardStyle}>
-                <div style={kpiLabelStyle}>Total invertido</div>
-                <div style={kpiValueStyle}>{fmtEUR(kpis.invested)}</div>
-              </div>
-              <div style={kpiCardStyle}>
-                <div style={kpiLabelStyle}>Valor actual</div>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                  <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
-                  {kpis.invested > 0 && (
-                    <div style={{ fontSize: 13, fontWeight: 700, color: vsChangeColor(kpis.currentValue - kpis.invested), fontFamily: "'DM Mono',monospace" }}>
-                      {vsFmtSignedEUR(kpis.currentValue - kpis.invested)} ({vsFmtPct(((kpis.currentValue - kpis.invested) / kpis.invested) * 100)})
-                    </div>
-                  )}
-                </div>
-                <div style={{ fontSize: 10, color: kpis.unpricedHeld > 0 ? "#f59e0b" : "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
-                  {kpis.heldCount === 0
-                    ? "sin posiciones abiertas"
-                    : kpis.unpricedHeld > 0
-                      ? `${kpis.unpricedHeld} de ${kpis.heldCount} valores sin precio — usando coste`
-                      : `${kpis.heldCount} valores con precio de mercado`}
-                </div>
-              </div>
-            </div>
+            <VsPortfolioKpiCards kpis={kpis} />
 
             {Object.keys(newSecurityDrafts).length > 0 && (
               <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -4922,6 +4861,80 @@
       return { rows: rows.map(r => ({ ...r, pct: totalValue > 0 ? (r.value / totalValue) * 100 : 0 })), anomalies, totalValue };
     }
 
+    // KPI compartido entre "Transacciones" y "Mi cartera" — así los dos
+    // muestran siempre el mismo número, en vez de cada pestaña calculando
+    // el suyo por separado y arriesgándose a desincronizarse.
+    // "Total invertido": capital neto en posiciones (compras menos ventas,
+    // en valor absoluto — no en flujo de caja de la cuenta). No cuenta
+    // aportaciones/retiradas/dividendos/comisiones ni splits.
+    // "Valor actual": títulos que tienes ahora mismo de cada valor
+    // (vsComputePositions) × su precio de mercado del catálogo — los
+    // precios ya vienen normalizados a EUR. Para un valor sin precio
+    // todavía, se usa su coste neto invertido como estimación provisional
+    // en vez de dejarlo en 0, pero se cuenta cuántos quedan así para
+    // poder avisar de que el número es parcial.
+    function vsComputePortfolioKpis(transactions, securitiesCatalog) {
+      let invested = 0;
+      for (const t of transactions) {
+        if (t.type === "buy") invested += (t.amount || 0);
+        else if (t.type === "sell") invested -= (t.amount || 0);
+      }
+      const positions = vsComputePositions(transactions);
+      let currentValue = 0, heldCount = 0, unpricedHeld = 0;
+      for (const [isin, shares] of Object.entries(positions)) {
+        if (shares <= 1e-9) continue;
+        heldCount++;
+        const sec = securitiesCatalog[isin];
+        if (sec && sec.price != null) {
+          currentValue += shares * sec.price;
+        } else {
+          unpricedHeld++;
+          currentValue += Math.max(vsInvestedForIsin(isin, transactions), 0);
+        }
+      }
+      return { invested, currentValue, heldCount, unpricedHeld };
+    }
+
+    const vsPortfolioFmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+
+    // Las dos pastillas de KPI — compartidas entre "Transacciones" y "Mi
+    // cartera" para que ninguna de las dos se desincronice de la otra en
+    // estilo. El detalle de cobertura de precio (antes un aviso siempre
+    // visible bajo el valor) vive ahora en el botón ⓘ, reutilizando
+    // VsInfoTip — solo se ve si lo pides, no ocupa sitio permanente.
+    function VsPortfolioKpiCards({ kpis }) {
+      const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", position: "relative" };
+      const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
+      const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
+      const change = kpis.currentValue - kpis.invested;
+      const changePct = kpis.invested > 0 ? (change / kpis.invested) * 100 : null;
+      const infoText = kpis.heldCount === 0
+        ? "Sin posiciones abiertas."
+        : kpis.unpricedHeld > 0
+          ? `${kpis.unpricedHeld} de ${kpis.heldCount} valores sin precio todavía — se usa su coste neto invertido como estimación provisional.`
+          : `${kpis.heldCount} valores con precio de mercado.`;
+      return (
+        <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+          <div style={kpiCardStyle}>
+            <div style={kpiLabelStyle}>Total invertido</div>
+            <div style={kpiValueStyle}>{vsPortfolioFmtEUR(kpis.invested)}</div>
+          </div>
+          <div style={kpiCardStyle}>
+            <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={infoText} width={210} /></div>
+            <div style={kpiLabelStyle}>Valor actual</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ ...kpiValueStyle, color: VS_A }}>{vsPortfolioFmtEUR(kpis.currentValue)}</div>
+              {kpis.invested > 0 && (
+                <div style={{ fontSize: 16, fontWeight: 700, color: vsChangeColor(change), fontFamily: "'DM Mono',monospace", display: "flex", alignItems: "center" }}>
+                  {vsFmtSignedEUR(change)} ({vsFmtPct(changePct)})
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // Color y formato compartidos para cifras de ganancia/pérdida — verde
     // si es positivo, rojo si es negativo, gris si no hay dato.
     function vsChangeColor(n) {
@@ -5000,10 +5013,11 @@
         () => vsComputeAllocation(transactions, securitiesCatalog),
         [transactions, securitiesCatalog]
       );
+      const kpis = useMemo(() => vsComputePortfolioKpis(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
       const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
       const totalChangePct = totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null;
       const [hoveredIsin, setHoveredIsin] = useState(null);
-      const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+      const fmtEUR = vsPortfolioFmtEUR;
 
       if (transactions.length === 0) {
         return (
@@ -5015,9 +5029,11 @@
         );
       }
 
-      const cellStyle = { padding: "3px 6px", borderBottom: "1px solid #16202c" };
+      const cellStyle = { padding: "5px 7px", borderBottom: "1px solid #16202c" };
       return (
         <div style={{ padding: 20 }}>
+          <VsPortfolioKpiCards kpis={kpis} />
+
           {anomalies.length > 0 && (
             <div style={{ background: "#f8717118", border: "1px solid #f8717155", borderRadius: 10, padding: 16, marginBottom: 20 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14, color: "#f87171", marginBottom: 8 }}>
@@ -5042,11 +5058,11 @@
               <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "center" }}>
                 <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
                 <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5, minWidth: 400 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
                     <thead>
                       <tr>
                         {["", "Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
-                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em", padding: "3px 6px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
