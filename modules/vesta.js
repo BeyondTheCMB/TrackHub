@@ -4208,7 +4208,7 @@
       yahoo: { field: "yahooTicker", label: "Ticker Yahoo", placeholder: "ticker", fetchQuote: vsFetchYahooQuote, resolve: vsResolveYahooTicker, searchUrl: vsYahooSearchUrl, resolvedField: "ticker" },
     };
 
-    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate }) {
+    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate, onRename }) {
       const src = mode ? VS_PRICE_SOURCES[mode] : null;
       const [fieldDraft, setFieldDraft] = useState((src && security[src.field]) || "");
       const [fetching, setFetching] = useState(false);
@@ -4217,6 +4217,10 @@
       const [editingManual, setEditingManual] = useState(false);
       const [manualPrice, setManualPrice] = useState(security.price != null ? String(security.price) : "");
       const [manualDate, setManualDate] = useState(security.priceAsOf || "");
+      const [editingInfo, setEditingInfo] = useState(false);
+      const [nameDraft, setNameDraft] = useState(security.name);
+      const [isinDraft, setIsinDraft] = useState(security.isin);
+      const [renameError, setRenameError] = useState("");
 
       const saveField = () => { if (src && fieldDraft.trim() !== (security[src.field] || "")) onUpdate({ [src.field]: fieldDraft.trim() || null }); };
 
@@ -4263,12 +4267,34 @@
         setEditingManual(false);
       };
 
+      const openEditInfo = () => { setNameDraft(security.name); setIsinDraft(security.isin); setRenameError(""); setEditingInfo(true); setEditingManual(false); };
+      const saveInfo = async () => {
+        try {
+          await onRename({ name: nameDraft, isin: isinDraft });
+          setEditingInfo(false);
+        } catch (e) {
+          setRenameError(e.message);
+        }
+      };
+
       const cellStyle = { padding: "8px 8px", borderBottom: "1px solid #1a2535", verticalAlign: "top" };
       return (
         <tr>
-          <td style={{ ...cellStyle, width: 170, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={security.name}>
-            {security.name}
-            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#5a7080" }}>{security.isin}</div>
+          <td style={{ ...cellStyle, width: 170, maxWidth: 170 }}>
+            {editingInfo ? (
+              <div>
+                <input value={nameDraft} onChange={e => setNameDraft(e.target.value)} placeholder="nombre"
+                  style={{ width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "4px 6px", fontSize: 11, marginBottom: 4 }} />
+                <input value={isinDraft} onChange={e => setIsinDraft(e.target.value)} placeholder="ISIN"
+                  style={{ width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "4px 6px", fontSize: 10, fontFamily: "'DM Mono',monospace" }} />
+                {renameError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 4 }}>{renameError}</div>}
+              </div>
+            ) : (
+              <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={security.name}>
+                {security.name}
+                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#5a7080" }}>{security.isin}</div>
+              </div>
+            )}
           </td>
           <td style={cellStyle}>
             {editingManual ? (
@@ -4293,7 +4319,12 @@
             ) : <span style={{ color: "#5a7080", fontSize: 11 }}>sin precio</span>}
           </td>
           <td style={{ ...cellStyle, whiteSpace: "nowrap" }}>
-            {editingManual ? (
+            {editingInfo ? (
+              <>
+                <button onClick={saveInfo} style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "5px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", marginRight: 6 }}>guardar</button>
+                <button onClick={() => setEditingInfo(false)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>cancelar</button>
+              </>
+            ) : editingManual ? (
               <>
                 <button onClick={saveManual} style={{ background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "5px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", marginRight: 6 }}>guardar</button>
                 <button onClick={() => setEditingManual(false)} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>cancelar</button>
@@ -4306,8 +4337,10 @@
                     {fetching ? "…" : "🔄"}
                   </button>
                 )}
-                <button onClick={() => setEditingManual(true)} title="Precio manual"
+                <button onClick={() => { setEditingManual(true); setEditingInfo(false); }} title="Precio manual"
                   style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}>✋</button>
+                <button onClick={openEditInfo} title="Editar nombre / ISIN"
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}>✏️</button>
                 <button onClick={onMove} title={moveLabel} style={{ background: "none", border: "1px solid #1a2535", color: "#5a7080", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>{moveLabel}</button>
               </>
             )}
@@ -4331,7 +4364,7 @@
       );
     }
 
-    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate }) {
+    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate, onRenameSecurity }) {
       const [open, setOpen] = useState(false);
       const [bulkRefreshing, setBulkRefreshing] = useState(false);
       const [bulkResolving, setBulkResolving] = useState(false);
@@ -4423,7 +4456,8 @@
                 <tbody>
                   {securities.map(s => (
                     <VsSecurityRow key={s.isin} security={s} mode={mode} moveLabel={moveLabel}
-                      onMove={() => onMove(s.isin)} onUpdate={patch => onUpdateSecurity(s.isin, patch)} />
+                      onMove={() => onMove(s.isin)} onUpdate={patch => onUpdateSecurity(s.isin, patch)}
+                      onRename={patch => onRenameSecurity(s.isin, patch)} />
                   ))}
                 </tbody>
               </table>
@@ -4585,6 +4619,30 @@
         updateSecurity(isin, { assetType: newType });
       };
 
+      // Editar nombre/ISIN de un valor ya registrado. Cambiar el nombre es
+      // trivial (un patch más); cambiar el ISIN no lo es — es la clave del
+      // catálogo, así que hay que mover la entrada a la nueva clave Y
+      // renombrar el ISIN en todas las transacciones que lo usan, o se
+      // desincroniza todo lo demás (posiciones, coste heredado en splits,
+      // filtros...). Lanza un error (capturado por la fila) si el ISIN
+      // nuevo ya está en uso por otro valor distinto.
+      const renameSecurity = async (oldIsin, { name, isin }) => {
+        const newName = (name || "").trim();
+        const newIsin = (isin || "").trim().toUpperCase();
+        if (!newName) throw new Error("El nombre no puede estar vacío.");
+        if (!newIsin) throw new Error("El ISIN no puede estar vacío.");
+        if (newIsin !== oldIsin && securitiesCatalog[newIsin]) {
+          throw new Error(`Ya hay un valor registrado con el ISIN ${newIsin}.`);
+        }
+        const nextSecurities = { ...securitiesCatalog };
+        const entry = { ...nextSecurities[oldIsin], name: newName, isin: newIsin };
+        if (newIsin !== oldIsin) delete nextSecurities[oldIsin];
+        nextSecurities[newIsin] = entry;
+        const nextTransactions = transactions.map(t => t.isin === oldIsin ? { ...t, isin: newIsin, name: newName } : t);
+        const next = { ...portfolio, securities: nextSecurities, transactions: nextTransactions };
+        await onSave(next);
+      };
+
       // Resolución automática ISIN→fuente (Finect o Yahoo, según el tipo
       // elegido) para un valor nuevo aún sin confirmar — el precio que
       // trae de propina se descarta aquí (se guardará ya normal vía
@@ -4687,8 +4745,8 @@
               {showManual && <div style={{ marginTop: 14 }}><VsManualTxForm accounts={accounts} securities={securitiesList} onAdd={addManual} onCancel={() => setShowManual(false)} /></div>}
             </div>
 
-            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
-            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} />
+            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} />
+            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} />
           </div>
 
           <div>
