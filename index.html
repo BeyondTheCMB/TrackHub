@@ -15607,6 +15607,26 @@
       return `k:${t.date}|${t.type}|${t.isin}|${t.shares}|${t.amount}`;
     }
 
+    // ── Motor económico · Fase 1 — reconstrucción de posiciones ───────────
+    // Títulos netos por ISIN a día de hoy: buy/split_in suman,
+    // sell/split_out restan. Los tipos sin ISIN o sin impacto en títulos
+    // (dividendo, aportación, retirada, comisión, impuesto, interés) se
+    // ignoran. Probada de forma aislada (compra simple, compra+venta
+    // parcial, venta total, split old→new, dividendo/depósito sin efecto)
+    // antes de integrarla aquí.
+    function vsComputePositions(transactions) {
+      const positions = {};
+      for (const t of transactions) {
+        if (!t.isin) continue;
+        if (t.type === "buy" || t.type === "split_in") {
+          positions[t.isin] = (positions[t.isin] || 0) + (t.shares || 0);
+        } else if (t.type === "sell" || t.type === "split_out") {
+          positions[t.isin] = (positions[t.isin] || 0) - (t.shares || 0);
+        }
+      }
+      return positions;
+    }
+
     // ─── Formulario de alta manual ─────────────────────────────────────────
     function VsManualTxForm({ accounts, securities, initial, submitLabel, onAdd, onCancel }) {
       const initF = () => {
@@ -16255,21 +16275,48 @@
         .slice()
         .sort((a, b) => b.date.localeCompare(a.date));
 
-      // KPI de comprobación: capital neto invertido en posiciones (compras
-      // menos ventas, en valor absoluto — no en flujo de caja de la cuenta).
-      // No cuenta aportaciones/retiradas/dividendos/comisiones ni splits
-      // (cashImpact:false), solo compra/venta de activos. "Valor actual" es
-      // igual al invertido de momento, a la espera del motor de precios;
-      // sirve para comprobar de un vistazo que el importe total cuadra con
-      // lo que esperas tras importar.
+      // "Total invertido": capital neto en posiciones (compras menos
+      // ventas, en valor absoluto — no en flujo de caja de la cuenta). No
+      // cuenta aportaciones/retiradas/dividendos/comisiones ni splits.
+      //
+      // "Valor actual": títulos que tienes ahora mismo de cada valor
+      // (vsComputePositions) × su precio de mercado del catálogo — los
+      // precios ya vienen normalizados a EUR (Finect y la conversión de
+      // Yahoo lo garantizan). Para un valor sin precio todavía, se usa su
+      // coste neto invertido como estimación provisional en vez de
+      // dejarlo en 0, para no distorsionar el total mientras se van
+      // completando precios — pero se cuenta cuántos quedan así para
+      // poder avisar de que el número es parcial.
       const kpis = useMemo(() => {
         let invested = 0;
         for (const t of transactions) {
           if (t.type === "buy") invested += (t.amount || 0);
           else if (t.type === "sell") invested -= (t.amount || 0);
         }
-        return { invested, currentValue: invested };
-      }, [transactions]);
+
+        const positions = vsComputePositions(transactions);
+        let currentValue = 0;
+        let heldCount = 0;
+        let unpricedHeld = 0;
+        for (const [isin, shares] of Object.entries(positions)) {
+          if (shares <= 1e-9) continue; // posición cerrada (o negativa por algún desajuste de datos)
+          heldCount++;
+          const sec = securitiesCatalog[isin];
+          if (sec && sec.price != null) {
+            currentValue += shares * sec.price;
+          } else {
+            unpricedHeld++;
+            let costBasis = 0;
+            for (const t of transactions) {
+              if (t.isin !== isin) continue;
+              if (t.type === "buy") costBasis += (t.amount || 0);
+              else if (t.type === "sell") costBasis -= (t.amount || 0);
+            }
+            currentValue += Math.max(costBasis, 0);
+          }
+        }
+        return { invested, currentValue, heldCount, unpricedHeld };
+      }, [transactions, securitiesCatalog]);
       const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
 
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
@@ -16326,7 +16373,13 @@
               <div style={kpiCardStyle}>
                 <div style={kpiLabelStyle}>Valor actual</div>
                 <div style={{ ...kpiValueStyle, color: VS_A }}>{fmtEUR(kpis.currentValue)}</div>
-                <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>= invertido, pendiente de motor de precios</div>
+                <div style={{ fontSize: 10, color: kpis.unpricedHeld > 0 ? "#f59e0b" : "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
+                  {kpis.heldCount === 0
+                    ? "sin posiciones abiertas"
+                    : kpis.unpricedHeld > 0
+                      ? `${kpis.unpricedHeld} de ${kpis.heldCount} valores sin precio — usando coste`
+                      : `${kpis.heldCount} valores con precio de mercado`}
+                </div>
               </div>
             </div>
 
