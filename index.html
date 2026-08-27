@@ -16478,6 +16478,151 @@
       );
     }
 
+    // ── "Mi cartera" — asignación por valor (donut + tabla de detalle) ────
+    // Primera pieza de la pestaña de resumen: para cada valor con posición
+    // abierta (títulos > 0), invertido neto, valor actual (precio ×
+    // títulos, o coste si aún no hay precio) y % sobre el total. Las
+    // posiciones con títulos negativos (venta mayor que compra — señal de
+    // una importación mal casada) se separan como "anomalías" en vez de
+    // esconderlas, que es justo el objetivo: usar esta vista para depurar
+    // el importador. Probado de forma aislada antes de integrarlo aquí.
+    function vsComputeAllocation(transactions, securitiesCatalog) {
+      const positions = vsComputePositions(transactions);
+      const rows = [], anomalies = [];
+      for (const [isin, shares] of Object.entries(positions)) {
+        const sec = securitiesCatalog[isin];
+        const name = (sec && sec.name) || (transactions.find(t => t.isin === isin) || {}).name || isin;
+        let invested = 0;
+        for (const t of transactions) {
+          if (t.isin !== isin) continue;
+          if (t.type === "buy") invested += (t.amount || 0);
+          else if (t.type === "sell") invested -= (t.amount || 0);
+        }
+        if (shares < -1e-9) { anomalies.push({ isin, name, shares, invested }); continue; }
+        if (shares <= 1e-9) continue;
+        const hasPrice = !!(sec && sec.price != null);
+        const value = hasPrice ? shares * sec.price : Math.max(invested, 0);
+        rows.push({ isin, name, shares, invested, value, hasPrice });
+      }
+      rows.sort((a, b) => b.value - a.value);
+      const totalValue = rows.reduce((s, r) => s + r.value, 0);
+      return { rows: rows.map(r => ({ ...r, pct: totalValue > 0 ? (r.value / totalValue) * 100 : 0 })), anomalies, totalValue };
+    }
+
+    const VS_ALLOCATION_COLORS = [VS_A, VS_B, "#f59e0b", "#34d399", "#f87171", "#60a5fa", "#fb923c", "#4ade80", "#e879f9", "#facc15"];
+
+    function VsAllocationDonut({ rows }) {
+      const size = 220, r = 80, cx = 110, cy = 110, strokeWidth = 30;
+      const circumference = 2 * Math.PI * r;
+      let cumulative = 0;
+      return (
+        <svg viewBox={`0 0 ${size} ${size}`} style={{ width: 220, height: 220, flexShrink: 0 }}>
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a2535" strokeWidth={strokeWidth} />
+          {rows.map((row, i) => {
+            const dash = Math.max((row.pct / 100) * circumference, 0);
+            const el = (
+              <circle key={row.isin} cx={cx} cy={cy} r={r} fill="none"
+                stroke={VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length]} strokeWidth={strokeWidth}
+                strokeDasharray={`${dash} ${circumference - dash}`}
+                strokeDashoffset={-cumulative}
+                transform={`rotate(-90 ${cx} ${cy})`}
+              />
+            );
+            cumulative += dash;
+            return el;
+          })}
+        </svg>
+      );
+    }
+
+    function VsMiCarteraTab({ portfolio }) {
+      const transactions = portfolio.transactions || [];
+      const securitiesCatalog = portfolio.securities || {};
+      const { rows, anomalies, totalValue } = useMemo(
+        () => vsComputeAllocation(transactions, securitiesCatalog),
+        [transactions, securitiesCatalog]
+      );
+      const fmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
+
+      if (transactions.length === 0) {
+        return (
+          <div style={{ padding: 20 }}>
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#5a7080", fontSize: 13, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>
+              Aún no hay transacciones — importa o añade movimientos en la pestaña "Transacciones".
+            </div>
+          </div>
+        );
+      }
+
+      const cellStyle = { padding: "8px 8px", borderBottom: "1px solid #1a2535" };
+      return (
+        <div style={{ padding: 20 }}>
+          {anomalies.length > 0 && (
+            <div style={{ background: "#f8717118", border: "1px solid #f8717155", borderRadius: 10, padding: 16, marginBottom: 20 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 14, color: "#f87171", marginBottom: 8 }}>
+                {anomalies.length} valor{anomalies.length === 1 ? "" : "es"} con títulos negativos
+              </div>
+              <div style={{ fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                Venden más títulos de los que se han comprado — casi seguro una transacción mal importada o duplicada. No entran en el reparto de abajo.
+              </div>
+              {anomalies.map(a => (
+                <div key={a.isin} style={{ fontSize: 12, fontFamily: "'DM Mono',monospace", color: "#f87171", marginBottom: 2 }}>
+                  {a.name} ({a.isin}): {a.shares.toFixed(4)} títulos
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 16 }}>Asignación por valor</div>
+            {rows.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin posiciones abiertas.</div>
+            ) : (
+              <div style={{ display: "flex", gap: 28, flexWrap: "wrap", alignItems: "flex-start" }}>
+                <VsAllocationDonut rows={rows} />
+                <div style={{ flex: 1, minWidth: 280, overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 480 }}>
+                    <thead>
+                      <tr>
+                        {["", "Valor", "Títulos", "Invertido", "Valor actual", "%"].map((h, i) => (
+                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={r.isin}>
+                          <td style={cellStyle}><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: VS_ALLOCATION_COLORS[i % VS_ALLOCATION_COLORS.length] }} /></td>
+                          <td style={{ ...cellStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>
+                            {r.name}
+                            {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
+                          </td>
+                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
+                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
+                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
+                          <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td style={cellStyle}></td>
+                        <td style={{ ...cellStyle, fontWeight: 700 }}>Total</td>
+                        <td style={cellStyle}></td>
+                        <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(rows.reduce((s, r) => s + r.invested, 0))}</td>
+                        <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
+                        <td style={cellStyle}></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const VS_SECTIONS = [
         { id: "fondos", label: "Análisis de fondos", tabs: [
@@ -16489,11 +16634,12 @@
           { id: "saved", label: "Guardadas", icon: "💾" },
         ]},
         { id: "cartera", label: "Seguimiento de cartera", tabs: [
-          { id: "cartera", label: "Cartera", icon: "💼" },
+          { id: "resumen", label: "Mi cartera", icon: "📊" },
+          { id: "cartera", label: "Transacciones", icon: "💼" },
         ]},
       ];
       const [section, setSection] = useState("cartera");
-      const [tab, setTab] = useState("cartera");
+      const [tab, setTab] = useState("resumen");
       const [factors, setFactors] = useState({});
       const [funds, setFunds] = useState({});
       const [portfolio, setPortfolio] = useState({ transactions: [], securities: {} });
@@ -16654,6 +16800,7 @@
                 {tab === "pca" && <VsPCATab factors={factors} funds={funds} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
+                {tab === "resumen" && <VsMiCarteraTab portfolio={portfolio} />}
                 {tab === "cartera" && <VsCarteraTab portfolio={portfolio} onSave={handleSavePortfolio} />}
               </>
             )}
