@@ -10435,17 +10435,43 @@
         setActiveProfileId(lastProfId || profs[0]?.id || null);
       };
 
+      // `profilesLoadedRef` evita una condición de carrera conocida de
+      // Supabase-js: `getSession()` puede perder la carrera contra la
+      // restauración interna de la sesión (leer el token guardado) y
+      // devolver `session: null` en el primer intento aunque sí haya
+      // sesión válida. Si eso pasa, `loadAll` nunca se llamaba desde ahí,
+      // y `onAuthStateChange` solo hacía `setUser(...)` sin cargar
+      // perfiles — resultado: el usuario aparece logueado pero sin
+      // perfil, hasta refrescar. Ahora `onAuthStateChange` es una red de
+      // seguridad: si `getSession()` no llegó a cargar perfiles, los
+      // carga él. La guarda evita repetir la carga en cada evento
+      // posterior (p.ej. TOKEN_REFRESHED, que Supabase dispara solo
+      // periódicamente).
+      const profilesLoadedRef = useRef(false);
+
       useEffect(() => {
         _sb.auth.getSession().then(async ({ data: { session } }) => {
-          if (session?.user) { _sbUser = session.user; setUser(session.user); await loadAll(session.user); }
+          if (session?.user && !profilesLoadedRef.current) {
+            profilesLoadedRef.current = true;
+            _sbUser = session.user; setUser(session.user); await loadAll(session.user);
+          }
           setAuthLoading(false);
         });
-        const { data: { subscription } } = _sb.auth.onAuthStateChange((event, session) => {
+        const { data: { subscription } } = _sb.auth.onAuthStateChange(async (event, session) => {
           if (event === 'PASSWORD_RECOVERY') {
             // User clicked reset link — show password change form
             _sbUser = session.user; setUser(session.user); setRecovering(true);
-          } else if (session?.user) { _sbUser = session.user; setUser(session.user); }
-          else { _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); setRecovering(false); }
+          } else if (session?.user) {
+            _sbUser = session.user; setUser(session.user);
+            if (!profilesLoadedRef.current) {
+              profilesLoadedRef.current = true;
+              await loadAll(session.user);
+              setAuthLoading(false);
+            }
+          } else {
+            profilesLoadedRef.current = false;
+            _sbUser = null; setUser(null); setUsername(null); setProfiles([]); setActiveProfileId(null); setActiveId(null); setRecovering(false);
+          }
         });
         return () => subscription.unsubscribe();
       }, []);
