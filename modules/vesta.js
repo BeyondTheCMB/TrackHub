@@ -4070,13 +4070,17 @@
     // Editor de asignación (catálogo de valores) — chips con opción de
     // quitar + un desplegable inline (no popover, para no pelearse con el
     // overflow:auto de las tablas) con todo el árbol indentado como lista
-    // de check.
+    // de check. Un valor lleva como mucho UNA etiqueta — seleccionar otra
+    // sustituye a la anterior en vez de acumularse (por eso el array
+    // `selected` nunca crece más allá de longitud 1; se mantiene como
+    // array por compatibilidad con el resto del modelo/roll-up de tags).
     function VsTagAssign({ tags, selectedIds, onChange }) {
       const [open, setOpen] = useState(false);
       const tagsById = useMemo(() => vsTagsById(tags), [tags]);
       const flat = useMemo(() => vsFlattenTagTree(tags), [tags]);
       const selected = selectedIds || [];
-      const toggleTag = (id) => onChange(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+      const pickTag = (id) => { onChange([id]); setOpen(false); };
+      const clearTag = () => onChange([]);
       return (
         <div>
           {selected.length > 0 && (
@@ -4084,20 +4088,20 @@
               {selected.map(id => tagsById.get(id)).filter(Boolean).map(t => (
                 <span key={t.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: t.color + "22", border: `1px solid ${t.color}55`, color: t.color, borderRadius: 20, padding: "2px 7px", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>
                   {t.name}
-                  <span onClick={() => toggleTag(t.id)} title="Quitar" style={{ cursor: "pointer", opacity: 0.75, fontWeight: 700 }}>×</span>
+                  <span onClick={clearTag} title="Quitar" style={{ cursor: "pointer", opacity: 0.75, fontWeight: 700 }}>×</span>
                 </span>
               ))}
             </div>
           )}
           <button onClick={() => setOpen(v => !v)} style={{ background: "none", border: "1px dashed #1a2535", color: "#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
-            {open ? "cerrar" : "+ etiqueta"}
+            {open ? "cerrar" : selected.length > 0 ? "cambiar" : "+ etiqueta"}
           </button>
           {open && (
             <div style={{ marginTop: 6, maxHeight: 160, overflowY: "auto", background: "#060d14", border: "1px solid #1a2535", borderRadius: 6, padding: 4, minWidth: 160 }}>
               {flat.length === 0 ? (
                 <div style={{ fontSize: 10, color: "#5a7080", padding: "4px 2px" }}>Sin etiquetas creadas — usa el panel "Etiquetas" de arriba.</div>
               ) : flat.map(t => (
-                <div key={t.id} onClick={() => toggleTag(t.id)}
+                <div key={t.id} onClick={() => pickTag(t.id)}
                   style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", paddingLeft: 4 + t.depth * 14, cursor: "pointer", borderRadius: 4, fontSize: 11 }}
                   onMouseEnter={e => { e.currentTarget.style.background = "#0d1825"; }}
                   onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
@@ -4132,6 +4136,7 @@
       const [addDraft, setAddDraft] = useState({});
 
       const flat = useMemo(() => vsFlattenTagTree(tags), [tags]);
+      const tagsById = useMemo(() => vsTagsById(tags), [tags]);
       const countByTag = useMemo(() => {
         const m = new Map();
         for (const s of securities) for (const id of (s.tagIds || [])) m.set(id, (m.get(id) || 0) + 1);
@@ -4280,13 +4285,15 @@
                               <div style={{ maxHeight: 170, overflowY: "auto", background: "#060d14", border: "1px solid #1a2535", borderRadius: 6, padding: 4, marginBottom: 8, maxWidth: 320 }}>
                                 {unassigned.map(s => {
                                   const checked = (addDraft[t.id] || []).includes(s.isin);
+                                  const currentTag = (s.tagIds || []).map(id => tagsById.get(id)).filter(Boolean)[0];
                                   return (
                                     <div key={s.isin} onClick={() => toggleDraftIsin(t.id, s.isin)}
                                       style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", cursor: "pointer", borderRadius: 4, fontSize: 11.5 }}
                                       onMouseEnter={e => { e.currentTarget.style.background = "#0d1825"; }}
                                       onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
                                       <input type="checkbox" checked={checked} onChange={() => {}} style={{ pointerEvents: "none", accentColor: VS_A }} />
-                                      <span style={{ color: "#cbd5e1" }}>{s.name}</span>
+                                      <span style={{ color: "#cbd5e1", flex: 1 }}>{s.name}</span>
+                                      {currentTag && <span style={{ fontSize: 9.5, color: currentTag.color, fontFamily: "'DM Mono',monospace" }} title="Se reasignará desde esta etiqueta">{currentTag.name}</span>}
                                     </div>
                                   );
                                 })}
@@ -5005,13 +5012,14 @@
       // toggleSecurityTag seguidas, cada una partiría del mismo
       // securitiesCatalog capturado antes de que React re-renderizase con
       // el cambio anterior, y solo sobreviviría la última.
+      // Un valor lleva como mucho una etiqueta: esto SUSTITUYE la que
+      // tuviera, no la añade a una lista.
       const bulkAssignTag = async (tagId, isins) => {
         const nextSecurities = { ...securitiesCatalog };
         for (const isin of isins) {
           const sec = nextSecurities[isin];
           if (!sec) continue;
-          const current = sec.tagIds || [];
-          if (!current.includes(tagId)) nextSecurities[isin] = { ...sec, tagIds: [...current, tagId] };
+          nextSecurities[isin] = { ...sec, tagIds: [tagId] };
         }
         const next = { ...portfolio, securities: nextSecurities };
         await onSave(next);
@@ -5415,51 +5423,78 @@
     }
 
     // Donut de la vista "por etiqueta" — mismo dibujo que VsAllocationDonut
-    // pero por "slice" genérico (id/nombre/color/valor) en vez de por
-    // ISIN, para poder representar tags en lugar de valores individuales.
-    // Aviso: si algún valor lleva etiquetas de más de una rama raíz a la
-    // vez, sus slices se solapan en valor y el anillo puede no sumar
-    // exactamente el 100% — coherente con el mismo aviso de la tabla.
-    function VsTagAllocationDonut({ slices, totalValue, hoveredId, onHover, fmtEUR }) {
-      const size = 300, r = 118, cx = 150, cy = 150, strokeWidth = 34;
-      const circumference = 2 * Math.PI * r;
-      let cumulative = 0;
-      const hoveredSlice = slices.find(s => s.id === hoveredId);
+    // pero con DOS anillos concéntricos: el interior son las categorías
+    // raíz (Renta Variable, Renta Fija...) y el exterior sus subapartados
+    // (Acciones, Fondos...). Los slices exteriores de una misma raíz sólo
+    // tienen sentido alineados exactamente bajo el arco de esa raíz — para
+    // eso `outerSlices` debe llegar ya en el mismo orden que `innerSlices`
+    // (root1-propio, root1-hijo1, root1-hijo2..., root2-propio, ...), así
+    // el cómputo de cumulative (idéntico en ambos anillos, mismo total)
+    // hace que ambos arcos coincidan sin ningún ajuste extra.
+    function VsTagAllocationDonut({ innerSlices, outerSlices, totalValue, hoveredId, onHover, fmtEUR }) {
+      const size = 300, cx = 150, cy = 150;
+      const rOuter = 130, swOuter = 26;
+      const rInner = 96, swInner = 30;
+      const circOuter = 2 * Math.PI * rOuter;
+      const circInner = 2 * Math.PI * rInner;
+      let cumOuter = 0, cumInner = 0;
+      const allSlices = [...outerSlices, ...innerSlices];
+      const hoveredSlice = allSlices.find(s => s.id === hoveredId);
       return (
         <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
           <svg viewBox={`0 0 ${size} ${size}`} style={{ width: size, height: size }}>
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a2535" strokeWidth={strokeWidth} />
-            {slices.map(s => {
-              const dash = Math.max((s.pct / 100) * circumference, 0);
+            <circle cx={cx} cy={cy} r={rOuter} fill="none" stroke="#1a2535" strokeWidth={swOuter} />
+            <circle cx={cx} cy={cy} r={rInner} fill="none" stroke="#0d1825" strokeWidth={swInner} />
+            {outerSlices.map(s => {
+              const dash = Math.max((s.pct / 100) * circOuter, 0);
               const isHovered = hoveredId === s.id;
               const el = (
-                <circle key={s.id} cx={cx} cy={cy} r={r} fill="none"
+                <circle key={"o_" + s.id} cx={cx} cy={cy} r={rOuter} fill="none"
                   stroke={s.color}
-                  strokeWidth={isHovered ? strokeWidth + 10 : strokeWidth}
-                  strokeDasharray={`${dash} ${circumference - dash}`}
-                  strokeDashoffset={-cumulative}
+                  strokeWidth={isHovered ? swOuter + 8 : swOuter}
+                  strokeDasharray={`${Math.max(dash - 1.5, 0)} ${circOuter - dash + 1.5}`}
+                  strokeDashoffset={-cumOuter}
                   transform={`rotate(-90 ${cx} ${cy})`}
-                  opacity={hoveredId && !isHovered ? 0.35 : 1}
+                  opacity={hoveredId && !isHovered ? 0.3 : 1}
                   style={{ cursor: "pointer", transition: "stroke-width 120ms ease, opacity 120ms ease" }}
                   onMouseEnter={() => onHover(s.id)}
                   onMouseLeave={() => onHover(null)}
                 />
               );
-              cumulative += dash;
+              cumOuter += dash;
+              return el;
+            })}
+            {innerSlices.map(s => {
+              const dash = Math.max((s.pct / 100) * circInner, 0);
+              const isHovered = hoveredId === s.id;
+              const el = (
+                <circle key={"i_" + s.id} cx={cx} cy={cy} r={rInner} fill="none"
+                  stroke={s.color}
+                  strokeWidth={isHovered ? swInner + 8 : swInner}
+                  strokeDasharray={`${dash} ${circInner - dash}`}
+                  strokeDashoffset={-cumInner}
+                  transform={`rotate(-90 ${cx} ${cy})`}
+                  opacity={hoveredId && !isHovered ? 0.3 : 1}
+                  style={{ cursor: "pointer", transition: "stroke-width 120ms ease, opacity 120ms ease" }}
+                  onMouseEnter={() => onHover(s.id)}
+                  onMouseLeave={() => onHover(null)}
+                />
+              );
+              cumInner += dash;
               return el;
             })}
           </svg>
-          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", pointerEvents: "none", padding: "0 60px" }}>
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", pointerEvents: "none", padding: "0 74px" }}>
             {hoveredSlice ? (
               <>
                 <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{hoveredSlice.name}</div>
-                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 21, marginTop: 2 }}>{fmtEUR(hoveredSlice.value)}</div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: VS_A, fontFamily: "'DM Mono',monospace", marginTop: 3 }}>{hoveredSlice.pct.toFixed(1)}%</div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 19, marginTop: 2 }}>{fmtEUR(hoveredSlice.value)}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: VS_A, fontFamily: "'DM Mono',monospace", marginTop: 3 }}>{hoveredSlice.pct.toFixed(1)}%</div>
               </>
             ) : (
               <>
                 <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em" }}>Valor total</div>
-                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 22, marginTop: 2 }}>{fmtEUR(totalValue)}</div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 20, marginTop: 2 }}>{fmtEUR(totalValue)}</div>
               </>
             )}
           </div>
@@ -5485,16 +5520,17 @@
       const weightPct = totalValue > 0 ? (node.value / totalValue) * 100 : 0;
       const changePct = node.invested > 0 ? ((node.value - node.invested) / node.invested) * 100 : null;
       const cellStyle = { padding: depth === 0 ? "8px 7px" : "5px 7px", borderBottom: "1px solid #16202c" };
-      // El resaltado por hover solo tiene sentido en las ramas raíz, que
-      // son las que también se ven como gajos independientes en el donut.
-      const isRootHovered = depth === 0 && hoveredTagId === node.tag.id;
-      const headerBg = depth === 0 ? node.tag.color + (isRootHovered ? "28" : "14") : "transparent";
+      // El resaltado por hover cubre tanto las raíces (anillo interior)
+      // como las subetiquetas (anillo exterior) — ambas existen ahora como
+      // gajo propio en el donut de dos anillos.
+      const isHovered = hoveredTagId === node.tag.id || (depth === 0 && hoveredTagId === node.tag.id + "__own");
+      const headerBg = depth === 0 ? node.tag.color + (isHovered ? "28" : "14") : (isHovered ? node.tag.color + "20" : "transparent");
       return (
         <React.Fragment>
           <tr style={{ cursor: expandable ? "pointer" : "default", background: headerBg, borderTop: depth === 0 && !isFirst ? `2px solid ${node.tag.color}33` : "none" }}
             onClick={() => expandable && onToggle(node.tag.id)}
-            onMouseEnter={() => depth === 0 && onHoverTag && onHoverTag(node.tag.id)}
-            onMouseLeave={() => depth === 0 && onHoverTag && onHoverTag(null)}>
+            onMouseEnter={() => onHoverTag && onHoverTag(node.tag.id)}
+            onMouseLeave={() => onHoverTag && onHoverTag(null)}>
             <td style={{ ...cellStyle, borderLeft: depth > 0 ? `2px solid ${node.tag.color}55` : "none" }}>
               <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: node.tag.color }} />
             </td>
@@ -5548,20 +5584,32 @@
       const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
       const fmtEUR = vsPortfolioFmtEUR;
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
-      // Slices del donut "por etiqueta": una por rama raíz + "Sin
-      // etiquetar" si aplica. Solo raíces (no toda la profundidad) para
-      // que el anillo no se fragmente en decenas de gajos diminutos —
-      // el desglose fino ya lo da la tabla de debajo.
-      const tagSlices = useMemo(() => {
-        const branchSlices = tagTree.branches.map(b => ({
-          id: b.tag.id, name: b.tag.name, color: b.tag.color, value: b.value,
-          pct: totalValue > 0 ? (b.value / totalValue) * 100 : 0,
-        }));
-        const untaggedSlice = tagTree.untagged.rows.length > 0 ? [{
-          id: "__untagged", name: "Sin etiquetar", color: "#3a4550", value: tagTree.untagged.value,
-          pct: totalValue > 0 ? (tagTree.untagged.value / totalValue) * 100 : 0,
-        }] : [];
-        return [...branchSlices, ...untaggedSlice];
+      // Anillo interior del donut "por etiqueta": una por rama raíz +
+      // "Sin etiquetar" si aplica.
+      // Anillo exterior: dentro de cada raíz, primero lo que esté tageado
+      // directamente en ella (si lo hay) y luego cada subetiqueta hija —
+      // en ese mismo orden, para que sus arcos caigan justo debajo del
+      // arco de su raíz en el anillo interior (mismo cumulative, mismo
+      // total = mismos ángulos de inicio). Los nietos (profundidad ≥2) se
+      // quedan enrollados dentro del valor de su hijo directo — dos
+      // anillos es la granularidad que se ve bien en un donut.
+      const { tagInnerSlices, tagOuterSlices } = useMemo(() => {
+        const inner = [], outer = [];
+        for (const b of tagTree.branches) {
+          inner.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, value: b.value, pct: totalValue > 0 ? (b.value / totalValue) * 100 : 0 });
+          const ownValue = b.directRows.reduce((s, r) => s + r.value, 0);
+          if (ownValue > 0) {
+            outer.push({ id: b.tag.id + "__own", name: b.tag.name, color: b.tag.color, value: ownValue, pct: totalValue > 0 ? (ownValue / totalValue) * 100 : 0 });
+          }
+          for (const c of b.children) {
+            outer.push({ id: c.tag.id, name: c.tag.name, color: c.tag.color, value: c.value, pct: totalValue > 0 ? (c.value / totalValue) * 100 : 0 });
+          }
+        }
+        if (tagTree.untagged.rows.length > 0) {
+          const untaggedSlice = { id: "__untagged", name: "Sin etiquetar", color: "#3a4550", value: tagTree.untagged.value, pct: totalValue > 0 ? (tagTree.untagged.value / totalValue) * 100 : 0 };
+          inner.push(untaggedSlice); outer.push(untaggedSlice);
+        }
+        return { tagInnerSlices: inner, tagOuterSlices: outer };
       }, [tagTree, totalValue]);
       // Por defecto todo el árbol va desplegado (incluida "Sin etiquetar")
       // para que se vea de un vistazo como un esquema de subsecciones, no
@@ -5616,7 +5664,7 @@
                 {viewMode === "valor" ? (
                   <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
                 ) : (
-                  <VsTagAllocationDonut slices={tagSlices} totalValue={totalValue} hoveredId={hoveredTagId} onHover={setHoveredTagId} fmtEUR={fmtEUR} />
+                  <VsTagAllocationDonut innerSlices={tagInnerSlices} outerSlices={tagOuterSlices} totalValue={totalValue} hoveredId={hoveredTagId} onHover={setHoveredTagId} fmtEUR={fmtEUR} />
                 )}
                 {viewMode === "valor" ? (
                   <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
