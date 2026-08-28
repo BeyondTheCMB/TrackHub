@@ -1589,10 +1589,11 @@
     }
 
     // ── Formulario de edición reutilizable (índices y fondos) ────────────────
-    // Cambiar nombre, categoría, nota, o reemplazar el CSV por completo.
-    // Si no se sube ningún archivo nuevo, se conservan los retornos que ya
-    // había — solo se tocan los metadatos.
-    function VsEditEntryForm({ currentName, category, description, sourceType, currentReturns, sourceTypeOptions, onSave, onCancel }) {
+    // Cambiar nombre, categoría, nota, o reemplazar los datos por completo
+    // (CSV nuevo, o resolviendo/actualizando vía Yahoo). Si no se sube
+    // ningún archivo nuevo ni se pide una actualización de Yahoo, se
+    // conservan los retornos que ya había — solo se tocan los metadatos.
+    function VsEditEntryForm({ currentName, category, description, sourceType, currentReturns, currentYahooTicker, sourceTypeOptions, onSave, onCancel }) {
       const [newName, setNewName] = useState(currentName);
       const [newCategory, setNewCategory] = useState(category);
       const [newDescription, setNewDescription] = useState(description || "");
@@ -1602,15 +1603,58 @@
       const [status, setStatus] = useState("");
       const fileRef = useRef(null);
 
+      // ── Reemplazo/actualización vía Yahoo ────────────────────────────
+      // `yahooRefresh` solo se pone a true cuando el usuario elige un
+      // ticker (nuevo o "actualizar ahora" con el que ya tenía) — así
+      // cambiar solo el nombre/categoría/nota de un valor con sourceType
+      // "yahoo" no dispara una descarga de red de más.
+      const [yahooQuery, setYahooQuery] = useState("");
+      const [yahooTicker, setYahooTicker] = useState("");
+      const [yahooCandidates, setYahooCandidates] = useState(null);
+      const [yahooSearching, setYahooSearching] = useState(false);
+      const [yahooSearchError, setYahooSearchError] = useState("");
+      const [yahooRefresh, setYahooRefresh] = useState(false);
+
+      const searchYahoo = async () => {
+        if (!yahooQuery.trim()) return;
+        setYahooSearching(true); setYahooSearchError(""); setYahooCandidates(null);
+        try {
+          const results = await vsSearchYahooSymbols(yahooQuery.trim());
+          if (results.length === 1) { setYahooTicker(results[0].symbol); setYahooRefresh(true); }
+          else setYahooCandidates(results);
+        } catch (e) {
+          setYahooSearchError(e.message);
+        }
+        setYahooSearching(false);
+      };
+
       const inputStyle = { width: "100%", background: "#0d1825", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "8px 9px", fontSize: 12 };
       const labelStyle = { display: "block", fontSize: 11, color: "#7a90a8", margin: "10px 0 5px", fontWeight: 500 };
 
+      // Si se cambia a "yahoo" (o ya lo era) pero nunca se elige un
+      // ticker en esta sesión de edición, no hay nada que guardar como
+      // fuente Yahoo — se bloquea el guardado en vez de dejar una entrada
+      // marcada "yahoo" sin ticker.
+      const yahooNeedsTicker = newSourceType === "yahoo" && !yahooRefresh && !currentYahooTicker;
+
       const handleSave = async () => {
-        if (!newName.trim()) return;
+        if (!newName.trim() || yahooNeedsTicker) return;
         setBusy(true); setStatus("procesando…");
         try {
           let returns = currentReturns;
-          if (file) {
+          let extra = {};
+          let changed = false;
+          if (newSourceType === "yahoo" && yahooRefresh) {
+            const ticker = yahooTicker || currentYahooTicker;
+            setStatus("descargando histórico de Yahoo…");
+            const { points, originalCurrency } = await vsFetchYahooMonthlySeries(ticker);
+            if (points.length < 2) { setStatus("Error: Yahoo no devolvió suficiente histórico para ese ticker."); setBusy(false); return; }
+            const parsed = vsToMonthlyReturns(points);
+            if (parsed.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
+            returns = parsed.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value }));
+            extra = { yahooTicker: ticker, originalCurrency: originalCurrency || null };
+            changed = true;
+          } else if (file) {
             const text = await file.text();
             let raw;
             if (newSourceType === "investing") raw = vsParseInvestingCSV(text);
@@ -1620,9 +1664,10 @@
             const parsed = (newSourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
             if (parsed.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
             returns = parsed.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value }));
+            changed = true;
           }
-          await onSave(currentName, newName.trim(), { category: newCategory, sourceType: newSourceType, description: newDescription, returns });
-          const w = file ? vsDensityWarning(returns.map(r => ({ date: new Date(r.date + "T00:00:00Z"), value: r.value }))) : null;
+          await onSave(currentName, newName.trim(), { category: newCategory, sourceType: newSourceType, description: newDescription, returns, ...extra });
+          const w = changed ? vsDensityWarning(returns.map(r => ({ date: new Date(r.date + "T00:00:00Z"), value: r.value }))) : null;
           setStatus(`Guardado ✓${w ? "\n" + w : ""}`);
         } catch (e) {
           setStatus("Error: " + e.message);
@@ -1648,19 +1693,61 @@
           <label style={labelStyle}>Nota <span style={{fontWeight:400}}>(opcional)</span></label>
           <input style={inputStyle} type="text" value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="breve nota" />
 
-          <label style={labelStyle}>Reemplazar CSV <span style={{fontWeight:400}}>(opcional — vacío mantiene los datos actuales)</span></label>
-          <select style={inputStyle} value={newSourceType} onChange={e=>setNewSourceType(e.target.value)}>
+          <label style={labelStyle}>Fuente de los datos <span style={{fontWeight:400}}>(opcional — vacío mantiene los datos actuales)</span></label>
+          <select style={inputStyle} value={newSourceType} onChange={e=>{setNewSourceType(e.target.value); setYahooRefresh(false); setYahooCandidates(null); setYahooSearchError("");}}>
             {sourceTypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <input ref={fileRef} style={{...inputStyle, padding: 6, marginTop: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
-          <button onClick={()=>vsOpenInvestingSearch(newName)} disabled={!newName.trim()} type="button"
-            style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: newName.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "6px", fontSize: 10, cursor: newName.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
-            🔎 Buscar "{newName.trim() || "…"}" en Investing.com ↗
-          </button>
+
+          {newSourceType === "yahoo" ? (
+            <>
+              {currentYahooTicker && (
+                <div style={{ marginTop: 6, fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>
+                  ticker actual: {currentYahooTicker}
+                  <button onClick={() => { setYahooTicker(currentYahooTicker); setYahooRefresh(true); }} type="button"
+                    style={{ marginLeft: 8, background: "none", border: "1px solid #1a2535", color: VS_A, borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+                    actualizar ahora
+                  </button>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <input style={{ ...inputStyle, flex: 1 }} type="text" value={yahooQuery} onChange={e=>setYahooQuery(e.target.value)} placeholder="buscar otro ticker/ISIN…" />
+                <button onClick={searchYahoo} disabled={yahooSearching || !yahooQuery.trim()} type="button"
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "0 10px", fontSize: 13, cursor: (yahooSearching || !yahooQuery.trim()) ? "not-allowed" : "pointer" }}>
+                  {yahooSearching ? "…" : "🔎"}
+                </button>
+              </div>
+              {yahooCandidates && (
+                <div style={{ marginTop: 6, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 140, overflowY: "auto", background: "#0d1825" }}>
+                  {yahooCandidates.map(c => (
+                    <div key={c.symbol} onClick={() => { setYahooTicker(c.symbol); setYahooRefresh(true); setYahooCandidates(null); }}
+                      style={{ padding: "4px 6px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {yahooSearchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{yahooSearchError}</div>}
+              {yahooTicker && yahooRefresh && (
+                <div style={{ marginTop: 6, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>se traerá histórico nuevo de: {yahooTicker}</div>
+              )}
+              {yahooNeedsTicker && (
+                <div style={{ color: "#f59e0b", fontSize: 10, marginTop: 4 }}>Elige un ticker de Yahoo (o pulsa "actualizar ahora" si ya tenía uno) antes de guardar.</div>
+              )}
+            </>
+          ) : (
+            <>
+              <input ref={fileRef} style={{...inputStyle, padding: 6, marginTop: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+              <button onClick={()=>vsOpenInvestingSearch(newName)} disabled={!newName.trim()} type="button"
+                style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: newName.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "6px", fontSize: 10, cursor: newName.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+                🔎 Buscar "{newName.trim() || "…"}" en Investing.com ↗
+              </button>
+            </>
+          )}
 
           <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-            <button onClick={handleSave} disabled={busy || !newName.trim()}
-              style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 700, cursor: (busy||!newName.trim())?"not-allowed":"pointer", opacity: (busy||!newName.trim())?0.4:1 }}>
+            <button onClick={handleSave} disabled={busy || !newName.trim() || yahooNeedsTicker}
+              style={{ flex: 1, background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "8px", fontSize: 12, fontWeight: 700, cursor: (busy||!newName.trim()||yahooNeedsTicker)?"not-allowed":"pointer", opacity: (busy||!newName.trim()||yahooNeedsTicker)?0.4:1 }}>
               {busy ? "guardando…" : "Guardar cambios"}
             </button>
             <button onClick={onCancel} disabled={busy}
@@ -1742,6 +1829,13 @@
       const [chartOpenFor, setChartOpenFor] = useState(null);
       const fileRef = useRef(null);
 
+      // ── Alta vía Yahoo (alternativa automática al CSV) ──────────────────
+      const [yahooQuery, setYahooQuery] = useState("");
+      const [yahooTicker, setYahooTicker] = useState("");
+      const [yahooCandidates, setYahooCandidates] = useState(null);
+      const [yahooSearching, setYahooSearching] = useState(false);
+      const [yahooSearchError, setYahooSearchError] = useState("");
+
       const indexNames = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
       const allNames = [...indexNames, ...fundNames];
@@ -1750,16 +1844,54 @@
       const sourceOptionsForType = type === "index"
         ? [
             { value: "investing", label: "Investing.com (Fecha, Último)" },
+            { value: "yahoo", label: "Yahoo Finance (automático)" },
             { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
             { value: "fred_rate", label: "FRED (tipo de interés)" },
           ]
         : [
             { value: "investing", label: "Investing.com (Fecha, Último)" },
+            { value: "yahoo", label: "Yahoo Finance (automático)" },
             { value: "fred_rate", label: "FRED (tipo de interés)" },
           ];
 
+      const searchYahoo = async () => {
+        if (!yahooQuery.trim()) return;
+        setYahooSearching(true); setYahooSearchError(""); setYahooCandidates(null);
+        try {
+          const results = await vsSearchYahooSymbols(yahooQuery.trim());
+          if (results.length === 1) setYahooTicker(results[0].symbol);
+          else setYahooCandidates(results);
+        } catch (e) {
+          setYahooSearchError(e.message);
+        }
+        setYahooSearching(false);
+      };
+
       const handleRegister = async () => {
-        if (!name.trim() || !file) return;
+        if (!name.trim()) return;
+        if (sourceType === "yahoo") {
+          if (!yahooTicker) return;
+          setBusy(true); setStatus("descargando histórico de Yahoo…");
+          try {
+            const { points, originalCurrency } = await vsFetchYahooMonthlySeries(yahooTicker);
+            if (points.length < 2) { setStatus("Error: Yahoo no devolvió suficiente histórico para ese ticker."); setBusy(false); return; }
+            const returns = vsToMonthlyReturns(points);
+            if (returns.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
+            const data = {
+              category, sourceType: "yahoo", description, yahooTicker, originalCurrency: originalCurrency || null,
+              returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
+            };
+            if (type === "index") await onAdd(name.trim(), data);
+            else await onAddFund(name.trim(), data);
+            setStatus(`Registrado: ${returns.length} retornos mensuales (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
+            setName(""); setDescription(""); setYahooQuery(""); setYahooTicker(""); setYahooCandidates(null);
+          } catch (e) {
+            setStatus("Error: " + e.message);
+          }
+          setBusy(false);
+          return;
+        }
+        if (!file) return;
         setBusy(true); setStatus("procesando…");
         try {
           const text = await file.text();
@@ -1836,7 +1968,7 @@
                           </td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535" }}><VsCatTag category={f.category} /></td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#5a7080", fontSize: 11, fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {{investing:"CSV", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", ecb_auto:"BCE (auto)"}[f.sourceType] || f.sourceType}
+                            {{investing:"CSV", yahoo:"Yahoo", ecb_rate:"CSV (ECB)", fred_rate:"CSV (FRED)", ecb_auto:"BCE (auto)"}[f.sourceType] || f.sourceType}
                           </td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535", color: "#7a90a8", fontSize: 11, fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rs[0]?.date} → {rs[rs.length-1]?.date}</td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1a2535", fontFamily: "'DM Mono',monospace" }}>{rs.length}</td>
@@ -1871,7 +2003,7 @@
                           <tr><td colSpan={6} style={{ padding: 0, borderBottom: "1px solid #1a2535" }}>
                             <VsEditEntryForm
                               currentName={nm} category={f.category} description={f.description} sourceType={f.sourceType}
-                              currentReturns={f.returns}
+                              currentReturns={f.returns} currentYahooTicker={f.yahooTicker}
                               sourceTypeOptions={sourceOpts}
                               onSave={async (oldName, newName, d) => { await onUpdateFn(oldName, newName, d); }}
                               onCancel={()=>setEditOpenFor(null)}
@@ -1893,15 +2025,15 @@
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, alignSelf: "start" }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir al pool</div>
             <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
-              Sube un CSV de Investing.com (o ECB / FRED para tipos de interés).
+              Sube un CSV de Investing.com (o ECB / FRED para tipos de interés), o resuélvelo automáticamente vía Yahoo.
             </div>
 
             <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-              <button onClick={()=>{setType("index"); setSourceType("investing");}}
+              <button onClick={()=>{setType("index"); setSourceType("investing"); setYahooQuery(""); setYahooTicker(""); setYahooCandidates(null);}}
                 style={{ flex: 1, background: type==="index" ? VS_A+"18" : "none", border: `1px solid ${type==="index" ? VS_A : "#1a2535"}`, color: type==="index" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                 🗂 Índice
               </button>
-              <button onClick={()=>{setType("fund"); setSourceType("investing");}}
+              <button onClick={()=>{setType("fund"); setSourceType("investing"); setYahooQuery(""); setYahooTicker(""); setYahooCandidates(null);}}
                 style={{ flex: 1, background: type==="fund" ? VS_A+"18" : "none", border: `1px solid ${type==="fund" ? VS_A : "#1a2535"}`, color: type==="fund" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                 💼 Fondo
               </button>
@@ -1916,7 +2048,7 @@
             </select>
 
             <label style={labelStyle}>Formato de fuente</label>
-            <select style={inputStyle} value={sourceType} onChange={e=>setSourceType(e.target.value)}>
+            <select style={inputStyle} value={sourceType} onChange={e=>{setSourceType(e.target.value); setYahooCandidates(null); setYahooSearchError("");}}>
               {sourceOptionsForType.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             {type === "index" && (
@@ -1925,18 +2057,51 @@
               </small>
             )}
 
-            <label style={labelStyle}>Archivo CSV</label>
-            <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
-            <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
-              style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
-              🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
-            </button>
+            {sourceType === "yahoo" ? (
+              <>
+                <label style={labelStyle}>Ticker o ISIN (Yahoo)</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input style={{ ...inputStyle, flex: 1 }} type="text" value={yahooQuery} onChange={e=>setYahooQuery(e.target.value)} placeholder="ej: URTH, IE00B4L5Y983" />
+                  <button onClick={searchYahoo} disabled={yahooSearching || !yahooQuery.trim()} type="button"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "0 10px", fontSize: 13, cursor: (yahooSearching || !yahooQuery.trim()) ? "not-allowed" : "pointer" }}>
+                    {yahooSearching ? "…" : "🔎"}
+                  </button>
+                </div>
+                {yahooCandidates && (
+                  <div style={{ marginTop: 6, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 140, overflowY: "auto", background: "#060d14" }}>
+                    {yahooCandidates.map(c => (
+                      <div key={c.symbol} onClick={() => { setYahooTicker(c.symbol); setYahooCandidates(null); }}
+                        style={{ padding: "4px 6px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {yahooSearchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{yahooSearchError}</div>}
+                {yahooTicker && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>ticker elegido: {yahooTicker}</div>
+                )}
+                <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
+                  Trae el histórico diario completo disponible en Yahoo (convertido a EUR si cotiza en otra divisa) y lo pasa a retornos mensuales automáticamente.
+                </small>
+              </>
+            ) : (
+              <>
+                <label style={labelStyle}>Archivo CSV</label>
+                <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+                <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
+                  style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+                  🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
+                </button>
+              </>
+            )}
 
             <label style={labelStyle}>Descripción <span style={{fontWeight:400}}>(opcional)</span></label>
             <input style={inputStyle} type="text" value={description} onChange={e=>setDescription(e.target.value)} placeholder="breve nota" />
 
-            <button onClick={handleRegister} disabled={busy || !name.trim() || !file}
-              style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy||!name.trim()||!file) ? "not-allowed" : "pointer", opacity: (busy||!name.trim()||!file) ? 0.4 : 1 }}>
+            <button onClick={handleRegister} disabled={busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)}
+              style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)) ? "not-allowed" : "pointer", opacity: (busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)) ? 0.4 : 1 }}>
               Añadir {type === "index" ? "índice" : "fondo"}
             </button>
             {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
@@ -1947,6 +2112,7 @@
               onRemoveFn={onRemove} onUpdateFn={onUpdate}
               sourceOpts={[
                 { value: "investing", label: "Investing.com (Fecha, Último)" },
+                { value: "yahoo", label: "Yahoo Finance (automático)" },
                 { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
                 { value: "fred_rate", label: "FRED (tipo de interés)" },
               ]} />
@@ -1955,6 +2121,7 @@
               onRemoveFn={onRemoveFund} onUpdateFn={onUpdateFund}
               sourceOpts={[
                 { value: "investing", label: "Investing.com (Fecha, Último)" },
+                { value: "yahoo", label: "Yahoo Finance (automático)" },
                 { value: "fred_rate", label: "FRED (tipo de interés)" },
               ]} />
 
@@ -1995,13 +2162,19 @@
     }
 
     function VsAnalyze({ factors, funds, onAddFund, onSaveAnalysis }) {
-      const [mode, setMode] = useState("pool"); // "pool" (elegir de Fondos) | "upload" (subir nuevo)
+      const [mode, setMode] = useState("pool"); // "pool" (elegir de Fondos) | "upload" (subir CSV) | "yahoo" (buscar y resolver)
       const [selectedFund, setSelectedFund] = useState(null); // nombre en `funds`
       const [newFundName, setNewFundName] = useState("");
       const [newFundCategory, setNewFundCategory] = useState("equity");
       const [file, setFile] = useState(null);
       const [addingFund, setAddingFund] = useState(false);
       const [addFundStatus, setAddFundStatus] = useState("");
+      // ── Alta rápida vía Yahoo (alternativa al CSV, mismo patrón que VsPool) ──
+      const [yahooQuery, setYahooQuery] = useState("");
+      const [yahooTicker, setYahooTicker] = useState("");
+      const [yahooCandidates, setYahooCandidates] = useState(null);
+      const [yahooSearching, setYahooSearching] = useState(false);
+      const [yahooSearchError, setYahooSearchError] = useState("");
       const [selected, setSelected] = useState(new Set());
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
@@ -2149,6 +2322,46 @@
         setAddingFund(false);
       };
 
+      const searchYahooFund = async () => {
+        if (!yahooQuery.trim()) return;
+        setYahooSearching(true); setYahooSearchError(""); setYahooCandidates(null);
+        try {
+          const results = await vsSearchYahooSymbols(yahooQuery.trim());
+          if (results.length === 1) setYahooTicker(results[0].symbol);
+          else setYahooCandidates(results);
+        } catch (e) {
+          setYahooSearchError(e.message);
+        }
+        setYahooSearching(false);
+      };
+
+      // Mismo resultado que addFundToPool pero resolviendo el histórico vía
+      // Yahoo en vez de un CSV — pensado para el caso más común: un fondo
+      // que no tenías registrado y quieres analizar ya mismo.
+      const addFundToPoolYahoo = async () => {
+        if (!newFundName.trim() || !yahooTicker) return;
+        setAddingFund(true); setAddFundStatus("descargando histórico de Yahoo…");
+        try {
+          const { points, originalCurrency } = await vsFetchYahooMonthlySeries(yahooTicker);
+          if (points.length < 2) { setAddFundStatus("Error: Yahoo no devolvió suficiente histórico para ese ticker."); setAddingFund(false); return; }
+          const returns = vsToMonthlyReturns(points);
+          if (returns.length < 3) { setAddFundStatus("Error: muy pocas observaciones mensuales resultantes."); setAddingFund(false); return; }
+
+          await onAddFund(newFundName.trim(), {
+            category: newFundCategory, sourceType: "yahoo", description: "", yahooTicker, originalCurrency: originalCurrency || null,
+            returns: returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
+          });
+
+          setAddFundStatus(`Añadido al pool: ${returns.length} retornos (${returns[0].date.toISOString().slice(0,10)} → ${returns[returns.length-1].date.toISOString().slice(0,10)})${(() => { const w = vsDensityWarning(returns); return w ? "\n" + w : ""; })()}`);
+          setMode("pool");
+          setSelectedFund(newFundName.trim());
+          setYahooQuery(""); setYahooTicker(""); setYahooCandidates(null);
+        } catch (e) {
+          setAddFundStatus("Error: " + e.message);
+        }
+        setAddingFund(false);
+      };
+
       const run = async () => {
         if (!activeFundName || selected.size === 0) return;
         if (mode === "pool" && !funds[selectedFund]) return;
@@ -2220,15 +2433,19 @@
                 style={{ flex: 1, background: mode==="pool" ? VS_A+"18" : "none", border: `1px solid ${mode==="pool" ? VS_A : "#1a2535"}`, color: mode==="pool" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                 🗂 Del pool ({fundNames.length})
               </button>
+              <button onClick={()=>setMode("yahoo")}
+                style={{ flex: 1, background: mode==="yahoo" ? VS_A+"18" : "none", border: `1px solid ${mode==="yahoo" ? VS_A : "#1a2535"}`, color: mode==="yahoo" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                ⚡ Yahoo
+              </button>
               <button onClick={()=>setMode("upload")}
                 style={{ flex: 1, background: mode==="upload" ? VS_A+"18" : "none", border: `1px solid ${mode==="upload" ? VS_A : "#1a2535"}`, color: mode==="upload" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                📄 Subir nuevo
+                📄 CSV
               </button>
             </div>
 
             {mode === "pool" ? (
               fundNames.length === 0 ? (
-                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>El pool de Fondos está vacío — sube uno con "Subir nuevo".</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>El pool de Fondos está vacío — añade uno con "Yahoo" o "CSV".</div>
               ) : (
                 <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #1a2535", borderRadius: 8 }}>
                   {fundNames.map(nm => {
@@ -2244,6 +2461,46 @@
                   })}
                 </div>
               )
+            ) : mode === "yahoo" ? (
+              <div>
+                <label style={labelStyle}>Nombre del fondo</label>
+                <input style={inputStyle} type="text" value={newFundName} onChange={e=>setNewFundName(e.target.value)} placeholder="ej: Gamma Global" />
+
+                <label style={labelStyle}>Categoría</label>
+                <select style={inputStyle} value={newFundCategory} onChange={e=>setNewFundCategory(e.target.value)}>
+                  {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                <label style={labelStyle}>Ticker o ISIN (Yahoo)</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input style={{ ...inputStyle, flex: 1 }} type="text" value={yahooQuery} onChange={e=>setYahooQuery(e.target.value)} placeholder="ej: URTH, IE00B4L5Y983" />
+                  <button onClick={searchYahooFund} disabled={yahooSearching || !yahooQuery.trim()} type="button"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "0 10px", fontSize: 13, cursor: (yahooSearching || !yahooQuery.trim()) ? "not-allowed" : "pointer" }}>
+                    {yahooSearching ? "…" : "🔎"}
+                  </button>
+                </div>
+                {yahooCandidates && (
+                  <div style={{ marginTop: 6, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 140, overflowY: "auto", background: "#060d14" }}>
+                    {yahooCandidates.map(c => (
+                      <div key={c.symbol} onClick={() => { setYahooTicker(c.symbol); setYahooCandidates(null); }}
+                        style={{ padding: "4px 6px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {yahooSearchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{yahooSearchError}</div>}
+                {yahooTicker && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>ticker elegido: {yahooTicker}</div>
+                )}
+
+                <button onClick={addFundToPoolYahoo} disabled={addingFund || !newFundName.trim() || !yahooTicker}
+                  style={{ marginTop: 12, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "9px", fontSize: 12, fontWeight: 700, cursor: (addingFund||!newFundName.trim()||!yahooTicker) ? "not-allowed" : "pointer", opacity: (addingFund||!newFundName.trim()||!yahooTicker) ? 0.4 : 1 }}>
+                  {addingFund ? "añadiendo…" : "Añadir al pool y usar"}
+                </button>
+                {addFundStatus && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{addFundStatus}</div>}
+              </div>
             ) : (
               <div>
                 <label style={labelStyle}>Nombre del fondo</label>
@@ -3979,6 +4236,39 @@
         }
         return best;
       };
+    }
+
+    // ── Fund Analysis · Índices y Fondos vía Yahoo (alternativa al CSV) ────
+    // Trae el histórico diario completo ("max") de un ticker de Yahoo,
+    // convierte a EUR si cotiza en otra divisa (mismo criterio que
+    // vsDownloadHistory en Cartera: BCE, valorEUR = valorDivisa / rate) y
+    // deja la serie en el formato {date:Date, value:number} que espera
+    // vsToMonthlyReturns. No es incremental — cada llamada trae la serie
+    // entera, porque aquí no hay "catálogo" previo que fusionar: se usa
+    // una vez al añadir el índice/fondo y de nuevo cada vez que el
+    // usuario pide actualizarlo desde el formulario de edición.
+    async function vsFetchYahooMonthlySeries(ticker) {
+      const body = await vsFetchPriceHistory(ticker, "max");
+      let points = body.points
+        .filter(p => p.close != null)
+        .map(p => ({ date: new Date(p.date + "T00:00:00Z"), value: p.close }));
+      let currency = body.currency;
+      let originalCurrency = null;
+      if (currency && currency !== "EUR") {
+        const first = points.length > 0 ? points[0].date.toISOString().slice(0, 10) : null;
+        const fx = await vsFetchFxSeries(currency, first);
+        const rateAt = vsFxLookup(fx.points);
+        points = points
+          .map(p => {
+            const dateStr = p.date.toISOString().slice(0, 10);
+            const rate = rateAt(dateStr);
+            return rate ? { date: p.date, value: p.value / rate } : null;
+          })
+          .filter(Boolean);
+        originalCurrency = currency;
+        currency = "EUR";
+      }
+      return { points, currency, originalCurrency, ticker };
     }
 
     // Descarga (o actualiza incrementalmente) el histórico de precios de
