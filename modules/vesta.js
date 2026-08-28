@@ -5419,45 +5419,56 @@
     // asignados directamente y sus subetiquetas debajo, indentadas un
     // nivel más. Misma cuadrícula de columnas que la tabla "por valor"
     // para que ambas vistas compartan cabecera.
-    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR }) {
+    // Fila (grupo o valor suelto) de la vista "por etiqueta". Pensada como
+    // un esquema de subsecciones (no como una tabla de datos plana): cada
+    // tag es una cabecera con banda de color propia y los valores que
+    // lleva esa etiqueta van justo debajo con viñeta "–", antes de bajar a
+    // la siguiente subetiqueta anidada un nivel más. Recursiva.
+    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR, isFirst }) {
       const hasChildren = node.children && node.children.length > 0;
       const hasDirect = node.directRows && node.directRows.length > 0;
       const expandable = hasChildren || hasDirect;
       const isOpen = expanded.has(node.tag.id);
       const weightPct = totalValue > 0 ? (node.value / totalValue) * 100 : 0;
       const changePct = node.invested > 0 ? ((node.value - node.invested) / node.invested) * 100 : null;
-      const cellStyle = { padding: "5px 7px", borderBottom: "1px solid #16202c" };
+      const cellStyle = { padding: depth === 0 ? "8px 7px" : "5px 7px", borderBottom: "1px solid #16202c" };
+      const headerBg = depth === 0 ? node.tag.color + "14" : "transparent";
       return (
         <React.Fragment>
-          <tr style={{ cursor: expandable ? "pointer" : "default" }} onClick={() => expandable && onToggle(node.tag.id)}>
-            <td style={cellStyle}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: node.tag.color }} /></td>
-            <td style={{ ...cellStyle, paddingLeft: 7 + depth * 16, fontWeight: depth === 0 ? 700 : 500 }}>
-              {expandable && <span style={{ color: "#5a7080", marginRight: 5, display: "inline-block", width: 8 }}>{isOpen ? "▾" : "▸"}</span>}
+          <tr style={{ cursor: expandable ? "pointer" : "default", background: headerBg, borderTop: depth === 0 && !isFirst ? `2px solid ${node.tag.color}33` : "none" }}
+            onClick={() => expandable && onToggle(node.tag.id)}>
+            <td style={{ ...cellStyle, borderLeft: depth > 0 ? `2px solid ${node.tag.color}55` : "none" }}>
+              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: node.tag.color }} />
+            </td>
+            <td style={{ ...cellStyle, paddingLeft: 7 + depth * 20, fontWeight: depth === 0 ? 800 : 700, fontSize: depth === 0 ? 13.5 : 12.5, textTransform: depth === 0 ? "uppercase" : "none", letterSpacing: depth === 0 ? "0.03em" : "normal" }}>
+              {expandable && <span style={{ color: "#5a7080", marginRight: 5, display: "inline-block", width: 8, fontWeight: 400 }}>{isOpen ? "▾" : "▸"}</span>}
               {node.tag.name}
             </td>
             <td style={cellStyle}></td>
-            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(node.invested)}</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: depth === 0 ? 700 : 500 }}>{fmtEUR(node.invested)}</td>
             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(node.value)}</td>
-            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(changePct) }}>{vsFmtPct(changePct)}</td>
-            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{weightPct.toFixed(1)}%</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(changePct), fontWeight: depth === 0 ? 700 : 500 }}>{vsFmtPct(changePct)}</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A, fontWeight: depth === 0 ? 700 : 500 }}>{weightPct.toFixed(1)}%</td>
           </tr>
           {isOpen && hasDirect && node.directRows.map(r => {
             const rChangePct = r.invested > 0 ? ((r.value - r.invested) / r.invested) * 100 : null;
             const rWeight = totalValue > 0 ? (r.value / totalValue) * 100 : 0;
             return (
-              <tr key={node.tag.id + "_" + r.isin} style={{ opacity: 0.85 }}>
-                <td style={cellStyle}></td>
-                <td style={{ ...cellStyle, paddingLeft: 7 + (depth + 1) * 16, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#9aaabb" }} title={r.name}>{r.name}</td>
-                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
-                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
-                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.value)}</td>
-                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(rChangePct) }}>{vsFmtPct(rChangePct)}</td>
-                <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{rWeight.toFixed(1)}%</td>
+              <tr key={node.tag.id + "_" + r.isin}>
+                <td style={{ ...cellStyle, padding: "4px 7px", borderLeft: `2px solid ${node.tag.color}55` }}></td>
+                <td style={{ ...cellStyle, padding: "4px 7px", paddingLeft: 7 + (depth + 1) * 20, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#b8c4d0", fontSize: 11.5 }} title={r.name}>
+                  <span style={{ color: "#5a7080", marginRight: 6 }}>–</span>{r.name}
+                </td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", color: "#7a90a8", fontSize: 11 }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#9aaabb" }}>{fmtEUR(r.invested)}</td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#cbd5e1" }}>{fmtEUR(r.value)}</td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: vsChangeColor(rChangePct) }}>{vsFmtPct(rChangePct)}</td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#5a7080" }}>{rWeight.toFixed(1)}%</td>
               </tr>
             );
           })}
           {isOpen && hasChildren && node.children.map(child => (
-            <VsTagAllocGroupRows key={child.tag.id} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} totalValue={totalValue} fmtEUR={fmtEUR} />
+            <VsTagAllocGroupRows key={child.tag.id} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={false} />
           ))}
         </React.Fragment>
       );
@@ -5479,7 +5490,10 @@
       const fmtEUR = vsPortfolioFmtEUR;
       const tagsById = useMemo(() => vsTagsById(tags), [tags]);
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
-      const [expandedTags, setExpandedTags] = useState(() => new Set(tagTree.branches.map(b => b.tag.id)));
+      // Por defecto todo el árbol va desplegado (incluida "Sin etiquetar")
+      // para que se vea de un vistazo como un esquema de subsecciones, no
+      // como una tabla plegada que hay que ir abriendo nivel a nivel.
+      const [expandedTags, setExpandedTags] = useState(() => new Set([...tags.map(t => t.id), "__untagged"]));
       const toggleTag = (id) => setExpandedTags(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
       const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
 
@@ -5591,13 +5605,13 @@
                             </tr>
                           </thead>
                           <tbody>
-                            {tagTree.branches.map(b => (
-                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} />
+                            {tagTree.branches.map((b, i) => (
+                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={i === 0} />
                             ))}
                             {tagTree.untagged.rows.length > 0 && (
                               <VsTagAllocGroupRows
                                 node={{ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, value: tagTree.untagged.value, invested: tagTree.untagged.invested, directRows: tagTree.untagged.rows, children: [] }}
-                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} />
+                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={tagTree.branches.length === 0} />
                             )}
                           </tbody>
                         </table>
