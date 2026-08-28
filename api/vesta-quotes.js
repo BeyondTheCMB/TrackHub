@@ -1,6 +1,6 @@
 // api/vesta-quotes.js — Vercel serverless proxy para Vesta · Cartera.
 //
-// Cuatro modos, según el parámetro que llegue:
+// Cinco modos, según el parámetro que llegue:
 //   ?url=<ficha de Finect>   → precio de esa ficha (fondos/ETF vía Finect).
 //   ?isin=<ISIN>             → resuelve el ISIN a una ficha de Finect vía
 //                               Tavily, y de paso devuelve ya su precio.
@@ -8,6 +8,12 @@
 //                               Yahoo — lo que Finect no cubre).
 //   ?yisin=<ISIN>            → resuelve el ISIN a un ticker de Yahoo vía
 //                               Tavily, y de paso devuelve ya su precio.
+//   ?history=<ticker Yahoo>  → serie histórica diaria (para TTWROR), con
+//                               &range=5y o &period1=<unix>&period2=<unix>.
+//                               Sin conversión a EUR — eso es un paso
+//                               posterior, y solo para acciones/ETF vía
+//                               Yahoo (los fondos vía Finect no tienen
+//                               histórico expuesto en la ficha).
 //
 // Por qué Tavily y no otra cosa: se probaron tres vías antes de esta,
 // todas descartadas por límites reales, no por error de configuración:
@@ -212,12 +218,85 @@ async function resolveTickerViaTavily(isin) {
   throw { status: 404, message: "No se encontró ticker de Yahoo para ese ISIN — prueba a buscarlo/ponerlo a mano." };
 }
 
+// ── Yahoo Finance — histórico diario (para TTWROR) ──────────────────────
+// Mismo endpoint v8/finance/chart que fetchYahooRaw, pero pidiendo una
+// serie en vez del último precio: &range=<Xy|Xmo|...> o
+// &period1=<unix>&period2=<unix> (period1/period2 tienen prioridad si
+// llegan los dos — es lo que respeta el propio Yahoo).
+//
+// Deliberadamente SIN convertir a EUR aquí — la conversión de un histórico
+// completo necesitaría el tipo de cambio de CADA día, no el actual (que es
+// lo único que da fetchYahooPrice), y eso es una pieza aparte que aún no
+// está decidida. Este endpoint solo entrega la serie cruda en su divisa
+// original, marcada con `currency`, para que se pueda revisar antes de
+// construir nada encima.
+//
+// adjclose (ajustado por dividendos) es el campo bueno para TTWROR — usar
+// `close` a secas distorsionaría cualquier fondo/ETF de reparto en cada
+// fecha de corte de dividendo. Si Yahoo no trae adjclose para un ticker
+// (pasa con algún ETF), se cae a `close` sin más.
+//
+// Huecos: Yahoo devuelve `null` en close/adjclose para sesiones sin dato
+// (fondo poco líquido, festivo local no filtrado, etc.) — esos puntos se
+// descartan aquí, no se devuelven como null, para no ensuciar la revisión
+// manual del paso 2 con "ruido" que no es realmente un hueco de cotización.
+async function fetchYahooHistory(ticker, { range, period1, period2 }) {
+  const params = new URLSearchParams({ interval: "1d" });
+  if (period1 && period2) {
+    params.set("period1", period1);
+    params.set("period2", period2);
+  } else {
+    params.set("range", range || "5y");
+  }
+  const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?${params.toString()}`;
+  const r = await fetch(chartUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+      "Accept": "application/json",
+    },
+  });
+  let body = null;
+  try { body = await r.json(); } catch (e) {}
+  const result = body && body.chart && body.chart.result && body.chart.result[0];
+  if (!r.ok || !result || !result.timestamp) {
+    const apiErr = body && body.chart && body.chart.error && body.chart.error.description;
+    throw { status: r.ok ? 422 : 502, message: apiErr || `Yahoo respondió ${r.status} o sin histórico para "${ticker}".` };
+  }
+
+  const meta = result.meta || {};
+  const rawCurrency = meta.currency || "EUR";
+  const isPence = /^GBp$/i.test(rawCurrency) || /^GBX$/i.test(rawCurrency);
+  const currency = isPence ? "GBP" : rawCurrency.toUpperCase();
+
+  const timestamps = result.timestamp;
+  const quote = (result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
+  const adjBlock = result.indicators && result.indicators.adjclose && result.indicators.adjclose[0];
+  const closes = quote.close || [];
+  const adjcloses = (adjBlock && adjBlock.adjclose) || null;
+
+  const points = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const c = closes[i];
+    const ac = adjcloses ? adjcloses[i] : c;
+    if (c == null && ac == null) continue; // hueco real de Yahoo — se descarta
+    points.push({
+      date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
+      close: c != null ? (isPence ? c / 100 : c) : null,
+      adjclose: ac != null ? (isPence ? ac / 100 : ac) : (c != null ? (isPence ? c / 100 : c) : null),
+    });
+  }
+  if (points.length === 0) {
+    throw { status: 422, message: `Yahoo no devolvió ningún punto con dato para "${ticker}" en ese rango.` };
+  }
+  return { currency, points, hasAdjclose: !!adjcloses };
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  const { url, isin, ticker, yisin } = req.query;
+  const { url, isin, ticker, yisin, history, range, period1, period2 } = req.query;
 
   try {
     if (url && typeof url === "string") {
@@ -252,7 +331,12 @@ export default async function handler(req, res) {
       return res.status(200).json({ ticker: resolvedTicker, ...q, source: "yahoo" });
     }
 
-    return res.status(400).json({ error: "Falta el parámetro 'url', 'isin', 'ticker' o 'yisin'." });
+    if (history && typeof history === "string") {
+      const q = await fetchYahooHistory(history.trim(), { range, period1, period2 });
+      return res.status(200).json({ ticker: history.trim(), ...q, source: "yahoo" });
+    }
+
+    return res.status(400).json({ error: "Falta el parámetro 'url', 'isin', 'ticker', 'yisin' o 'history'." });
   } catch (e) {
     const status = (e && e.status) || 500;
     const message = (e && e.message) || String(e);
