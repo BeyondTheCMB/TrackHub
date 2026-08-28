@@ -5039,12 +5039,15 @@
       const [open, setOpen] = useState(false);
       const [bulkRefreshing, setBulkRefreshing] = useState(false);
       const [bulkResolving, setBulkResolving] = useState(false);
+      const [bulkYResolving, setBulkYResolving] = useState(false);
+      const [bulkHistoryBusy, setBulkHistoryBusy] = useState(false);
       const [bulkStatus, setBulkStatus] = useState("");
       if (securities.length === 0) return null;
       const priced = securities.filter(s => s.price != null).length;
       const src = mode ? VS_PRICE_SOURCES[mode] : null;
+      const anyBulkBusy = bulkRefreshing || bulkResolving || bulkYResolving || bulkHistoryBusy;
 
-      // Las dos acciones masivas acumulan los resultados en un objeto y
+      // Las cuatro acciones masivas acumulan los resultados en un objeto y
       // guardan UNA sola vez al final (onBulkUpdate), en vez de llamar a
       // onUpdateSecurity una vez por fila — si cada llamada disparase su
       // propio guardado, cada una partiría del mismo estado de
@@ -5089,6 +5092,56 @@
         setTimeout(() => setBulkStatus(""), 3000);
       };
 
+      // Resuelve el ticker de Yahoo de respaldo (campo secundario de los
+      // fondos, ver B1) para todos los que aún no lo tengan. Solo tiene
+      // sentido en modo "finect" — en modo "yahoo" el campo principal YA
+      // es el ticker de Yahoo y lo cubre resolveAll. Sin picker
+      // interactivo (como el resto de acciones masivas): se queda con el
+      // primer candidato que devuelva Yahoo; para elegir entre varios hay
+      // que ir fila a fila.
+      const resolveYAll = async () => {
+        const targets = securities.filter(s => !s.yahooTicker);
+        if (targets.length === 0) return;
+        setBulkYResolving(true);
+        const patches = {};
+        let fail = 0;
+        for (const s of targets) {
+          try {
+            const results = await vsSearchYahooSymbols(s.isin);
+            const symbol = results[0].symbol;
+            const q = await vsFetchYahooQuote(symbol);
+            patches[s.isin] = { yahooTicker: symbol, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "yahoo", priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
+          } catch (e) { fail++; }
+          setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
+        }
+        if (Object.keys(patches).length > 0) await onBulkUpdate(patches);
+        setBulkYResolving(false);
+        setBulkStatus(fail > 0 ? `Hecho — ${fail} con error` : "Hecho ✓");
+        setTimeout(() => setBulkStatus(""), 3000);
+      };
+
+      // Descarga/actualiza el histórico de precios de todos los valores
+      // que tengan ticker de Yahoo (fondos con el campo de respaldo
+      // resuelto, o acciones/ETF con su ticker principal) — incremental
+      // por valor, igual que el botón individual (ver vsDownloadHistory).
+      const downloadHistoryAll = async () => {
+        const targets = securities.filter(s => s.yahooTicker);
+        if (targets.length === 0) return;
+        setBulkHistoryBusy(true);
+        const patches = {};
+        let fail = 0;
+        for (const s of targets) {
+          try {
+            patches[s.isin] = await vsDownloadHistory(s);
+          } catch (e) { fail++; }
+          setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
+        }
+        if (Object.keys(patches).length > 0) await onBulkUpdate(patches);
+        setBulkHistoryBusy(false);
+        setBulkStatus(fail > 0 ? `Hecho — ${fail} con error` : "Hecho ✓");
+        setTimeout(() => setBulkStatus(""), 3000);
+      };
+
       const bulkBtnStyle = (active) => ({ background: "none", border: "1px solid #1a2535", color: active ? "#3a4550" : "#7a90a8", borderRadius: 6, padding: "4px 8px", fontSize: 12, cursor: active ? "not-allowed" : "pointer" });
 
       return (
@@ -5101,15 +5154,25 @@
               <span style={{ color: "#7a90a8", fontSize: 12 }}>{open ? "ocultar ▲" : "mostrar ▼"}</span>
             </div>
             {src && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 {bulkStatus && <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{bulkStatus}</span>}
-                <button onClick={resolveAll} disabled={bulkResolving || bulkRefreshing} title={`Resolver ${src.label.toLowerCase()} de todos los que aún no la tienen`}
-                  style={bulkBtnStyle(bulkResolving || bulkRefreshing)}>
+                <button onClick={resolveAll} disabled={anyBulkBusy} title={`Resolver ${src.label.toLowerCase()} de todos los que aún no la tienen`}
+                  style={bulkBtnStyle(anyBulkBusy)}>
                   {bulkResolving ? "…" : <VsIcon name="zap" />} todos
                 </button>
-                <button onClick={refreshAll} disabled={bulkRefreshing || bulkResolving} title="Actualizar precio de todos los que ya tienen fuente"
-                  style={bulkBtnStyle(bulkRefreshing || bulkResolving)}>
+                <button onClick={refreshAll} disabled={anyBulkBusy} title="Actualizar precio de todos los que ya tienen fuente"
+                  style={bulkBtnStyle(anyBulkBusy)}>
                   {bulkRefreshing ? "…" : <VsIcon name="refresh" />} todos
+                </button>
+                {mode === "finect" && (
+                  <button onClick={resolveYAll} disabled={anyBulkBusy} title="Resolver el ticker de Yahoo de respaldo (para histórico) de todos los que aún no lo tengan"
+                    style={bulkBtnStyle(anyBulkBusy)}>
+                    {bulkYResolving ? "…" : <VsIcon name="zap" />} Yahoo todos
+                  </button>
+                )}
+                <button onClick={downloadHistoryAll} disabled={anyBulkBusy} title="Descargar/actualizar histórico de todos los que tengan ticker de Yahoo (para TTWROR)"
+                  style={bulkBtnStyle(anyBulkBusy)}>
+                  {bulkHistoryBusy ? "…" : "histórico"} todos
                 </button>
               </div>
             )}
