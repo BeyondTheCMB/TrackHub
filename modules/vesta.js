@@ -5270,7 +5270,15 @@
         // fallback y el cambio saldría siempre 0, engañoso).
         const change = hasPrice ? value - invested : null;
         const changePct = hasPrice && invested > 0 ? (change / invested) * 100 : null;
-        rows.push({ isin, name, shares, invested, value, hasPrice, change, changePct, tagIds: (sec && sec.tagIds) || [] });
+        // Ticker Yahoo para acciones/ETF, ISIN para fondos (y para
+        // cualquier acción/ETF que aún no tenga ticker guardado).
+        const code = (sec && sec.assetType === "stock" && sec.yahooTicker) ? sec.yahooTicker : isin;
+        // XIRR por valor — mismo criterio que hasPrice: sin precio de
+        // mercado real, el "valor actual" es solo el coste (fallback), así
+        // que la TIR saldría artificialmente cerca de 0% y engañaría igual
+        // que "Cambio".
+        const xirr = hasPrice ? vsXirrForIsin(isin, transactions, value) : null;
+        rows.push({ isin, name, code, shares, invested, value, hasPrice, change, changePct, xirr, tagIds: (sec && sec.tagIds) || [] });
       }
       rows.sort((a, b) => b.value - a.value);
       const totalValue = rows.reduce((s, r) => s + r.value, 0);
@@ -5380,6 +5388,42 @@
         if (t.type !== "buy" && t.type !== "sell" && t.type !== "dividend") continue;
         flows.push({ date: new Date(t.date + "T00:00:00Z"), amount: sign * t.amount });
       }
+      if (currentValue > 0) flows.push({ date: new Date(), amount: currentValue });
+      return vsXirr(flows);
+    }
+
+    // XIRR de un valor concreto — mismo universo que vsComputePortfolioXirr
+    // (compra/venta/dividendo de ESE isin + su valor de mercado actual como
+    // flujo final), pero heredando los flujos de su(s) ISIN de origen a
+    // través de splits, con el mismo recorrido que vsInvestedForIsin: sin
+    // esto, un valor que cambió de ISIN en un split saldría con una XIRR
+    // calculada solo sobre su tramo más reciente, ignorando el coste real
+    // que arrastra desde antes del split. `visited` evita bucles.
+    function vsXirrFlowsForIsin(isin, transactions, visited) {
+      visited = visited || new Set();
+      if (visited.has(isin)) return [];
+      visited.add(isin);
+      const flows = [];
+      for (const t of transactions) {
+        if (t.isin !== isin) continue;
+        const sign = VS_CF_SIGN[t.type];
+        if (!sign || !t.amount || !t.date) continue;
+        if (t.type !== "buy" && t.type !== "sell" && t.type !== "dividend") continue;
+        flows.push({ date: new Date(t.date + "T00:00:00Z"), amount: sign * t.amount });
+      }
+      const splitIns = transactions.filter(t => t.isin === isin && t.type === "split_in");
+      for (const si of splitIns) {
+        const predecessors = new Set(
+          transactions.filter(t => t.type === "split_out" && t.date === si.date).map(t => t.isin)
+        );
+        for (const pred of predecessors) {
+          if (pred !== isin) flows.push(...vsXirrFlowsForIsin(pred, transactions, visited));
+        }
+      }
+      return flows;
+    }
+    function vsXirrForIsin(isin, transactions, currentValue) {
+      const flows = vsXirrFlowsForIsin(isin, transactions);
       if (currentValue > 0) flows.push({ date: new Date(), amount: currentValue });
       return vsXirr(flows);
     }
@@ -5751,10 +5795,10 @@
                 )}
                 {viewMode === "valor" ? (
                   <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 620 }}>
                       <thead>
                         <tr>
-                          {["", "Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
+                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", "Desde inicio", "XIRR", "Peso"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -5770,10 +5814,14 @@
                                 {r.name}
                                 {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
                               </td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#5a7080", fontSize: 11 }}>{r.code}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.xirr != null ? r.xirr * 100 : null) }} title="Anualizada (TIR) — no comparable directamente con 'Desde inicio', que es la rentabilidad total sin anualizar">
+                                {r.xirr != null ? vsFmtPct(r.xirr * 100) : "—"}
+                              </td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
                             </tr>
                           );
@@ -5784,11 +5832,13 @@
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontWeight: 700 }}>Total</td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalInvested)}</td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalChangePct) }}>
                             {vsFmtPct(totalChangePct)}
                           </td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                         </tr>
                       </tfoot>
@@ -5805,7 +5855,7 @@
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
                           <thead>
                             <tr>
-                              {["", "Etiqueta / Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
+                              {["", "Etiqueta / Valor", "Títulos", "Invertido", "Valor actual", "Desde inicio", "Peso"].map((h, i) => (
                                 <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                               ))}
                             </tr>
