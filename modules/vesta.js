@@ -5308,7 +5308,80 @@
           currentValue += Math.max(vsInvestedForIsin(isin, transactions), 0);
         }
       }
-      return { invested, currentValue, heldCount, unpricedHeld };
+      return { invested, currentValue, heldCount, unpricedHeld, xirr: vsComputePortfolioXirr(transactions, currentValue) };
+    }
+
+    // ── Motor económico · Fase 1 — XIRR ────────────────────────────────────
+    // Solver de Newton-Raphson sobre NPV(r) = Σ flujo_i / (1+r)^(años desde
+    // el primer flujo), con caída a bisección si Newton no converge (puede
+    // divergir con patrones de flujo irregulares — más de un cambio de
+    // signo, flujos muy desiguales en magnitud). `years` usa base /365
+    // (actual/365), igual que XIRR de Excel.
+    // Validado de forma aislada contra: rentabilidad simple del 10% anual
+    // (root exacto 0.1), un caso multi-flujo con NPV≈0 en la raíz
+    // encontrada, y un caso de pérdida casi total (root exacto -0.999) —
+    // antes de integrarlo aquí.
+    function vsXirr(flows) {
+      if (!flows || flows.length < 2) return null;
+      const sorted = [...flows].sort((a, b) => a.date - b.date);
+      const t0 = sorted[0].date.getTime();
+      const hasPos = sorted.some(f => f.amount > 0);
+      const hasNeg = sorted.some(f => f.amount < 0);
+      if (!hasPos || !hasNeg) return null; // sin cambio de signo no hay raíz que buscar
+      const MS_YEAR = 1000 * 60 * 60 * 24 * 365;
+      const years = sorted.map(f => (f.date.getTime() - t0) / MS_YEAR);
+      const npv = (r) => sorted.reduce((s, f, i) => s + f.amount / Math.pow(1 + r, years[i]), 0);
+      const dnpv = (r) => sorted.reduce((s, f, i) => s - years[i] * f.amount / Math.pow(1 + r, years[i] + 1), 0);
+
+      let r = 0.1;
+      for (let i = 0; i < 100; i++) {
+        const f = npv(r), df = dnpv(r);
+        if (!isFinite(f)) { r = 0.1; break; }
+        if (Math.abs(df) < 1e-12) break;
+        let rNext = r - f / df;
+        if (!isFinite(rNext)) break;
+        rNext = Math.max(rNext, -0.999999); // r <= -1 hace explotar (1+r)^años
+        if (Math.abs(rNext - r) < 1e-9) { r = rNext; break; }
+        r = rNext;
+      }
+
+      // Newton no convergió a un NPV suficientemente cercano a 0 — se
+      // busca la raíz por bisección en un rango amplio en vez de devolver
+      // un resultado potencialmente falso.
+      if (!isFinite(r) || Math.abs(npv(r)) > 1e-2) {
+        let lo = -0.999999, hi = 10;
+        let fLo = npv(lo), fHi = npv(hi);
+        let tries = 0;
+        while (fLo * fHi > 0 && hi < 1e7 && tries < 60) { hi *= 2; fHi = npv(hi); tries++; }
+        if (fLo * fHi > 0) return null; // no se pudo acotar una raíz
+        for (let i = 0; i < 200; i++) {
+          const mid = (lo + hi) / 2;
+          const fMid = npv(mid);
+          if (Math.abs(fMid) < 1e-9) { r = mid; break; }
+          if ((fMid > 0) === (fLo > 0)) { lo = mid; fLo = fMid; } else { hi = mid; }
+          r = mid;
+        }
+      }
+      return r;
+    }
+
+    // Arma los flujos de caja del XIRR global de la cartera a partir de
+    // las transacciones. Deliberadamente usa el mismo universo que "Total
+    // invertido"/"Valor actual" (compra/venta/dividendo de cada valor) en
+    // vez de aportación/retirada de cuenta: estas últimas solo existen en
+    // extractos de PP (MyInvestor no las trae), así que mezclarlas daría
+    // un XIRR que depende de qué importador se usó, no de la cartera en
+    // sí. El flujo final es el valor de mercado actual, a día de hoy.
+    function vsComputePortfolioXirr(transactions, currentValue) {
+      const flows = [];
+      for (const t of transactions) {
+        const sign = VS_CF_SIGN[t.type];
+        if (!sign || !t.amount || !t.date) continue;
+        if (t.type !== "buy" && t.type !== "sell" && t.type !== "dividend") continue;
+        flows.push({ date: new Date(t.date + "T00:00:00Z"), amount: sign * t.amount });
+      }
+      if (currentValue > 0) flows.push({ date: new Date(), amount: currentValue });
+      return vsXirr(flows);
     }
 
     const vsPortfolioFmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
@@ -5329,6 +5402,7 @@
         : kpis.unpricedHeld > 0
           ? `${kpis.unpricedHeld} de ${kpis.heldCount} valores sin precio todavía — se usa su coste neto invertido como estimación provisional.`
           : `${kpis.heldCount} valores con precio de mercado.`;
+      const xirrInfoText = "Rentabilidad anualizada ponderada por dinero (XIRR): tiene en cuenta CUÁNDO metiste cada euro, a diferencia del % de \"Valor actual\" (que solo compara importes, no fechas). Se calcula sobre compras, ventas y dividendos de cada valor — no sobre aportaciones/retiradas de cuenta, que no todos los importadores traen. Necesita al menos una compra y no se puede calcular si nunca hubo dinero invertido.";
       return (
         <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
           <div style={kpiCardStyle}>
@@ -5345,6 +5419,13 @@
                   {vsFmtSignedEUR(change)} ({vsFmtPct(changePct)})
                 </div>
               )}
+            </div>
+          </div>
+          <div style={kpiCardStyle}>
+            <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={xirrInfoText} width={230} align="right" /></div>
+            <div style={kpiLabelStyle}>Rentabilidad anualizada (XIRR)</div>
+            <div style={{ ...kpiValueStyle, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}>
+              {kpis.xirr != null ? vsFmtPct(kpis.xirr * 100) : "—"}
             </div>
           </div>
         </div>
