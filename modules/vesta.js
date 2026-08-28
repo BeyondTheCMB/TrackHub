@@ -5031,9 +5031,6 @@
               {histError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{histError}</div>}
             </td>
           )}
-          <td style={{ ...cellStyle, width: 170, maxWidth: 190 }}>
-            <VsTagAssign tags={tags} selectedIds={security.tagIds} onChange={ids => onUpdateTagIds(ids)} />
-          </td>
         </tr>
       );
     }
@@ -5119,10 +5116,10 @@
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 830 : 540 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 660 : 370 }}>
                 <thead>
                   <tr>
-                    {(src ? ["Valor", "Precio", "", src.label, "Histórico", "Etiquetas"] : ["Valor", "Precio", "", "Etiquetas"]).map((h, i) => (
+                    {(src ? ["Valor", "Precio", "", src.label, "Histórico"] : ["Valor", "Precio", ""]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
