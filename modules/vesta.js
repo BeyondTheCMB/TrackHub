@@ -21,9 +21,22 @@
 
 
     // ── Persistencia (Supabase) ──────────────────────────────────────────────
+    // Las tres funciones vsLoad* de abajo propagan el error de Supabase en
+    // vez de tragárselo. Antes, un fallo transitorio de red/sesión hacía
+    // que `data` llegara vacío y la función devolviera `{}` como si
+    // sencillamente no hubiera nada guardado — indistinguible de "perfil
+    // nuevo, sin datos". Eso es peligroso en concreto para vs_factors: el
+    // refresco automático del factor de caja (más abajo, en VestaApp) ve
+    // ese `{}` falso, decide que falta el factor de caja, y hace un
+    // upsert que REEMPLAZA toda la fila — no la fusiona. Si la carga
+    // había fallado en vez de estar realmente vacía, ese upsert borra de
+    // un plumazo cualquier índice que hubiera antes. Lanzar el error aquí
+    // permite que quien llama decida no guardar nada cuando la carga no
+    // se puede confiar (ver el catch en el useEffect de VestaApp).
     const vsLoadFactors = async (profileId) => {
       if (!profileId) return {};
-      const { data } = await _sb.from("vs_factors").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      const { data, error } = await _sb.from("vs_factors").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      if (error) throw error;
       return (data && data.data) ? data.data : {};
     };
     const vsSaveFactors = async (profileId, factorsObj) => {
@@ -52,7 +65,8 @@
     // del pool de Índices (vs_factors), que existe para RBSA.
     const vsLoadFunds = async (profileId) => {
       if (!profileId) return {};
-      const { data } = await _sb.from("vs_funds").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      const { data, error } = await _sb.from("vs_funds").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      if (error) throw error;
       return (data && data.data) ? data.data : {};
     };
     const vsSaveFunds = async (profileId, fundsObj) => {
@@ -70,7 +84,8 @@
     // la fase siguiente, sobre esta misma tabla.
     const vsLoadPortfolio = async (profileId) => {
       if (!profileId) return { transactions: [], securities: {}, tags: [] };
-      const { data } = await _sb.from("vs_portfolio").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      const { data, error } = await _sb.from("vs_portfolio").select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId).maybeSingle();
+      if (error) throw error;
       const p = (data && data.data) ? data.data : {};
       return { transactions: p.transactions || [], securities: p.securities || {}, tags: p.tags || [] };
     };
@@ -6544,6 +6559,10 @@
           // refresca en segundo plano sin bloquear la carga del resto del
           // pool. Fallos aquí no rompen nada — si el BCE no responde, el
           // usuario simplemente sigue sin ese factor hasta el siguiente intento.
+          // Esta rama SOLO se alcanza si vsLoadFactors ha resuelto bien
+          // (ver el .catch de abajo) — `stored` es entonces un reflejo de
+          // verdad de lo que hay en Supabase, nunca un `{}` que en
+          // realidad significaba "no se pudo leer".
           const existing = stored[VS_BUILTIN_CASH_NAME];
           const isStale = !existing || !existing.lastFetched ||
             existing.sourceVersion !== VS_BUILTIN_CASH_VERSION ||
@@ -6560,20 +6579,35 @@
               console.warn("No se pudo refrescar el factor de caja automático:", e.message);
             }
           }
+        }).catch(e => {
+          // CRÍTICO: si la carga falla, no se toca `factors` ni se guarda
+          // nada — un fallo de red/sesión aquí no debe poder confundirse
+          // nunca con "perfil sin índices todavía" y disparar un upsert
+          // que reemplace lo que ya hubiera en vs_factors. El usuario
+          // simplemente ve el error y recarga.
+          console.error("No se pudieron cargar los índices (vs_factors) — no se ha modificado nada para no arriesgar los datos existentes:", e.message || e);
+          setLoading(false);
         });
         vsLoadAnalyses(profileId).then(setSavedAnalyses);
-        vsLoadFunds(profileId).then(setFunds);
+        vsLoadFunds(profileId).then(setFunds).catch(e => {
+          console.error("No se pudo cargar el pool de fondos (vs_funds):", e.message || e);
+        });
         // La cartera se carga y, aparte, se pone al día el histórico de
         // precios que ya existiera (silencioso — nunca descarga histórico
         // completo de un valor nuevo, solo rellena los días que faltan
         // desde la última vez, ver vsAutoUpdateHistories). Mismo patrón
         // que el refresco del factor de caja automático de arriba: si
         // falla, el usuario simplemente sigue con el histórico que ya
-        // tenía hasta la próxima conexión.
+        // tenía hasta la próxima conexión. Igual que con los factores, si
+        // la propia carga de la cartera falla, no se sigue adelante — no
+        // hay nada que actualizar ni guardar sobre un dato que no se pudo
+        // leer de verdad.
         vsLoadPortfolio(profileId).then(async (loadedPortfolio) => {
           setPortfolio(loadedPortfolio);
           const updated = await vsAutoUpdateHistories(loadedPortfolio, profileId);
           if (updated !== loadedPortfolio) setPortfolio(updated);
+        }).catch(e => {
+          console.error("No se pudo cargar la cartera (vs_portfolio) — no se ha modificado nada:", e.message || e);
         });
       }, [profileId]);
 
@@ -6582,46 +6616,85 @@
         await vsSavePortfolio(profileId, next);
       };
 
+      // Las tres disparan vsSaveFactors DENTRO del propio callback de
+      // setFactors (forma funcional) — mismo patrón que ya usa el
+      // refresco automático del factor de caja de arriba, y no una
+      // variable `factors` capturada en este render. Sin esto, una acción
+      // que se disparase con una copia de `factors` desactualizada (doble
+      // clic, carrera con otra actualización en curso...) podía guardar
+      // esa foto vieja entera y borrar de la fila de Supabase cualquier
+      // índice añadido después de esa foto — silenciosamente, sin error
+      // visible. El resultado de vsSaveFactors se captura en `savePromise`
+      // para que quien llame a onAdd/onRemove/onUpdate pueda seguir
+      // haciendo `await` sobre el guardado real, igual que antes.
       const handleAdd = async (name, data) => {
-        const next = { ...factors, [name]: data };
-        setFactors(next);
-        await vsSaveFactors(profileId, next);
+        let savePromise;
+        setFactors(prev => {
+          const next = { ...prev, [name]: data };
+          savePromise = vsSaveFactors(profileId, next);
+          return next;
+        });
+        await savePromise;
       };
       const handleRemove = async (name) => {
-        const next = { ...factors };
-        delete next[name];
-        setFactors(next);
-        await vsSaveFactors(profileId, next);
+        let savePromise;
+        setFactors(prev => {
+          const next = { ...prev };
+          delete next[name];
+          savePromise = vsSaveFactors(profileId, next);
+          return next;
+        });
+        await savePromise;
       };
       // Operación atómica (rename + reemplazo de datos en una sola escritura)
       // para no arriesgar una condición de carrera si se hiciera como dos
       // llamadas separadas (add + remove) sobre el mismo estado.
       const handleUpdateFactor = async (oldName, newName, data) => {
-        const next = { ...factors };
-        if (oldName !== newName) delete next[oldName];
-        next[newName] = data;
-        setFactors(next);
-        await vsSaveFactors(profileId, next);
+        let savePromise;
+        setFactors(prev => {
+          const next = { ...prev };
+          if (oldName !== newName) delete next[oldName];
+          next[newName] = data;
+          savePromise = vsSaveFactors(profileId, next);
+          return next;
+        });
+        await savePromise;
       };
 
+      // Mismo patrón seguro que handleAdd/handleRemove/handleUpdateFactor
+      // de arriba (forma funcional de setFunds, vsSaveFunds disparado
+      // dentro del propio callback) — mismo tipo de riesgo de carrera,
+      // aunque el pool de fondos no se haya visto afectado hasta ahora.
       const handleAddFund = async (name, data) => {
-        const next = { ...funds, [name]: data };
-        setFunds(next);
-        await vsSaveFunds(profileId, next);
+        let savePromise, next;
+        setFunds(prev => {
+          next = { ...prev, [name]: data };
+          savePromise = vsSaveFunds(profileId, next);
+          return next;
+        });
+        await savePromise;
         return next;
       };
       const handleRemoveFund = async (name) => {
-        const next = { ...funds };
-        delete next[name];
-        setFunds(next);
-        await vsSaveFunds(profileId, next);
+        let savePromise;
+        setFunds(prev => {
+          const next = { ...prev };
+          delete next[name];
+          savePromise = vsSaveFunds(profileId, next);
+          return next;
+        });
+        await savePromise;
       };
       const handleUpdateFund = async (oldName, newName, data) => {
-        const next = { ...funds };
-        if (oldName !== newName) delete next[oldName];
-        next[newName] = data;
-        setFunds(next);
-        await vsSaveFunds(profileId, next);
+        let savePromise;
+        setFunds(prev => {
+          const next = { ...prev };
+          if (oldName !== newName) delete next[oldName];
+          next[newName] = data;
+          savePromise = vsSaveFunds(profileId, next);
+          return next;
+        });
+        await savePromise;
       };
 
       const handleSaveAnalysis = async (analysisObj) => {
