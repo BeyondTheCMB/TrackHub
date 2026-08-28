@@ -5149,7 +5149,7 @@
           </div>
 
           <div>
-            <VsPortfolioKpiCards kpis={kpis} />
+            <VsPortfolioKpiCards kpis={kpis} showXirr={false} />
 
             {Object.keys(newSecurityDrafts).length > 0 && (
               <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -5391,7 +5391,7 @@
     // estilo. El detalle de cobertura de precio (antes un aviso siempre
     // visible bajo el valor) vive ahora en el botón ⓘ, reutilizando
     // VsInfoTip — solo se ve si lo pides, no ocupa sitio permanente.
-    function VsPortfolioKpiCards({ kpis }) {
+    function VsPortfolioKpiCards({ kpis, showXirr = true }) {
       const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", position: "relative" };
       const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
       const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
@@ -5421,13 +5421,15 @@
               )}
             </div>
           </div>
-          <div style={kpiCardStyle}>
-            <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={xirrInfoText} width={230} align="right" /></div>
-            <div style={kpiLabelStyle}>Rentabilidad anualizada (XIRR)</div>
-            <div style={{ ...kpiValueStyle, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}>
-              {kpis.xirr != null ? vsFmtPct(kpis.xirr * 100) : "—"}
+          {showXirr && (
+            <div style={kpiCardStyle}>
+              <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={xirrInfoText} width={230} align="right" /></div>
+              <div style={kpiLabelStyle}>Rentabilidad anualizada (XIRR)</div>
+              <div style={{ ...kpiValueStyle, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}>
+                {kpis.xirr != null ? vsFmtPct(kpis.xirr * 100) : "—"}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       );
     }
