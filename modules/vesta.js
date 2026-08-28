@@ -5488,7 +5488,6 @@
       const [hoveredIsin, setHoveredIsin] = useState(null);
       const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
       const fmtEUR = vsPortfolioFmtEUR;
-      const tagsById = useMemo(() => vsTagsById(tags), [tags]);
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
       // Por defecto todo el árbol va desplegado (incluida "Sin etiquetar")
       // para que se vea de un vistazo como un esquema de subsecciones, no
@@ -5543,10 +5542,10 @@
                 <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
                 {viewMode === "valor" ? (
                   <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 520 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
                       <thead>
                         <tr>
-                          {["", "Valor", "Etiquetas", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
+                          {["", "Valor", "Títulos", "Invertido", "Valor actual", "Cambio", "Peso"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -5562,7 +5561,6 @@
                                 {r.name}
                                 {!r.hasPrice && <span style={{ marginLeft: 6, fontSize: 9, color: "#f59e0b" }} title="Sin precio — usando coste">⚠</span>}
                               </td>
-                              <td style={cellStyle}><VsTagChips tagIds={r.tagIds} tagsById={tagsById} /></td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace" }}>{fmtEUR(r.invested)}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(r.value)}</td>
@@ -5576,7 +5574,6 @@
                         <tr>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontWeight: 700 }}>Total</td>
-                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalInvested)}</td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(totalValue)}</td>
