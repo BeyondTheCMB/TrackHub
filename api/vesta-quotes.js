@@ -1,22 +1,35 @@
 // api/vesta-quotes.js — Vercel serverless proxy para Vesta · Cartera.
 //
-// Cinco modos, según el parámetro que llegue:
+// Siete modos, según el parámetro que llegue:
 //   ?url=<ficha de Finect>   → precio de esa ficha (fondos/ETF vía Finect).
 //   ?isin=<ISIN>             → resuelve el ISIN a una ficha de Finect vía
 //                               Tavily, y de paso devuelve ya su precio.
 //   ?ticker=<símbolo Yahoo>  → precio de ese ticker (acciones/ETF vía
 //                               Yahoo — lo que Finect no cubre).
 //   ?yisin=<ISIN>            → resuelve el ISIN a un ticker de Yahoo vía
-//                               Tavily, y de paso devuelve ya su precio.
+//                               el buscador de Yahoo (sin clave), y de
+//                               paso devuelve ya su precio.
+//   ?search=<texto o ISIN>   → buscador de símbolos de Yahoo sin clave —
+//                               devuelve todos los candidatos, sin filtrar
+//                               ni elegir por el usuario. Sustituye a
+//                               Tavily para resolución de fondos/acciones
+//                               vía Yahoo (para Finect sigue haciendo
+//                               falta Tavily, ver ?isin= arriba).
 //   ?history=<ticker Yahoo>  → serie histórica diaria (para TTWROR), con
 //                               &range=5y o &period1=<unix>&period2=<unix>.
 //                               Sin conversión a EUR — eso es un paso
-//                               posterior, y solo para acciones/ETF vía
-//                               Yahoo (los fondos vía Finect no tienen
-//                               histórico expuesto en la ficha).
+//                               posterior (ver ?fx=), y solo para
+//                               instrumentos vía Yahoo. Para fondos, usa
+//                               el símbolo "0P…F" (performanceId de
+//                               Morningstar), no el ISIN — resuélvelo con
+//                               ?search=<ISIN> primero.
+//   ?fx=<divisa>             → tipos de cambio diarios divisa→EUR desde el
+//                               BCE, con &start=YYYY-MM-DD. Para convertir
+//                               un histórico que no esté ya en EUR.
 //
-// Por qué Tavily y no otra cosa: se probaron tres vías antes de esta,
-// todas descartadas por límites reales, no por error de configuración:
+// Por qué Tavily sigue haciendo falta para Finect (aunque ya no para
+// Yahoo): se probaron tres vías antes, todas descartadas por límites
+// reales, no por error de configuración:
 //   - Scraping de DuckDuckGo desde el proxy: bloqueado por ser tráfico de
 //     IP de datacenter (Vercel/AWS) — confirmado con la página de error
 //     real de DuckDuckGo.
@@ -29,10 +42,14 @@
 // que solo se dispara una vez por valor nuevo. Su plan gratuito también
 // podría cambiar en el futuro (como le pasó a Brave a mitad de 2026); si
 // deja de estar disponible, el 🔍 manual sigue siendo la vía segura.
+// El buscador propio de Yahoo (v1/finance/search) no necesita nada de
+// esto — funciona sin clave ni crumb — así que ?yisin= y ?search= ya no
+// dependen de Tavily. TAVILY_API_KEY se mantiene solo para ?isin=.
 //
 // ── Configuración necesaria en Vercel (Settings → Environment Variables) ──
 //   TAVILY_API_KEY  → clave gratuita de https://tavily.com (empieza por
-//                      "tvly-"), sin necesidad de tarjeta.
+//                      "tvly-"), sin necesidad de tarjeta. Solo la usa
+//                      ?isin= (resolución de Finect).
 //
 // AVISO: la extracción del precio se hace convirtiendo el HTML a texto
 // plano (quitando etiquetas) y aplicando una expresión regular sobre ese
@@ -186,36 +203,81 @@ async function fetchYahooPrice(ticker) {
   };
 }
 
-// Resolución ISIN→ticker de Yahoo, mismo patrón que con Finect: Tavily
-// buscando dentro de finance.yahoo.com, y se extrae el ticker del propio
-// path "/quote/{TICKER}/" del resultado.
-async function resolveTickerViaTavily(isin) {
-  const apiKey = process.env.TAVILY_API_KEY;
-  if (!apiKey) {
-    throw { status: 500, message: "Falta TAVILY_API_KEY como variable de entorno en Vercel." };
-  }
-  const r = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query: isin,
-      search_depth: "basic",
-      max_results: 5,
-      include_domains: ["finance.yahoo.com"],
-    }),
+// ── Yahoo Finance — resolución de símbolo ────────────────────────────
+// v1/finance/search acepta ISIN y devuelve el símbolo de Yahoo sin
+// clave ni crumb. Para fondos devuelve el performanceId de Morningstar
+// con sufijo de bolsa (p.ej. ES0112611001 → 0P00016YQ5.F), que es el
+// único formato para el que Yahoo sirve histórico diario de fondos.
+// Sustituye a Tavily: sin cuota mensual y con la divisa/bolsa en la
+// propia respuesta.
+async function fetchYahooSearch(query) {
+  const params = new URLSearchParams({
+    q: query,
+    quotesCount: "10",
+    newsCount: "0",
+    enableFuzzyQuery: "false",
+    quotesQueryId: "tss_match_phrase_query",
+  });
+  const url = `https://query2.finance.yahoo.com/v1/finance/search?${params.toString()}`;
+  const r = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+      "Accept": "application/json",
+    },
   });
   let body = null;
   try { body = await r.json(); } catch (e) {}
-  if (!r.ok) {
-    const msg = (body && (body.detail || body.message || body.error)) || `Tavily respondió ${r.status}`;
-    throw { status: r.status === 429 ? 429 : 502, message: typeof msg === "string" ? msg : JSON.stringify(msg) };
+  if (!r.ok || !body) throw { status: 502, message: `Yahoo respondió ${r.status} al buscar "${query}".` };
+
+  const quotes = (body.quotes || []).filter(q => q && q.symbol);
+  if (quotes.length === 0) {
+    throw { status: 404, message: `Yahoo no encontró ningún símbolo para "${query}".` };
   }
-  const results = (body && body.results) || [];
-  for (const it of results) {
-    const m = it.url && it.url.match(/\/quote\/([^/?]+)/i);
-    if (m) return decodeURIComponent(m[1]);
+  return {
+    query,
+    results: quotes.map(q => ({
+      symbol: q.symbol,
+      name: q.longname || q.shortname || q.symbol,
+      type: q.typeDisp || q.quoteType || null,   // "Fund", "ETF", "Equity"
+      exchange: q.exchDisp || q.exchange || null, // "Frankfurt", "Amsterdam"...
+    })),
+  };
+}
+
+// ── BCE — tipos de cambio históricos (para convertir series a EUR) ────
+// Fuente oficial, gratuita y sin clave. OBS_VALUE son unidades de la
+// divisa extranjera por 1 EUR, así que la conversión es
+// valorEUR = valorDivisa / rate. Solo publica días hábiles TARGET: el
+// consumidor debe arrastrar el último valor conocido en los huecos.
+async function fetchEcbFxSeries(currency, startPeriod) {
+  const cur = currency.toUpperCase();
+  if (!/^[A-Z]{3}$/.test(cur)) throw { status: 400, message: "Divisa inválida — se espera un código ISO de 3 letras." };
+  if (cur === "EUR") return { currency: "EUR", base: "EUR", points: [] };
+
+  const params = new URLSearchParams({ format: "csvdata" });
+  if (startPeriod) params.set("startPeriod", startPeriod);
+  const url = `https://data-api.ecb.europa.eu/service/data/EXR/D.${cur}.EUR.SP00.A?${params.toString()}`;
+  const r = await fetch(url, { headers: { "Accept": "text/csv" } });
+  if (!r.ok) throw { status: 502, message: `El BCE respondió ${r.status} para ${cur}.` };
+  const text = await r.text();
+
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) throw { status: 422, message: `El BCE no devolvió datos para ${cur}.` };
+  const header = lines[0].split(",");
+  const iDate = header.indexOf("TIME_PERIOD");
+  const iVal = header.indexOf("OBS_VALUE");
+  if (iDate < 0 || iVal < 0) throw { status: 502, message: "Formato CSV inesperado del BCE." };
+
+  const points = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const date = cols[iDate];
+    const rate = parseFloat(cols[iVal]);
+    if (!date || !isFinite(rate)) continue; // el BCE marca festivos con "NaN"
+    points.push({ date, rate });
   }
-  throw { status: 404, message: "No se encontró ticker de Yahoo para ese ISIN — prueba a buscarlo/ponerlo a mano." };
+  points.sort((a, b) => a.date.localeCompare(b.date));
+  return { currency: cur, base: "EUR", points };
 }
 
 // ── Yahoo Finance — histórico diario (para TTWROR) ──────────────────────
@@ -260,6 +322,10 @@ async function fetchYahooHistory(ticker, { range, period1, period2 }) {
   const result = body && body.chart && body.chart.result && body.chart.result[0];
   if (!r.ok || !result || !result.timestamp) {
     const apiErr = body && body.chart && body.chart.error && body.chart.error.description;
+    const meta = result && result.meta;
+    if (!apiErr && meta && meta.instrumentType === "MUTUALFUND") {
+      throw { status: 422, message: `Yahoo conoce "${ticker}" pero no tiene serie histórica para ese símbolo. Para fondos hace falta el símbolo tipo "0P…F" (búscalo con ?search=<ISIN>), no el ISIN con sufijo de bolsa.` };
+    }
     throw { status: r.ok ? 422 : 502, message: apiErr || `Yahoo respondió ${r.status} o sin histórico para "${ticker}".` };
   }
 
@@ -296,7 +362,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  const { url, isin, ticker, yisin, history, range, period1, period2 } = req.query;
+  const { url, isin, ticker, yisin, search, history, range, period1, period2, fx, start } = req.query;
 
   try {
     if (url && typeof url === "string") {
@@ -326,9 +392,20 @@ export default async function handler(req, res) {
       if (!/^[A-Za-z]{2}[A-Za-z0-9]{9}\d$/.test(yisin)) {
         return res.status(400).json({ error: "Parámetro 'yisin' con formato inválido." });
       }
-      const resolvedTicker = await resolveTickerViaTavily(yisin);
+      const found = await fetchYahooSearch(yisin.trim());
+      const resolvedTicker = found.results[0].symbol;
       const q = await fetchYahooPrice(resolvedTicker);
-      return res.status(200).json({ ticker: resolvedTicker, ...q, source: "yahoo" });
+      return res.status(200).json({
+        ticker: resolvedTicker,
+        candidates: found.results,   // para que la UI pueda ofrecer alternativas
+        ...q,
+        source: "yahoo",
+      });
+    }
+
+    if (search && typeof search === "string") {
+      const q = await fetchYahooSearch(search.trim());
+      return res.status(200).json({ ...q, source: "yahoo" });
     }
 
     if (history && typeof history === "string") {
@@ -336,7 +413,12 @@ export default async function handler(req, res) {
       return res.status(200).json({ ticker: history.trim(), ...q, source: "yahoo" });
     }
 
-    return res.status(400).json({ error: "Falta el parámetro 'url', 'isin', 'ticker', 'yisin' o 'history'." });
+    if (fx && typeof fx === "string") {
+      const q = await fetchEcbFxSeries(fx.trim(), start);
+      return res.status(200).json({ ...q, source: "ecb" });
+    }
+
+    return res.status(400).json({ error: "Falta el parámetro 'url', 'isin', 'ticker', 'yisin', 'search', 'history' o 'fx'." });
   } catch (e) {
     const status = (e && e.status) || 500;
     const message = (e && e.message) || String(e);
