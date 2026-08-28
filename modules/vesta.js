@@ -3903,6 +3903,129 @@
       return body; // { ticker, price, currency, asOf, source }
     }
 
+    // Buscador de símbolos de Yahoo (sin resolver precio de propina) — a
+    // diferencia de vsResolveYahooTicker (que ya elige un ticker por su
+    // cuenta vía ?yisin=), esto devuelve la lista completa de candidatos
+    // para que el usuario elija: un ETF como el MSCI World cotiza en
+    // varias bolsas (Ámsterdam, Milán, Londres, Frankfurt...) y el proxy
+    // no tiene forma de saber cuál quiere el usuario.
+    async function vsSearchYahooSymbols(query) {
+      const res = await fetch(`/api/vesta-quotes?search=${encodeURIComponent(query)}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al buscar el símbolo`);
+      return body.results; // [{ symbol, name, type, exchange }]
+    }
+
+    // ── Histórico de precios — Yahoo (para TTWROR) ────────────────────────
+    // Solo disponible para instrumentos con yahooTicker — Finect no
+    // expone histórico en la ficha. `range` es "10y" por defecto la
+    // primera vez; la actualización incremental (ver vsDownloadHistory)
+    // pasa period1/period2 en su lugar.
+    async function vsFetchPriceHistory(ticker, range) {
+      const res = await fetch(`/api/vesta-quotes?history=${encodeURIComponent(ticker)}&range=${range || "10y"}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al descargar el histórico`);
+      return body; // { ticker, currency, points:[{date, close, adjclose}], hasAdjclose }
+    }
+
+    async function vsFetchPriceHistoryRange(ticker, period1, period2) {
+      const res = await fetch(`/api/vesta-quotes?history=${encodeURIComponent(ticker)}&period1=${period1}&period2=${period2}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al descargar el histórico`);
+      return body;
+    }
+
+    // Tipos de cambio históricos del BCE, para convertir una serie a EUR
+    // (ver vsDownloadHistory · B3). `start` es la primera fecha de la
+    // serie a convertir — no hace falta pedir tipos anteriores a eso.
+    async function vsFetchFxSeries(currency, start) {
+      const res = await fetch(`/api/vesta-quotes?fx=${encodeURIComponent(currency)}${start ? `&start=${encodeURIComponent(start)}` : ""}`);
+      let body = null;
+      try { body = await res.json(); } catch (e) {}
+      if (!res.ok || !body) throw new Error((body && body.error) || `Error ${res.status} al descargar el tipo de cambio`);
+      return body; // { currency, base:"EUR", points:[{date, rate}] }
+    }
+
+    // Índice fecha→tipo de cambio con arrastre del último valor conocido
+    // (el BCE solo publica días hábiles TARGET). Devuelve null si `date`
+    // es anterior al primer punto de la serie.
+    function vsFxLookup(fxPoints) {
+      const pts = (fxPoints || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+      return function rateAt(date) {
+        if (pts.length === 0) return null;
+        let lo = 0, hi = pts.length - 1, best = null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (pts[mid].date <= date) { best = pts[mid].rate; lo = mid + 1; }
+          else hi = mid - 1;
+        }
+        return best;
+      };
+    }
+
+    // Descarga (o actualiza incrementalmente) el histórico de precios de
+    // un valor y lo guarda en el catálogo en formato compacto {d,c}. Si
+    // el valor ya tiene historia guardada, solo pide desde el día
+    // siguiente a la última fecha conocida y fusiona sin duplicar. Si la
+    // serie llega en una divisa distinta de EUR, la convierte con el BCE
+    // antes de guardar — así el motor de TTWROR nunca tiene que
+    // preocuparse por divisas (ver sección B3 / 4.4).
+    async function vsDownloadHistory(security) {
+      const ticker = security.yahooTicker;
+      if (!ticker) throw new Error("Este valor no tiene ticker de Yahoo — hace falta para descargar histórico.");
+      const existing = (security.history || []).slice().sort((a, b) => a.d.localeCompare(b.d));
+
+      let body;
+      if (existing.length > 0) {
+        const lastDate = existing[existing.length - 1].d;
+        const period1 = Math.floor(new Date(lastDate + "T00:00:00Z").getTime() / 1000) + 86400; // día siguiente
+        const period2 = Math.floor(Date.now() / 1000);
+        if (period1 >= period2) {
+          return { history: existing, historyCurrency: security.historyCurrency || "EUR", historyOriginalCurrency: security.historyOriginalCurrency || null, historyUpdatedAt: new Date().toISOString().slice(0, 10) };
+        }
+        body = await vsFetchPriceHistoryRange(ticker, period1, period2);
+      } else {
+        body = await vsFetchPriceHistory(ticker, "10y");
+      }
+
+      // Usa `close`, no `adjclose` — Vesta ya registra los dividendos como
+      // transacciones propias, y adjclose los contaría dos veces.
+      let newPoints = body.points
+        .filter(p => p.close != null)
+        .map(p => ({ d: p.date, c: p.close }));
+
+      let currency = body.currency;
+      let originalCurrency = null;
+      if (currency && currency !== "EUR") {
+        const first = newPoints.length > 0 ? newPoints[0].d : null;
+        const fx = await vsFetchFxSeries(currency, first);
+        const rateAt = vsFxLookup(fx.points);
+        newPoints = newPoints
+          .map(p => {
+            const rate = rateAt(p.d);
+            return rate ? { d: p.d, c: p.c / rate } : null;
+          })
+          .filter(Boolean);
+        originalCurrency = currency;
+        currency = "EUR";
+      }
+
+      const merged = new Map();
+      for (const p of existing) merged.set(p.d, p.c);
+      for (const p of newPoints) merged.set(p.d, p.c);
+      const history = Array.from(merged.entries()).map(([d, c]) => ({ d, c })).sort((a, b) => a.d.localeCompare(b.d));
+
+      return {
+        history,
+        historyCurrency: "EUR",
+        historyOriginalCurrency: originalCurrency || security.historyOriginalCurrency || null,
+        historyUpdatedAt: new Date().toISOString().slice(0, 10),
+      };
+    }
+
     // Clave de deduplicación al reimportar: prioriza el `ref` de Inversis
     // (identificador único de operación en el extracto). Sin ref (PP, manual)
     // compone una clave con los campos — no es infalible pero cubre bien el
@@ -4591,6 +4714,10 @@
       const [fetching, setFetching] = useState(false);
       const [resolving, setResolving] = useState(false);
       const [fetchError, setFetchError] = useState("");
+      // Candidatos de Yahoo pendientes de elegir (modo "yahoo" únicamente
+      // — para fondos vía Finect no aplica). null = no hay nada que
+      // elegir; array = lista a mostrar.
+      const [candidates, setCandidates] = useState(null);
       const [editingManual, setEditingManual] = useState(false);
       const [manualPrice, setManualPrice] = useState(security.price != null ? String(security.price) : "");
       const [manualDate, setManualDate] = useState(security.priceAsOf || "");
@@ -4599,22 +4726,54 @@
       const [isinDraft, setIsinDraft] = useState(security.isin);
       const [renameError, setRenameError] = useState("");
 
+      // ── Ticker de Yahoo como fuente de respaldo para fondos ───────────
+      // Un fondo (mode "finect") también puede tener yahooTicker: hace
+      // falta para poder descargar histórico (Finect no lo expone), y si
+      // está presente pasa a ser la fuente de precio en vivo prioritaria
+      // (ver refresh() más abajo). No se muestra en modo "yahoo" — ahí el
+      // campo principal ya ES el ticker de Yahoo.
+      const [yFieldDraft, setYFieldDraft] = useState(security.yahooTicker || "");
+      const [yResolving, setYResolving] = useState(false);
+      const [yError, setYError] = useState("");
+      const [yCandidates, setYCandidates] = useState(null);
+
+      const [histBusy, setHistBusy] = useState(false);
+      const [histError, setHistError] = useState("");
+
       const saveField = () => { if (src && fieldDraft.trim() !== (security[src.field] || "")) onUpdate({ [src.field]: fieldDraft.trim() || null }); };
+      const saveYField = () => { if (yFieldDraft.trim() !== (security.yahooTicker || "")) onUpdate({ yahooTicker: yFieldDraft.trim() || null }); };
 
       // El proxy adjunta originalPrice/originalCurrency/fxRate cuando ha
       // tenido que convertir a EUR (valores que cotizan en USD, GBP...) —
       // se guardan para poder mostrar de un vistazo que la conversión se
       // aplicó, en vez de solo confiar en que el número ya esté bien.
-      const priceUpdate = (q) => ({
-        price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode,
+      // `sourceOverride` permite marcar priceSource:"yahoo" aunque `mode`
+      // de esta fila sea "finect" (fondo con ticker de Yahoo de respaldo).
+      const priceUpdate = (q, sourceOverride) => ({
+        price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: sourceOverride || mode,
         priceOriginalValue: q.originalPrice != null ? q.originalPrice : null,
         priceOriginalCurrency: q.originalCurrency || null,
       });
 
+      // Prioridad de precio en vivo: yahooTicker → finectUrl → manual. En
+      // modo "yahoo" el único campo ya es el ticker, así que esto solo
+      // cambia de verdad el comportamiento en modo "finect".
+      const canRefresh = !!((src && security[src.field]) || (mode === "finect" && security.yahooTicker));
       const refresh = async () => {
-        if (!src || !security[src.field]) return;
+        if (!canRefresh) return;
         setFetching(true); setFetchError("");
         try {
+          if (mode === "finect" && security.yahooTicker) {
+            try {
+              const q = await vsFetchYahooQuote(security.yahooTicker);
+              onUpdate(priceUpdate(q, "yahoo"));
+              setFetching(false);
+              return;
+            } catch (e) {
+              // Yahoo ha fallado — se sigue intentando por Finect si hay URL.
+            }
+          }
+          if (!src || !security[src.field]) throw new Error("Sin fuente de precio disponible.");
           const q = await src.fetchQuote(security[src.field]);
           onUpdate(priceUpdate(q));
         } catch (e) {
@@ -4623,18 +4782,95 @@
         setFetching(false);
       };
 
-      const resolve = async () => {
-        if (!src) return;
+      // Aplica un símbolo de Yahoo ya elegido (por el usuario o porque solo
+      // había un candidato): pide su precio y lo guarda como fuente
+      // prioritaria. Compartido entre el campo principal (modo "yahoo") y
+      // el de respaldo de fondos.
+      const chooseCandidate = async (symbol) => {
         setResolving(true); setFetchError("");
         try {
-          const q = await src.resolve(security.isin);
-          const resolvedVal = q[src.resolvedField];
-          setFieldDraft(resolvedVal);
-          onUpdate({ [src.field]: resolvedVal, ...priceUpdate(q) });
+          const q = await vsFetchYahooQuote(symbol);
+          setFieldDraft(symbol);
+          onUpdate({ yahooTicker: symbol, ...priceUpdate(q, "yahoo") });
+          setCandidates(null);
         } catch (e) {
           setFetchError(e.message);
         }
         setResolving(false);
+      };
+      const chooseYCandidate = async (symbol) => {
+        setYResolving(true); setYError("");
+        try {
+          const q = await vsFetchYahooQuote(symbol);
+          setYFieldDraft(symbol);
+          onUpdate({ yahooTicker: symbol, ...priceUpdate(q, "yahoo") });
+          setYCandidates(null);
+        } catch (e) {
+          setYError(e.message);
+        }
+        setYResolving(false);
+      };
+
+      const resolve = async () => {
+        if (!src) return;
+        setResolving(true); setFetchError(""); setCandidates(null);
+        try {
+          if (mode === "yahoo") {
+            // Búsqueda de Yahoo sin clave, sin filtrar en el proxy — un
+            // solo resultado se aplica directo, varios se muestran para
+            // que el usuario elija (un ETF puede cotizar en varias
+            // bolsas y el proxy no tiene criterio para elegir).
+            const results = await vsSearchYahooSymbols(security.isin);
+            if (results.length === 1) {
+              await chooseCandidate(results[0].symbol);
+            } else {
+              setCandidates(results);
+              setResolving(false);
+            }
+          } else {
+            const q = await src.resolve(security.isin);
+            const resolvedVal = q[src.resolvedField];
+            setFieldDraft(resolvedVal);
+            onUpdate({ [src.field]: resolvedVal, ...priceUpdate(q) });
+            setResolving(false);
+          }
+        } catch (e) {
+          setFetchError(e.message);
+          setResolving(false);
+        }
+      };
+
+      const yResolve = async () => {
+        setYResolving(true); setYError(""); setYCandidates(null);
+        try {
+          const results = await vsSearchYahooSymbols(security.isin);
+          if (results.length === 1) {
+            await chooseYCandidate(results[0].symbol);
+          } else {
+            setYCandidates(results);
+            setYResolving(false);
+          }
+        } catch (e) {
+          setYError(e.message);
+          setYResolving(false);
+        }
+      };
+
+      // Descarga/actualiza el histórico de precios (para TTWROR). Solo
+      // disponible si el valor tiene ticker de Yahoo — Finect no expone
+      // histórico en la ficha. Incremental si ya había datos guardados
+      // (ver vsDownloadHistory), y convierte a EUR de camino si hace
+      // falta.
+      const downloadHistory = async () => {
+        if (!security.yahooTicker || histBusy) return;
+        setHistBusy(true); setHistError("");
+        try {
+          const patch = await vsDownloadHistory(security);
+          onUpdate(patch);
+        } catch (e) {
+          setHistError(e.message);
+        }
+        setHistBusy(false);
       };
 
       const saveManual = () => {
@@ -4709,8 +4945,8 @@
             ) : (
               <>
                 {src && (
-                  <button onClick={refresh} disabled={!security[src.field] || fetching} title="Actualizar precio"
-                    style={{ background: "none", border: "1px solid #1a2535", color: security[src.field] ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: security[src.field] && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
+                  <button onClick={refresh} disabled={!canRefresh || fetching} title="Actualizar precio"
+                    style={{ background: "none", border: "1px solid #1a2535", color: canRefresh ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: canRefresh && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
                     {fetching ? "…" : <VsIcon name="refresh" />}
                   </button>
                 )}
@@ -4723,7 +4959,7 @@
             )}
           </td>
           {src && (
-            <td style={{ ...cellStyle, width: 150, maxWidth: 150 }}>
+            <td style={{ ...cellStyle, width: 160, maxWidth: 170 }}>
               <div style={{ display: "flex", gap: 4 }}>
                 <input value={fieldDraft} onChange={e => setFieldDraft(e.target.value)} onBlur={saveField} placeholder={src.placeholder}
                   style={{ width: 80, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
@@ -4734,7 +4970,65 @@
                 <a href={src.searchUrl(security.isin)} target="_blank" rel="noopener noreferrer" title={`Buscar en ${mode === "finect" ? "Finect" : "Yahoo"}`}
                   style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap", alignSelf: "center" }}><VsIcon name="search" /></a>
               </div>
+              {/* Varios candidatos de Yahoo (modo "yahoo") — decisión manual
+                  de una vez, ver B1: un ETF puede cotizar en Ámsterdam,
+                  Milán, Londres y Frankfurt a la vez. */}
+              {candidates && (
+                <div style={{ marginTop: 4, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 130, overflowY: "auto", background: "#060d14" }}>
+                  {candidates.map(c => (
+                    <div key={c.symbol} onClick={() => chooseCandidate(c.symbol)}
+                      style={{ padding: "3px 4px", fontSize: 10, cursor: "pointer", borderRadius: 4 }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                    </div>
+                  ))}
+                  <div onClick={() => setCandidates(null)} style={{ padding: "3px 4px", fontSize: 9, color: "#5a7080", cursor: "pointer" }}>cancelar</div>
+                </div>
+              )}
               {fetchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{fetchError}</div>}
+              {/* Yahoo de respaldo para fondos (mode "finect") — hace falta
+                  para el histórico (Finect no lo expone) y, si está, pasa a
+                  ser la fuente prioritaria de precio en vivo. */}
+              {mode === "finect" && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #1a2535" }}>
+                  <div style={{ fontSize: 9, color: "#5a7080", marginBottom: 3 }}>Yahoo (resp. / histórico)</div>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input value={yFieldDraft} onChange={e => setYFieldDraft(e.target.value)} onBlur={saveYField} placeholder="ticker"
+                      style={{ width: 80, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
+                    <button onClick={yResolve} disabled={yResolving} title="Buscar en Yahoo"
+                      style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: yResolving ? "not-allowed" : "pointer" }}>
+                      {yResolving ? "…" : <VsIcon name="zap" />}
+                    </button>
+                  </div>
+                  {yCandidates && (
+                    <div style={{ marginTop: 4, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 130, overflowY: "auto", background: "#060d14" }}>
+                      {yCandidates.map(c => (
+                        <div key={c.symbol} onClick={() => chooseYCandidate(c.symbol)}
+                          style={{ padding: "3px 4px", fontSize: 10, cursor: "pointer", borderRadius: 4 }}
+                          onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                        </div>
+                      ))}
+                      <div onClick={() => setYCandidates(null)} style={{ padding: "3px 4px", fontSize: 9, color: "#5a7080", cursor: "pointer" }}>cancelar</div>
+                    </div>
+                  )}
+                  {yError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{yError}</div>}
+                </div>
+              )}
+            </td>
+          )}
+          {src && (
+            <td style={{ ...cellStyle, width: 130, maxWidth: 140 }}>
+              <button onClick={downloadHistory} disabled={!security.yahooTicker || histBusy} title="Descargar/actualizar histórico de precios (para TTWROR)"
+                style={{ background: "none", border: "1px solid #1a2535", color: security.yahooTicker ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: security.yahooTicker && !histBusy ? "pointer" : "not-allowed" }}>
+                {histBusy ? "…" : "histórico"}
+              </button>
+              {security.history && security.history.length > 0 && (
+                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
+                  {security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})
+                </div>
+              )}
+              {histError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{histError}</div>}
             </td>
           )}
           <td style={{ ...cellStyle, width: 170, maxWidth: 190 }}>
@@ -4825,10 +5119,10 @@
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 720 : 540 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 830 : 540 }}>
                 <thead>
                   <tr>
-                    {(src ? ["Valor", "Precio", "", src.label, "Etiquetas"] : ["Valor", "Precio", "", "Etiquetas"]).map((h, i) => (
+                    {(src ? ["Valor", "Precio", "", src.label, "Histórico", "Etiquetas"] : ["Valor", "Precio", "", "Etiquetas"]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
@@ -5428,6 +5722,157 @@
       return vsXirr(flows);
     }
 
+    // ── Motor económico · Fase 4 — TTWROR ──────────────────────────────────
+    // Rentabilidad ponderada por tiempo: mide cómo lo han hecho los valores,
+    // neutralizando el efecto de cuándo se metió o sacó dinero — el
+    // complemento del XIRR de arriba, que sí depende del calendario de
+    // aportaciones. Se calcula troceando el histórico en subperíodos
+    // delimitados por cada flujo externo, calculando la rentabilidad de
+    // cada trozo y encadenándolos geométricamente.
+    //
+    // Ojo con los signos: VS_CF_SIGN está pensado desde el punto de vista
+    // de la cuenta de efectivo (buy:-1) — aquí el punto de vista es el de
+    // la cartera de valores, que es el opuesto, así que NO se reutiliza
+    // VS_CF_SIGN para esto (ver vsExternalFlowOn).
+    //
+    // Usa `close`, no `adjclose`: Vesta ya registra los dividendos como
+    // transacciones propias (tratadas aquí como flujo de salida), así que
+    // adjclose (ajustado por dividendos reinvertidos) los contaría dos
+    // veces. Por eso vsDownloadHistory guarda solo `close` en el catálogo.
+
+    // Índice fecha→precio con arrastre: devuelve el último precio conocido
+    // en o antes de `date`. Necesario porque las series de Yahoo siguen el
+    // calendario de la bolsa de origen (Frankfurt para los "0P…F"), que no
+    // coincide con el español ni con las fechas de las transacciones.
+    function vsPriceLookup(history) {
+      const pts = (history || []).slice().sort((a, b) => a.d.localeCompare(b.d));
+      return function priceAt(date) {
+        if (pts.length === 0) return null;
+        let lo = 0, hi = pts.length - 1, best = null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (pts[mid].d <= date) { best = pts[mid].c; lo = mid + 1; }
+          else hi = mid - 1;
+        }
+        return best; // null si `date` es anterior al primer punto de la serie
+      };
+    }
+
+    // Títulos por ISIN contando solo transacciones hasta `date` inclusive.
+    function vsPositionsAsOf(transactions, date) {
+      return vsComputePositions(transactions.filter(t => t.date <= date));
+    }
+
+    // Valor de mercado de la cartera en una fecha. Devuelve también cuántos
+    // valores no se han podido valorar, para poder avisar en la UI en vez
+    // de dar un número silenciosamente incompleto.
+    function vsPortfolioValueAsOf(transactions, securitiesCatalog, date, lookups) {
+      const positions = vsPositionsAsOf(transactions, date);
+      let value = 0, missing = 0;
+      for (const [isin, shares] of Object.entries(positions)) {
+        if (shares <= 1e-9) continue;
+        const priceAt = lookups[isin];
+        const p = priceAt ? priceAt(date) : null;
+        if (p == null) { missing++; continue; }
+        value += shares * p;
+      }
+      return { value, missing };
+    }
+
+    // Flujo externo neto del día, desde el punto de vista de la cartera de
+    // valores: compra = entra dinero, venta y dividendo = sale.
+    // deposit/withdrawal/fee/tax/interest quedan fuera a propósito (mismo
+    // criterio que vsComputePortfolioXirr).
+    function vsExternalFlowOn(transactions, date) {
+      let f = 0;
+      for (const t of transactions) {
+        if (t.date !== date) continue;
+        if (t.type === "buy") f += (t.amount || 0);
+        else if (t.type === "sell") f -= (t.amount || 0);
+        else if (t.type === "dividend") f -= (t.amount || 0);
+      }
+      return f;
+    }
+
+    // TTWROR de la cartera completa (o de un subconjunto de transacciones
+    // ya filtrado — ver vsComputeTtwrorForIsin más abajo).
+    // Devuelve { ttwror, subperiods, firstDate, lastDate, incomplete } o
+    // null si no hay datos suficientes.
+    // `incomplete` es true si en algún corte hubo valores sin precio: el
+    // número sigue siendo el mejor disponible, pero hay que decirlo en la UI.
+    function vsComputePortfolioTtwror(transactions, securitiesCatalog, endDate) {
+      const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
+      if (txs.length === 0) return null;
+
+      const lookups = {};
+      for (const [isin, sec] of Object.entries(securitiesCatalog || {})) {
+        if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
+      }
+      if (Object.keys(lookups).length === 0) return null;
+
+      const today = endDate || new Date().toISOString().slice(0, 10);
+      const flowDates = new Set();
+      for (const t of txs) {
+        if (t.type === "buy" || t.type === "sell" || t.type === "dividend") flowDates.add(t.date);
+      }
+      const dates = Array.from(new Set([txs[0].date, ...flowDates, today]))
+        .filter(d => d <= today)
+        .sort();
+
+      let factor = 1, subperiods = 0, incomplete = false, firstDate = null;
+
+      let prev = null;
+      for (const d of dates) {
+        const cur = vsPortfolioValueAsOf(txs, securitiesCatalog, d, lookups);
+        if (cur.missing > 0) incomplete = true;
+        if (prev && prev.value > 1e-9) {
+          const F = vsExternalFlowOn(txs, d);
+          const r = (cur.value - F) / prev.value - 1;
+          if (isFinite(r)) {
+            factor *= (1 + r);
+            subperiods++;
+            if (!firstDate) firstDate = prev.date;
+          }
+        }
+        prev = { date: d, value: cur.value };
+      }
+
+      if (subperiods === 0) return null;
+      return { ttwror: (factor - 1) * 100, subperiods, firstDate, lastDate: today, incomplete };
+    }
+
+    // Conjunto de ISIN relacionados con `isin` a través de splits (el
+    // propio, más sus predecesores split_out en la misma fecha) — mismo
+    // patrón recursivo que vsInvestedForIsin / vsXirrFlowsForIsin, para
+    // que un valor que cambió de ISIN en un split herede el histórico de
+    // TTWROR de su tramo anterior en vez de arrancar solo desde el split.
+    function vsRelatedIsinsForSplit(isin, transactions, visited) {
+      visited = visited || new Set();
+      if (visited.has(isin)) return visited;
+      visited.add(isin);
+      const splitIns = transactions.filter(t => t.isin === isin && t.type === "split_in");
+      for (const si of splitIns) {
+        const predecessors = new Set(
+          transactions.filter(t => t.type === "split_out" && t.date === si.date).map(t => t.isin)
+        );
+        for (const pred of predecessors) {
+          if (pred !== isin) vsRelatedIsinsForSplit(pred, transactions, visited);
+        }
+      }
+      return visited;
+    }
+
+    // TTWROR de un valor concreto (heredando a través de splits): restringe
+    // transacciones y catálogo al conjunto de ISIN relacionados y reutiliza
+    // el motor de cartera completa sobre ese subconjunto.
+    function vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog, endDate) {
+      const isins = vsRelatedIsinsForSplit(isin, transactions);
+      const txs = transactions.filter(t => t.isin && isins.has(t.isin));
+      const catalog = {};
+      for (const i of isins) if (securitiesCatalog[i]) catalog[i] = securitiesCatalog[i];
+      return vsComputePortfolioTtwror(txs, catalog, endDate);
+    }
+
     const vsPortfolioFmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
 
     // Las dos pastillas de KPI — compartidas entre "Transacciones" y "Mi
@@ -5435,7 +5880,7 @@
     // estilo. El detalle de cobertura de precio (antes un aviso siempre
     // visible bajo el valor) vive ahora en el botón ⓘ, reutilizando
     // VsInfoTip — solo se ve si lo pides, no ocupa sitio permanente.
-    function VsPortfolioKpiCards({ kpis, showXirr = true }) {
+    function VsPortfolioKpiCards({ kpis, showXirr = true, ttwror = null }) {
       const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", position: "relative" };
       const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
       const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
@@ -5447,8 +5892,9 @@
           ? `${kpis.unpricedHeld} de ${kpis.heldCount} valores sin precio todavía — se usa su coste neto invertido como estimación provisional.`
           : `${kpis.heldCount} valores con precio de mercado.`;
       const xirrInfoText = "Rentabilidad anualizada ponderada por dinero (XIRR): tiene en cuenta CUÁNDO metiste cada euro, a diferencia del % de \"Valor actual\" (que solo compara importes, no fechas). Se calcula sobre compras, ventas y dividendos de cada valor — no sobre aportaciones/retiradas de cuenta, que no todos los importadores traen. Necesita al menos una compra y no se puede calcular si nunca hubo dinero invertido.";
+      const ttwrorInfoText = "Rentabilidad ponderada por tiempo (TTWROR): mide cómo lo han hecho tus valores, sin que influya cuándo aportaste o retiraste dinero — el complemento del XIRR. Arranca donde arranca el histórico de precios disponible más antiguo, así que el período mostrado debajo es parte del dato, no un detalle menor. Necesita histórico de precios descargado (botón \"histórico\" en el catálogo de valores).";
       return (
-        <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
           <div style={kpiCardStyle}>
             <div style={kpiLabelStyle}>Total invertido</div>
             <div style={kpiValueStyle}>{vsPortfolioFmtEUR(kpis.invested)}</div>
@@ -5471,6 +5917,21 @@
               <div style={kpiLabelStyle}>Rentabilidad anualizada (XIRR)</div>
               <div style={{ ...kpiValueStyle, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}>
                 {kpis.xirr != null ? vsFmtPct(kpis.xirr * 100) : "—"}
+              </div>
+            </div>
+          )}
+          {ttwror && (
+            <div style={kpiCardStyle}>
+              <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={ttwrorInfoText} width={240} align="right" /></div>
+              <div style={kpiLabelStyle}>TTWROR</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ ...kpiValueStyle, color: vsChangeColor(ttwror.ttwror) }}>{vsFmtPct(ttwror.ttwror)}</div>
+                {ttwror.incomplete && (
+                  <span style={{ fontSize: 13, color: "#f59e0b" }} title="Algún valor no tenía precio en alguna fecha de corte — el número es el mejor disponible pero puede estar incompleto.">⚠</span>
+                )}
+              </div>
+              <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
+                {ttwror.firstDate} → {ttwror.lastDate}
               </div>
             </div>
           )}
@@ -5704,6 +6165,10 @@
         [transactions, securitiesCatalog]
       );
       const kpis = useMemo(() => vsComputePortfolioKpis(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
+      // null si ningún valor tiene histórico descargado todavía — la
+      // tarjeta simplemente no aparece hasta entonces (ver B2, botón
+      // "histórico" en el catálogo de valores).
+      const ttwror = useMemo(() => vsComputePortfolioTtwror(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
       const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
       const totalChangePct = totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null;
       const [hoveredIsin, setHoveredIsin] = useState(null);
@@ -5758,7 +6223,7 @@
       const cellStyle = { padding: "5px 7px", borderBottom: "1px solid #16202c" };
       return (
         <div style={{ padding: 20 }}>
-          <VsPortfolioKpiCards kpis={kpis} />
+          <VsPortfolioKpiCards kpis={kpis} ttwror={ttwror} />
 
           {anomalies.length > 0 && (
             <div style={{ background: "#f8717118", border: "1px solid #f8717155", borderRadius: 10, padding: 16, marginBottom: 20 }}>
