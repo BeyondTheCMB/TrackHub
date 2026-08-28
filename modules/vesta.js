@@ -4026,6 +4026,40 @@
       };
     }
 
+    // Actualización automática de histórico — silenciosa y solo
+    // incremental (nunca descarga histórico completo de un valor nuevo:
+    // eso solo pasa como parte visible de resolver su ticker de Yahoo,
+    // ver chooseCandidate/chooseYCandidate/resolveAll/resolveYAll en
+    // VsSecurityRow/VsSecuritiesPanel). Una vez que un valor ya tiene
+    // histórico base, ponerlo al día con los días que faltan es barato y
+    // no necesita que el usuario se acuerde de pulsar nada — se dispara
+    // solo al cargar la cartera, como el refresco del factor de caja
+    // automático de más arriba. Fallos individuales no rompen nada: ese
+    // valor sencillamente sigue con el histórico que ya tenía hasta la
+    // próxima vez.
+    async function vsAutoUpdateHistories(portfolio, profileId) {
+      const securitiesCatalog = portfolio.securities || {};
+      const targets = Object.values(securitiesCatalog).filter(s => s.yahooTicker && s.history && s.history.length > 0);
+      if (targets.length === 0) return portfolio;
+      const nextSecurities = { ...securitiesCatalog };
+      let changed = false;
+      for (const s of targets) {
+        try {
+          const patch = await vsDownloadHistory(s);
+          if (patch.history.length !== (s.history || []).length) {
+            nextSecurities[s.isin] = { ...nextSecurities[s.isin], ...patch };
+            changed = true;
+          }
+        } catch (e) {
+          console.warn(`No se pudo actualizar el histórico de ${s.isin}:`, e.message);
+        }
+      }
+      if (!changed) return portfolio;
+      const next = { ...portfolio, securities: nextSecurities };
+      await vsSavePortfolio(profileId, next);
+      return next;
+    }
+
     // Clave de deduplicación al reimportar: prioriza el `ref` de Inversis
     // (identificador único de operación en el extracto). Sin ref (PP, manual)
     // compone una clave con los campos — no es infalible pero cubre bien el
@@ -4743,6 +4777,18 @@
       const saveField = () => { if (src && fieldDraft.trim() !== (security[src.field] || "")) onUpdate({ [src.field]: fieldDraft.trim() || null }); };
       const saveYField = () => { if (yFieldDraft.trim() !== (security.yahooTicker || "")) onUpdate({ yahooTicker: yFieldDraft.trim() || null }); };
 
+      // El valor inicial de useState solo se aplica al montar la fila — si
+      // el campo cambia por una vía externa (bulk "todos", otra pestaña
+      // abierta, etc.) el input se queda mostrando el valor viejo aunque
+      // el dato ya esté guardado. Se resincroniza cada vez que cambia el
+      // valor real del catálogo.
+      useEffect(() => {
+        setFieldDraft((src && security[src.field]) || "");
+      }, [src && security[src.field]]);
+      useEffect(() => {
+        setYFieldDraft(security.yahooTicker || "");
+      }, [security.yahooTicker]);
+
       // El proxy adjunta originalPrice/originalCurrency/fxRate cuando ha
       // tenido que convertir a EUR (valores que cotizan en USD, GBP...) —
       // se guardan para poder mostrar de un vistazo que la conversión se
@@ -4785,13 +4831,29 @@
       // Aplica un símbolo de Yahoo ya elegido (por el usuario o porque solo
       // había un candidato): pide su precio y lo guarda como fuente
       // prioritaria. Compartido entre el campo principal (modo "yahoo") y
-      // el de respaldo de fondos.
+      // el de respaldo de fondos. Si es la primera vez que este valor
+      // tiene ticker de Yahoo, aprovecha para traer también su histórico
+      // completo — como parte de esta misma acción visible, no en
+      // segundo plano sin que el usuario lo sepa: así, para alguien nuevo
+      // en la app, un solo clic deja el valor listo para TTWROR sin tener
+      // que acordarse de pulsar "histórico" aparte.
       const chooseCandidate = async (symbol) => {
         setResolving(true); setFetchError("");
         try {
           const q = await vsFetchYahooQuote(symbol);
           setFieldDraft(symbol);
-          onUpdate({ yahooTicker: symbol, ...priceUpdate(q, "yahoo") });
+          let patch = { yahooTicker: symbol, ...priceUpdate(q, "yahoo") };
+          if (!security.history || security.history.length === 0) {
+            setHistBusy(true); setHistError("");
+            try {
+              const histPatch = await vsDownloadHistory({ ...security, yahooTicker: symbol });
+              patch = { ...patch, ...histPatch };
+            } catch (e) {
+              setHistError(e.message);
+            }
+            setHistBusy(false);
+          }
+          onUpdate(patch);
           setCandidates(null);
         } catch (e) {
           setFetchError(e.message);
@@ -4803,7 +4865,18 @@
         try {
           const q = await vsFetchYahooQuote(symbol);
           setYFieldDraft(symbol);
-          onUpdate({ yahooTicker: symbol, ...priceUpdate(q, "yahoo") });
+          let patch = { yahooTicker: symbol, ...priceUpdate(q, "yahoo") };
+          if (!security.history || security.history.length === 0) {
+            setHistBusy(true); setHistError("");
+            try {
+              const histPatch = await vsDownloadHistory({ ...security, yahooTicker: symbol });
+              patch = { ...patch, ...histPatch };
+            } catch (e) {
+              setHistError(e.message);
+            }
+            setHistBusy(false);
+          }
+          onUpdate(patch);
           setYCandidates(null);
         } catch (e) {
           setYError(e.message);
@@ -5082,7 +5155,21 @@
         for (const s of targets) {
           try {
             const q = await src.resolve(s.isin);
-            patches[s.isin] = { [src.field]: q[src.resolvedField], price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode, priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
+            let patch = { [src.field]: q[src.resolvedField], price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: mode, priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
+            // En modo "yahoo" el campo resuelto ES el ticker — aprovecha
+            // para traer también el histórico base si aún no lo tenía
+            // (mismo criterio que el resolver individual, ver
+            // chooseCandidate/chooseYCandidate más arriba).
+            if (mode === "yahoo" && (!s.history || s.history.length === 0)) {
+              try {
+                const histPatch = await vsDownloadHistory({ ...s, yahooTicker: q[src.resolvedField] });
+                patch = { ...patch, ...histPatch };
+              } catch (e) {
+                // El ticker/precio quedan guardados igualmente — el
+                // histórico se puede reintentar con "histórico todos".
+              }
+            }
+            patches[s.isin] = patch;
           } catch (e) { fail++; }
           setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
         }
@@ -5098,7 +5185,9 @@
       // es el ticker de Yahoo y lo cubre resolveAll. Sin picker
       // interactivo (como el resto de acciones masivas): se queda con el
       // primer candidato que devuelva Yahoo; para elegir entre varios hay
-      // que ir fila a fila.
+      // que ir fila a fila. Trae también el histórico base de cada fondo
+      // nuevo, en la misma pasada visible — para un usuario que empieza
+      // de cero, un solo botón deja todo el catálogo listo para TTWROR.
       const resolveYAll = async () => {
         const targets = securities.filter(s => !s.yahooTicker);
         if (targets.length === 0) return;
@@ -5110,7 +5199,16 @@
             const results = await vsSearchYahooSymbols(s.isin);
             const symbol = results[0].symbol;
             const q = await vsFetchYahooQuote(symbol);
-            patches[s.isin] = { yahooTicker: symbol, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "yahoo", priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
+            let patch = { yahooTicker: symbol, price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: "yahoo", priceOriginalValue: q.originalPrice != null ? q.originalPrice : null, priceOriginalCurrency: q.originalCurrency || null };
+            if (!s.history || s.history.length === 0) {
+              try {
+                const histPatch = await vsDownloadHistory({ ...s, yahooTicker: symbol });
+                patch = { ...patch, ...histPatch };
+              } catch (e) {
+                // Igual, se puede reintentar luego con "histórico todos".
+              }
+            }
+            patches[s.isin] = patch;
           } catch (e) { fail++; }
           setBulkStatus(`${Object.keys(patches).length + fail} de ${targets.length}`);
         }
@@ -6465,7 +6563,18 @@
         });
         vsLoadAnalyses(profileId).then(setSavedAnalyses);
         vsLoadFunds(profileId).then(setFunds);
-        vsLoadPortfolio(profileId).then(setPortfolio);
+        // La cartera se carga y, aparte, se pone al día el histórico de
+        // precios que ya existiera (silencioso — nunca descarga histórico
+        // completo de un valor nuevo, solo rellena los días que faltan
+        // desde la última vez, ver vsAutoUpdateHistories). Mismo patrón
+        // que el refresco del factor de caja automático de arriba: si
+        // falla, el usuario simplemente sigue con el histórico que ya
+        // tenía hasta la próxima conexión.
+        vsLoadPortfolio(profileId).then(async (loadedPortfolio) => {
+          setPortfolio(loadedPortfolio);
+          const updated = await vsAutoUpdateHistories(loadedPortfolio, profileId);
+          if (updated !== loadedPortfolio) setPortfolio(updated);
+        });
       }, [profileId]);
 
       const handleSavePortfolio = async (next) => {
