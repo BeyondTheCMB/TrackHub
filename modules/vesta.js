@@ -5414,6 +5414,59 @@
       );
     }
 
+    // Donut de la vista "por etiqueta" — mismo dibujo que VsAllocationDonut
+    // pero por "slice" genérico (id/nombre/color/valor) en vez de por
+    // ISIN, para poder representar tags en lugar de valores individuales.
+    // Aviso: si algún valor lleva etiquetas de más de una rama raíz a la
+    // vez, sus slices se solapan en valor y el anillo puede no sumar
+    // exactamente el 100% — coherente con el mismo aviso de la tabla.
+    function VsTagAllocationDonut({ slices, totalValue, hoveredId, onHover, fmtEUR }) {
+      const size = 300, r = 118, cx = 150, cy = 150, strokeWidth = 34;
+      const circumference = 2 * Math.PI * r;
+      let cumulative = 0;
+      const hoveredSlice = slices.find(s => s.id === hoveredId);
+      return (
+        <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+          <svg viewBox={`0 0 ${size} ${size}`} style={{ width: size, height: size }}>
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1a2535" strokeWidth={strokeWidth} />
+            {slices.map(s => {
+              const dash = Math.max((s.pct / 100) * circumference, 0);
+              const isHovered = hoveredId === s.id;
+              const el = (
+                <circle key={s.id} cx={cx} cy={cy} r={r} fill="none"
+                  stroke={s.color}
+                  strokeWidth={isHovered ? strokeWidth + 10 : strokeWidth}
+                  strokeDasharray={`${dash} ${circumference - dash}`}
+                  strokeDashoffset={-cumulative}
+                  transform={`rotate(-90 ${cx} ${cy})`}
+                  opacity={hoveredId && !isHovered ? 0.35 : 1}
+                  style={{ cursor: "pointer", transition: "stroke-width 120ms ease, opacity 120ms ease" }}
+                  onMouseEnter={() => onHover(s.id)}
+                  onMouseLeave={() => onHover(null)}
+                />
+              );
+              cumulative += dash;
+              return el;
+            })}
+          </svg>
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", pointerEvents: "none", padding: "0 60px" }}>
+            {hoveredSlice ? (
+              <>
+                <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{hoveredSlice.name}</div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 21, marginTop: 2 }}>{fmtEUR(hoveredSlice.value)}</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: VS_A, fontFamily: "'DM Mono',monospace", marginTop: 3 }}>{hoveredSlice.pct.toFixed(1)}%</div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em" }}>Valor total</div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 22, marginTop: 2 }}>{fmtEUR(totalValue)}</div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // Fila (grupo o valor suelto) de la vista "por etiqueta" — recursiva:
     // cada tag se pinta a sí mismo y, si está expandido, sus valores
     // asignados directamente y sus subetiquetas debajo, indentadas un
@@ -5424,7 +5477,7 @@
     // tag es una cabecera con banda de color propia y los valores que
     // lleva esa etiqueta van justo debajo con viñeta "–", antes de bajar a
     // la siguiente subetiqueta anidada un nivel más. Recursiva.
-    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR, isFirst }) {
+    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR, isFirst, hoveredTagId, onHoverTag }) {
       const hasChildren = node.children && node.children.length > 0;
       const hasDirect = node.directRows && node.directRows.length > 0;
       const expandable = hasChildren || hasDirect;
@@ -5432,11 +5485,16 @@
       const weightPct = totalValue > 0 ? (node.value / totalValue) * 100 : 0;
       const changePct = node.invested > 0 ? ((node.value - node.invested) / node.invested) * 100 : null;
       const cellStyle = { padding: depth === 0 ? "8px 7px" : "5px 7px", borderBottom: "1px solid #16202c" };
-      const headerBg = depth === 0 ? node.tag.color + "14" : "transparent";
+      // El resaltado por hover solo tiene sentido en las ramas raíz, que
+      // son las que también se ven como gajos independientes en el donut.
+      const isRootHovered = depth === 0 && hoveredTagId === node.tag.id;
+      const headerBg = depth === 0 ? node.tag.color + (isRootHovered ? "28" : "14") : "transparent";
       return (
         <React.Fragment>
           <tr style={{ cursor: expandable ? "pointer" : "default", background: headerBg, borderTop: depth === 0 && !isFirst ? `2px solid ${node.tag.color}33` : "none" }}
-            onClick={() => expandable && onToggle(node.tag.id)}>
+            onClick={() => expandable && onToggle(node.tag.id)}
+            onMouseEnter={() => depth === 0 && onHoverTag && onHoverTag(node.tag.id)}
+            onMouseLeave={() => depth === 0 && onHoverTag && onHoverTag(null)}>
             <td style={{ ...cellStyle, borderLeft: depth > 0 ? `2px solid ${node.tag.color}55` : "none" }}>
               <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: node.tag.color }} />
             </td>
@@ -5486,9 +5544,25 @@
       const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
       const totalChangePct = totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null;
       const [hoveredIsin, setHoveredIsin] = useState(null);
+      const [hoveredTagId, setHoveredTagId] = useState(null);
       const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
       const fmtEUR = vsPortfolioFmtEUR;
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
+      // Slices del donut "por etiqueta": una por rama raíz + "Sin
+      // etiquetar" si aplica. Solo raíces (no toda la profundidad) para
+      // que el anillo no se fragmente en decenas de gajos diminutos —
+      // el desglose fino ya lo da la tabla de debajo.
+      const tagSlices = useMemo(() => {
+        const branchSlices = tagTree.branches.map(b => ({
+          id: b.tag.id, name: b.tag.name, color: b.tag.color, value: b.value,
+          pct: totalValue > 0 ? (b.value / totalValue) * 100 : 0,
+        }));
+        const untaggedSlice = tagTree.untagged.rows.length > 0 ? [{
+          id: "__untagged", name: "Sin etiquetar", color: "#3a4550", value: tagTree.untagged.value,
+          pct: totalValue > 0 ? (tagTree.untagged.value / totalValue) * 100 : 0,
+        }] : [];
+        return [...branchSlices, ...untaggedSlice];
+      }, [tagTree, totalValue]);
       // Por defecto todo el árbol va desplegado (incluida "Sin etiquetar")
       // para que se vea de un vistazo como un esquema de subsecciones, no
       // como una tabla plegada que hay que ir abriendo nivel a nivel.
@@ -5539,7 +5613,11 @@
               <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin posiciones abiertas.</div>
             ) : (
               <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "center" }}>
-                <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
+                {viewMode === "valor" ? (
+                  <VsAllocationDonut rows={rows} totalValue={totalValue} hoveredIsin={hoveredIsin} onHover={setHoveredIsin} fmtEUR={fmtEUR} />
+                ) : (
+                  <VsTagAllocationDonut slices={tagSlices} totalValue={totalValue} hoveredId={hoveredTagId} onHover={setHoveredTagId} fmtEUR={fmtEUR} />
+                )}
                 {viewMode === "valor" ? (
                   <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
@@ -5603,12 +5681,12 @@
                           </thead>
                           <tbody>
                             {tagTree.branches.map((b, i) => (
-                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={i === 0} />
+                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={i === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} />
                             ))}
                             {tagTree.untagged.rows.length > 0 && (
                               <VsTagAllocGroupRows
                                 node={{ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, value: tagTree.untagged.value, invested: tagTree.untagged.invested, directRows: tagTree.untagged.rows, children: [] }}
-                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={tagTree.branches.length === 0} />
+                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={tagTree.branches.length === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} />
                             )}
                           </tbody>
                         </table>
