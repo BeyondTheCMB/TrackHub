@@ -383,10 +383,22 @@
         { id: "biwenger",   icon: "⚽", accentA: "#34d399", accentB: "#60a5fa", label: "BiwengerLog", labelSplit: 8, desc: "Fantasy Biwenger simulator" },
         { id: "vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee", label: "Vesta",      labelSplit: 3, desc: "Fund style analysis & backtesting" },
       ];
-      const [creating,   setCreating]   = React.useState(profiles.length === 0);
+      // NO se deriva de `profiles.length === 0` en el useState inicial:
+      // ese valor solo se evalúa una vez, en el primer montaje. Si
+      // `HomeScreen` monta en el instante en que `profiles` aún está
+      // vacío (antes de que termine de cargar), `creating` se quedaba
+      // congelado en `true` para siempre, aunque `profiles` llegara justo
+      // después con el perfil real — se veía el perfil cargado y acto
+      // seguido el formulario de "crear nuevo" abierto solo. Ahora arranca
+      // en `false` siempre, y el efecto de abajo lo activa reactivamente
+      // solo cuando de verdad no hay ningún perfil (usuario nuevo).
+      const [creating,   setCreating]   = React.useState(false);
       const [newName,    setNewName]    = React.useState("");
       const [colorId,    setColorId]    = React.useState("blue");
       const [confirmDel, setConfirmDel] = React.useState(null);
+      React.useEffect(() => {
+        if (profiles.length === 0) setCreating(true);
+      }, [profiles.length]);
       const canEnter = !!activeProfileId && profiles.some(p => p.id === activeProfileId);
       const hour = new Date().getHours();
       const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
