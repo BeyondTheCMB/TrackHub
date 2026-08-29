@@ -1845,13 +1845,10 @@
         ? [
             { value: "investing", label: "Investing.com (Fecha, Último)" },
             { value: "yahoo", label: "Yahoo Finance (automático)" },
-            { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
-            { value: "fred_rate", label: "FRED (tipo de interés)" },
           ]
         : [
             { value: "investing", label: "Investing.com (Fecha, Último)" },
             { value: "yahoo", label: "Yahoo Finance (automático)" },
-            { value: "fred_rate", label: "FRED (tipo de interés)" },
           ];
 
       const searchYahoo = async () => {
@@ -2025,7 +2022,7 @@
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20, alignSelf: "start" }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Añadir al pool</div>
             <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
-              Sube un CSV de Investing.com (o ECB / FRED para tipos de interés), o resuélvelo automáticamente vía Yahoo.
+              Sube un CSV de Investing.com o resuélvelo automáticamente vía Yahoo. El tipo libre de riesgo (€STR/BCE) ya se gestiona solo.
             </div>
 
             <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
@@ -2113,8 +2110,6 @@
               sourceOpts={[
                 { value: "investing", label: "Investing.com (Fecha, Último)" },
                 { value: "yahoo", label: "Yahoo Finance (automático)" },
-                { value: "ecb_rate", label: "ECB Data Portal (tipo de interés)" },
-                { value: "fred_rate", label: "FRED (tipo de interés)" },
               ]} />
 
             <PoolTable title="Fondos" kindKey="fund" data={funds} names={fundNames}
@@ -2122,7 +2117,6 @@
               sourceOpts={[
                 { value: "investing", label: "Investing.com (Fecha, Último)" },
                 { value: "yahoo", label: "Yahoo Finance (automático)" },
-                { value: "fred_rate", label: "FRED (tipo de interés)" },
               ]} />
 
             {allNames.length >= 2 && (
