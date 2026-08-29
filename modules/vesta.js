@@ -5445,7 +5445,7 @@
             <td style={{ ...cellStyle, width: 175, maxWidth: 185 }}>
               <button onClick={downloadHistory} disabled={!security.yahooTicker || histBusy} title="Descargar/actualizar histórico de precios (para TTWROR)"
                 style={{ background: "none", border: "1px solid #1a2535", color: security.yahooTicker ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: security.yahooTicker && !histBusy ? "pointer" : "not-allowed" }}>
-                {histBusy ? "…" : "histórico"}
+                {histBusy ? "…" : "Buscar en Yahoo Finance"}
               </button>
               {security.history && security.history.length > 0 && (
                 <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
@@ -5642,7 +5642,7 @@
                 )}
                 <button onClick={downloadHistoryAll} disabled={anyBulkBusy} title="Descargar/actualizar histórico de todos los que tengan ticker de Yahoo (para TTWROR)"
                   style={bulkBtnStyle(anyBulkBusy)}>
-                  {bulkHistoryBusy ? "…" : "histórico"} todos
+                  {bulkHistoryBusy ? "…" : "Buscar en Yahoo Finance"} (todos)
                 </button>
               </div>
             )}
