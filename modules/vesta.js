@@ -5072,6 +5072,10 @@
 
       const [histBusy, setHistBusy] = useState(false);
       const [histError, setHistError] = useState("");
+      // Gráfico del histórico de precio ya descargado/importado — para
+      // poder comprobar de un vistazo que la serie no tiene saltos raros
+      // ni huecos sospechosos antes de fiarse de ella para TTWROR.
+      const [chartOpen, setChartOpen] = useState(false);
 
       // ── Importación manual de histórico (CSV de Investing.com) ─────────
       // Para fondos que Yahoo no resuelve bien (boutique, solo España,
@@ -5315,7 +5319,9 @@
       };
 
       const cellStyle = { padding: "8px 8px", borderBottom: "1px solid #1a2535", verticalAlign: "top" };
+      const totalCols = src ? 5 : 3; // Valor, Precio, acciones, [campo fuente, Histórico]
       return (
+        <React.Fragment>
         <tr>
           <td style={{ ...cellStyle, width: 170, maxWidth: 170 }}>
             {editingInfo ? (
@@ -5448,8 +5454,14 @@
                 {histBusy ? "…" : "Buscar en Yahoo Finance"}
               </button>
               {security.history && security.history.length > 0 && (
-                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
-                  {security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})
+                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                  <span>{security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})</span>
+                  {security.history.length > 1 && (
+                    <button onClick={() => setChartOpen(v => !v)} type="button" title="Ver gráfico del histórico — para comprobar que la serie no tiene saltos raros"
+                      style={{ background: "none", border: "1px solid #1a2535", color: chartOpen ? VS_A : "#7a90a8", borderRadius: 4, padding: "0 4px", fontSize: 10, cursor: "pointer", lineHeight: "14px" }}>
+                      📈
+                    </button>
+                  )}
                 </div>
               )}
               {histError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{histError}</div>}
@@ -5477,6 +5489,17 @@
             </td>
           )}
         </tr>
+        {chartOpen && security.history && security.history.length > 1 && (
+          <tr>
+            <td colSpan={totalCols} style={{ padding: "10px 8px", borderBottom: "1px solid #1a2535", background: "#060d14" }}>
+              <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 6 }}>
+                Histórico de precio — {security.name} ({security.historyCurrency || "EUR"})
+              </div>
+              <VsLineChart series={security.history.map(p => ({ date: p.d, value: p.c }))} height={180} />
+            </td>
+          </tr>
+        )}
+        </React.Fragment>
       );
     }
 
