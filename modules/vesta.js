@@ -5073,6 +5073,19 @@
       const [histBusy, setHistBusy] = useState(false);
       const [histError, setHistError] = useState("");
 
+      // ── Importación manual de histórico (CSV de Investing.com) ─────────
+      // Para fondos que Yahoo no resuelve bien (boutique, solo España,
+      // sin performanceId de Morningstar...) — mismo parser que ya usa
+      // Fund Analysis (vsParseInvestingCSV), pero aquí el destino es
+      // security.history en formato {d,c}, no retornos mensuales. Se
+      // fusiona con lo que ya hubiera (el CSV manual gana en fechas
+      // solapadas, por si se usa para corregir un tramo).
+      const [csvFile, setCsvFile] = useState(null);
+      const [csvCurrency, setCsvCurrency] = useState("EUR");
+      const [csvImporting, setCsvImporting] = useState(false);
+      const [csvError, setCsvError] = useState("");
+      const csvFileRef = useRef(null);
+
       const saveField = () => { if (src && fieldDraft.trim() !== (security[src.field] || "")) onUpdate({ [src.field]: fieldDraft.trim() || null }); };
       const saveYField = () => { if (yFieldDraft.trim() !== (security.yahooTicker || "")) onUpdate({ yahooTicker: yFieldDraft.trim() || null }); };
 
@@ -5245,6 +5258,45 @@
         setHistBusy(false);
       };
 
+      // Igual que downloadHistory pero a partir de un CSV subido a mano en
+      // vez de Yahoo — para el fondo que Yahoo no encuentra o no tiene
+      // histórico expuesto. `csvCurrency` se le pide al usuario porque el
+      // CSV de Investing.com no trae la divisa dentro del archivo; si no
+      // es EUR, se convierte con el mismo BCE que usa vsDownloadHistory.
+      const importHistoryCSV = async () => {
+        if (!csvFile || csvImporting) return;
+        setCsvImporting(true); setCsvError("");
+        try {
+          const text = await csvFile.text();
+          const raw = vsParseInvestingCSV(text);
+          if (raw.length < 2) throw new Error("No se pudieron leer filas del CSV.");
+          let points = raw.map(p => ({ d: p.date.toISOString().slice(0, 10), c: p.value }));
+          const cur = (csvCurrency || "EUR").trim().toUpperCase();
+          let originalCurrency = null;
+          if (cur && cur !== "EUR") {
+            const first = points.length > 0 ? points[0].d : null;
+            const fx = await vsFetchFxSeries(cur, first);
+            const rateAt = vsFxLookup(fx.points);
+            points = points.map(p => { const r = rateAt(p.d); return r ? { d: p.d, c: p.c / r } : null; }).filter(Boolean);
+            originalCurrency = cur;
+          }
+          const merged = new Map();
+          for (const p of (security.history || [])) merged.set(p.d, p.c);
+          for (const p of points) merged.set(p.d, p.c); // el CSV manual gana en fechas solapadas
+          const history = Array.from(merged.entries()).map(([d, c]) => ({ d, c })).sort((a, b) => a.d.localeCompare(b.d));
+          onUpdate({
+            history, historyCurrency: "EUR",
+            historyOriginalCurrency: originalCurrency || security.historyOriginalCurrency || null,
+            historyUpdatedAt: new Date().toISOString().slice(0, 10),
+          });
+          setCsvFile(null); setCsvCurrency("EUR");
+          if (csvFileRef.current) csvFileRef.current.value = "";
+        } catch (e) {
+          setCsvError(e.message);
+        }
+        setCsvImporting(false);
+      };
+
       const saveManual = () => {
         const p = vsNum(manualPrice);
         if (p == null) return;
@@ -5390,7 +5442,7 @@
             </td>
           )}
           {src && (
-            <td style={{ ...cellStyle, width: 130, maxWidth: 140 }}>
+            <td style={{ ...cellStyle, width: 175, maxWidth: 185 }}>
               <button onClick={downloadHistory} disabled={!security.yahooTicker || histBusy} title="Descargar/actualizar histórico de precios (para TTWROR)"
                 style={{ background: "none", border: "1px solid #1a2535", color: security.yahooTicker ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: security.yahooTicker && !histBusy ? "pointer" : "not-allowed" }}>
                 {histBusy ? "…" : "histórico"}
@@ -5401,6 +5453,27 @@
                 </div>
               )}
               {histError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{histError}</div>}
+
+              {/* Alternativa manual — para fondos que Yahoo no resuelve
+                  bien (boutique, solo España, sin performanceId...). */}
+              <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #1a2535" }}>
+                <div style={{ fontSize: 9, color: "#5a7080", marginBottom: 3 }}>CSV (Investing.com)</div>
+                <input ref={csvFileRef} type="file" accept=".csv" style={{ display: "none" }} onChange={e => setCsvFile(e.target.files[0] || null)} />
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button onClick={() => csvFileRef.current.click()} type="button" title="Elegir archivo CSV"
+                    style={{ flex: 1, minWidth: 0, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 9, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {csvFile ? csvFile.name : "elegir archivo"}
+                  </button>
+                  <input value={csvCurrency} onChange={e => setCsvCurrency(e.target.value.toUpperCase())} placeholder="EUR" maxLength={3}
+                    title="Divisa del CSV (el archivo no la trae — se convierte a EUR con el BCE si no es EUR)"
+                    style={{ width: 34, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "4px 2px", fontSize: 9, textAlign: "center" }} />
+                </div>
+                <button onClick={importHistoryCSV} disabled={!csvFile || csvImporting} type="button"
+                  style={{ marginTop: 4, width: "100%", background: "none", border: "1px solid #1a2535", color: csvFile ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "4px 6px", fontSize: 9, cursor: (csvFile && !csvImporting) ? "pointer" : "not-allowed" }}>
+                  {csvImporting ? "importando…" : "importar"}
+                </button>
+                {csvError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{csvError}</div>}
+              </div>
             </td>
           )}
         </tr>
@@ -5576,7 +5649,7 @@
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 660 : 370 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 700 : 370 }}>
                 <thead>
                   <tr>
                     {(src ? ["Valor", "Precio", "", src.label, "Histórico"] : ["Valor", "Precio", ""]).map((h, i) => (
