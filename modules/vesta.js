@@ -4359,6 +4359,52 @@
       return next;
     }
 
+    // Actualización automática y silenciosa del PRECIO actual de cada
+    // valor — para que el valor agregado de la cartera esté al día sin
+    // que el usuario tenga que acordarse de pulsar "actualizar". Mismo
+    // espíritu que vsAutoUpdateHistories, pero para el precio de hoy en
+    // vez del histórico completo, y con su propio criterio de estar "al
+    // día": si `priceAsOf` ya es la fecha de hoy, no se vuelve a pedir —
+    // así recargar la página varias veces en el mismo día no dispara N
+    // peticiones a Yahoo/Finect por valor, solo la primera del día
+    // (que en la práctica coincide con "cada vez que te logeas").
+    // Prioridad de fuente, igual que el refresco manual de cada fila:
+    // yahooTicker → finectUrl → se salta (valores con precio manual).
+    async function vsAutoUpdatePrices(portfolio, profileId) {
+      const securitiesCatalog = portfolio.securities || {};
+      const today = new Date().toISOString().slice(0, 10);
+      const targets = Object.values(securitiesCatalog).filter(s => (s.yahooTicker || s.finectUrl) && s.priceAsOf !== today);
+      if (targets.length === 0) return portfolio;
+      const nextSecurities = { ...securitiesCatalog };
+      let changed = false;
+      for (const s of targets) {
+        try {
+          let q = null, source = null;
+          if (s.yahooTicker) {
+            try { q = await vsFetchYahooQuote(s.yahooTicker); source = "yahoo"; }
+            catch (e) { /* si Yahoo falla, se prueba Finect si lo hay */ }
+          }
+          if (!q && s.finectUrl) {
+            q = await vsFetchFinectQuote(s.finectUrl); source = "finect";
+          }
+          if (!q) continue;
+          nextSecurities[s.isin] = {
+            ...nextSecurities[s.isin],
+            price: q.price, priceCurrency: q.currency, priceAsOf: q.asOf, priceSource: source,
+            priceOriginalValue: q.originalPrice != null ? q.originalPrice : null,
+            priceOriginalCurrency: q.originalCurrency || null,
+          };
+          changed = true;
+        } catch (e) {
+          console.warn(`No se pudo actualizar el precio de ${s.isin}:`, e.message);
+        }
+      }
+      if (!changed) return portfolio;
+      const next = { ...portfolio, securities: nextSecurities };
+      await vsSavePortfolio(profileId, next);
+      return next;
+    }
+
     // Clave de deduplicación al reimportar: prioriza el `ref` de Inversis
     // (identificador único de operación en el extracto). Sin ref (PP, manual)
     // compone una clave con los campos — no es infalible pero cubre bien el
@@ -6975,20 +7021,33 @@
         vsLoadFunds(profileId).then(setFunds).catch(e => {
           console.error("No se pudo cargar el pool de fondos (vs_funds):", e.message || e);
         });
-        // La cartera se carga y, aparte, se pone al día el histórico de
-        // precios que ya existiera (silencioso — nunca descarga histórico
-        // completo de un valor nuevo, solo rellena los días que faltan
-        // desde la última vez, ver vsAutoUpdateHistories). Mismo patrón
-        // que el refresco del factor de caja automático de arriba: si
-        // falla, el usuario simplemente sigue con el histórico que ya
-        // tenía hasta la próxima conexión. Igual que con los factores, si
-        // la propia carga de la cartera falla, no se sigue adelante — no
-        // hay nada que actualizar ni guardar sobre un dato que no se pudo
-        // leer de verdad.
+        // La cartera se carga y, aparte, se pone al día en segundo plano:
+        // (1) el histórico de precios que ya existiera (silencioso —
+        // nunca descarga histórico completo de un valor nuevo, solo
+        // rellena los días que faltan desde la última vez, ver
+        // vsAutoUpdateHistories) y (2) el precio actual de cada valor
+        // (para que el valor agregado de la cartera esté al día nada más
+        // entrar, ver vsAutoUpdatePrices — no vuelve a pedir nada si ya
+        // se actualizó hoy). Mismo patrón que el refresco del factor de
+        // caja automático de arriba: si algo falla, el usuario
+        // simplemente sigue con los datos que ya tenía hasta la próxima
+        // conexión. Igual que con los factores, si la propia carga de la
+        // cartera falla, no se sigue adelante — no hay nada que
+        // actualizar ni guardar sobre un dato que no se pudo leer de verdad.
         vsLoadPortfolio(profileId).then(async (loadedPortfolio) => {
           setPortfolio(loadedPortfolio);
-          const updated = await vsAutoUpdateHistories(loadedPortfolio, profileId);
-          if (updated !== loadedPortfolio) setPortfolio(updated);
+          let current = loadedPortfolio;
+          try {
+            current = await vsAutoUpdateHistories(current, profileId);
+          } catch (e) {
+            console.warn("Fallo en la actualización automática de históricos:", e.message || e);
+          }
+          try {
+            current = await vsAutoUpdatePrices(current, profileId);
+          } catch (e) {
+            console.warn("Fallo en la actualización automática de precios:", e.message || e);
+          }
+          if (current !== loadedPortfolio) setPortfolio(current);
         }).catch(e => {
           console.error("No se pudo cargar la cartera (vs_portfolio) — no se ha modificado nada:", e.message || e);
         });
