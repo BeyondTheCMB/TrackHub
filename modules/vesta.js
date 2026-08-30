@@ -5067,6 +5067,8 @@
       refresh: (<><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></>),
       edit: (<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />),
       tag: (<><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2.59 12.59a2 2 0 0 1-.83-1.63V4a2 2 0 0 1 2-2h6.96a2 2 0 0 1 1.63.83l8.24 8.24a2 2 0 0 1 0 2.83z" /><line x1="7" y1="7" x2="7.01" y2="7" /></>),
+      eye: (<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>),
+      eyeOff: (<><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></>),
     };
     function VsIcon({ name, size = 13 }) {
       return (
@@ -5750,7 +5752,7 @@
       pp: { label: "Portfolio Performance", importer: vsImportPP, accept: ".xlsx,.xml,.csv" },
     };
 
-    function VsCarteraTab({ portfolio, onSave }) {
+    function VsCarteraTab({ portfolio, onSave, censored, onToggleCensored }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
       const tags = portfolio.tags || [];
@@ -5998,7 +6000,7 @@
         .sort((a, b) => b.date.localeCompare(a.date));
 
       const kpis = useMemo(() => vsComputePortfolioKpis(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
-      const fmtEUR = vsPortfolioFmtEUR;
+      const fmtEUR = censored ? (() => "••••••") : vsPortfolioFmtEUR;
 
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
@@ -6045,7 +6047,7 @@
           </div>
 
           <div>
-            <VsPortfolioKpiCards kpis={kpis} showXirr={false} />
+            <VsPortfolioKpiCards kpis={kpis} showXirr={false} censored={censored} onToggleCensored={onToggleCensored} />
 
             {Object.keys(newSecurityDrafts).length > 0 && (
               <div style={{ background: "#0d1825", border: `1px solid ${VS_A}55`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -6492,7 +6494,7 @@
     // estilo. El detalle de cobertura de precio (antes un aviso siempre
     // visible bajo el valor) vive ahora en el botón ⓘ, reutilizando
     // VsInfoTip — solo se ve si lo pides, no ocupa sitio permanente.
-    function VsPortfolioKpiCards({ kpis, showXirr = true, ttwror = null }) {
+    function VsPortfolioKpiCards({ kpis, showXirr = true, ttwror = null, censored = false, onToggleCensored }) {
       const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", position: "relative" };
       const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
       const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
@@ -6505,20 +6507,30 @@
           : `${kpis.heldCount} valores con precio de mercado.`;
       const xirrInfoText = "Rentabilidad anualizada ponderada por dinero (XIRR): tiene en cuenta CUÁNDO metiste cada euro, a diferencia del % de \"Valor actual\" (que solo compara importes, no fechas). Se calcula sobre compras, ventas y dividendos de cada valor — no sobre aportaciones/retiradas de cuenta, que no todos los importadores traen. Necesita al menos una compra y no se puede calcular si nunca hubo dinero invertido.";
       const ttwrorInfoText = "Rentabilidad ponderada por tiempo (TTWROR): mide cómo lo han hecho tus valores, sin que influya cuándo aportaste o retiraste dinero — el complemento del XIRR. Arranca donde arranca el histórico de precios disponible más antiguo, así que el período mostrado debajo es parte del dato, no un detalle menor. Necesita histórico de precios descargado (botón \"histórico\" en el catálogo de valores).";
+      // Solo enmascara importes absolutos (€) — los porcentajes (XIRR,
+      // TTWROR, "Desde inicio") no revelan cuánto dinero hay de por medio,
+      // así que se quedan visibles incluso en modo censurado.
+      const maskEUR = (formatted) => censored ? "••••••" : formatted;
       return (
-        <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap", alignItems: "stretch" }}>
+          {onToggleCensored && (
+            <button onClick={onToggleCensored} title={censored ? "Mostrar importes" : "Ocultar importes (modo privado)"} type="button"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, background: "#0d1825", border: "1px solid #1a2535", color: censored ? VS_A : "#7a90a8", borderRadius: 10, cursor: "pointer", flexShrink: 0 }}>
+              <VsIcon name={censored ? "eyeOff" : "eye"} size={16} />
+            </button>
+          )}
           <div style={kpiCardStyle}>
             <div style={kpiLabelStyle}>Total invertido</div>
-            <div style={kpiValueStyle}>{vsPortfolioFmtEUR(kpis.invested)}</div>
+            <div style={kpiValueStyle}>{maskEUR(vsPortfolioFmtEUR(kpis.invested))}</div>
           </div>
           <div style={kpiCardStyle}>
             <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={infoText} width={210} align="right" /></div>
             <div style={kpiLabelStyle}>Valor actual</div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ ...kpiValueStyle, color: VS_A }}>{vsPortfolioFmtEUR(kpis.currentValue)}</div>
+              <div style={{ ...kpiValueStyle, color: VS_A }}>{maskEUR(vsPortfolioFmtEUR(kpis.currentValue))}</div>
               {kpis.invested > 0 && (
                 <div style={{ fontSize: 16, fontWeight: 700, color: vsChangeColor(change), fontFamily: "'DM Mono',monospace", display: "flex", alignItems: "center" }}>
-                  {vsFmtSignedEUR(change)} ({vsFmtPct(changePct)})
+                  {maskEUR(vsFmtSignedEUR(change))} ({vsFmtPct(changePct)})
                 </div>
               )}
             </div>
@@ -6768,7 +6780,7 @@
       );
     }
 
-    function VsMiCarteraTab({ portfolio }) {
+    function VsMiCarteraTab({ portfolio, censored, onToggleCensored }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
       const tags = portfolio.tags || [];
@@ -6786,7 +6798,7 @@
       const [hoveredIsin, setHoveredIsin] = useState(null);
       const [hoveredTagId, setHoveredTagId] = useState(null);
       const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
-      const fmtEUR = vsPortfolioFmtEUR;
+      const fmtEUR = censored ? (() => "••••••") : vsPortfolioFmtEUR;
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
       // Anillo interior del donut "por etiqueta": una por rama raíz +
       // "Sin etiquetar" si aplica.
@@ -6835,7 +6847,7 @@
       const cellStyle = { padding: "5px 7px", borderBottom: "1px solid #16202c" };
       return (
         <div style={{ padding: 20 }}>
-          <VsPortfolioKpiCards kpis={kpis} ttwror={ttwror} />
+          <VsPortfolioKpiCards kpis={kpis} ttwror={ttwror} censored={censored} onToggleCensored={onToggleCensored} />
 
           {anomalies.length > 0 && (
             <div style={{ background: "#f8717118", border: "1px solid #f8717155", borderRadius: 10, padding: 16, marginBottom: 20 }}>
@@ -7005,6 +7017,24 @@
       const [loading, setLoading] = useState(true);
       const [savedAnalyses, setSavedAnalyses] = useState([]);
       const isMobile = useIsMobile();
+
+      // ── Modo privado (importes ocultos) ──────────────────────────────
+      // Solo censura cifras absolutas en €; los porcentajes (XIRR, TTWROR,
+      // "Desde inicio", pesos) no revelan cuánto dinero hay de por medio y
+      // se quedan siempre visibles. Se guarda en localStorage (no en
+      // Supabase — es una preferencia de pantalla de este navegador, no
+      // un dato de la cartera) para que la próxima sesión arranque tal
+      // como se dejó, sin depender de un roundtrip de red para algo tan
+      // simple. localStorage falla dentro de un Artifact de Claude, pero
+      // esto es la app real desplegada en el navegador del usuario, donde
+      // funciona con normalidad.
+      const [censored, setCensored] = useState(() => {
+        try { return localStorage.getItem("vesta_censored") === "1"; } catch (e) { return false; }
+      });
+      useEffect(() => {
+        try { localStorage.setItem("vesta_censored", censored ? "1" : "0"); } catch (e) { /* modo privado del navegador, etc. — no rompe nada, solo no persiste */ }
+      }, [censored]);
+      const toggleCensored = () => setCensored(v => !v);
 
       useEffect(() => {
         if (!profileId) return;
@@ -7241,11 +7271,13 @@
                 {tab === "pca" && <VsPCATab factors={factors} funds={funds} onSaveAnalysis={handleSaveAnalysis} />}
                 {tab === "backtest" && <VsBacktestTab factors={factors} funds={funds} savedAnalyses={savedAnalyses} />}
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
-                {tab === "resumen" && <VsMiCarteraTab portfolio={portfolio} />}
-                {tab === "cartera" && <VsCarteraTab portfolio={portfolio} onSave={handleSavePortfolio} />}
+                {tab === "resumen" && <VsMiCarteraTab portfolio={portfolio} censored={censored} onToggleCensored={toggleCensored} />}
+                {tab === "cartera" && <VsCarteraTab portfolio={portfolio} onSave={handleSavePortfolio} censored={censored} onToggleCensored={toggleCensored} />}
               </>
             )}
           </div>
         </div>
+      );
+    }
       );
     }
