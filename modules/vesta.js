@@ -6923,8 +6923,20 @@
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalChangePct) }}>
                             {vsFmtPct(totalChangePct)}
                           </td>
-                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
-                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8 }}></td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}
+                            title="XIRR de toda la cartera — mismo número que la tarjeta KPI de arriba">
+                            {kpis.xirr != null ? vsFmtPct(kpis.xirr * 100) : "—"}
+                          </td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(ttwror ? ttwror.ttwror : null) }}
+                            title="TTWROR de toda la cartera — mismo número que la tarjeta KPI de arriba">
+                            {ttwror ? (
+                              <>
+                                {vsFmtPct(ttwror.ttwror)}
+                                {ttwror.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
+                              </>
+                            ) : "—"}
+                          </td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: VS_A }}>100%</td>
                         </tr>
                       </tfoot>
                     </table>
