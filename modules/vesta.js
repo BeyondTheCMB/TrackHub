@@ -5319,10 +5319,19 @@
       };
 
       const cellStyle = { padding: "8px 8px", borderBottom: "1px solid #1a2535", verticalAlign: "top" };
-      const totalCols = src ? 5 : 3; // Valor, Precio, acciones, [campo fuente, Histórico]
+      const totalCols = src ? 6 : 4; // [gráfico], Valor, Precio, acciones, [campo fuente, Histórico]
+      const hasChart = security.history && security.history.length > 1;
       return (
         <React.Fragment>
         <tr>
+          <td style={{ ...cellStyle, width: 26, maxWidth: 26, padding: "8px 4px" }}>
+            {hasChart && (
+              <button onClick={() => setChartOpen(v => !v)} type="button" title="Ver gráfico del histórico — para comprobar que la serie no tiene saltos raros"
+                style={{ background: "none", border: "1px solid #1a2535", color: chartOpen ? VS_A : "#7a90a8", borderRadius: 4, padding: "1px 4px", fontSize: 10, cursor: "pointer", lineHeight: "14px" }}>
+                📈
+              </button>
+            )}
+          </td>
           <td style={{ ...cellStyle, width: 170, maxWidth: 170 }}>
             {editingInfo ? (
               <div>
@@ -5454,14 +5463,8 @@
                 {histBusy ? "…" : "Buscar en Yahoo Finance"}
               </button>
               {security.history && security.history.length > 0 && (
-                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}>
-                  <span>{security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})</span>
-                  {security.history.length > 1 && (
-                    <button onClick={() => setChartOpen(v => !v)} type="button" title="Ver gráfico del histórico — para comprobar que la serie no tiene saltos raros"
-                      style={{ background: "none", border: "1px solid #1a2535", color: chartOpen ? VS_A : "#7a90a8", borderRadius: 4, padding: "0 4px", fontSize: 10, cursor: "pointer", lineHeight: "14px" }}>
-                      📈
-                    </button>
-                  )}
+                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
+                  {security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})
                 </div>
               )}
               {histError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{histError}</div>}
@@ -5672,10 +5675,10 @@
           </div>
           {open && (
             <div style={{ overflowX: "auto", marginTop: 14 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 700 : 370 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: src ? 720 : 390 }}>
                 <thead>
                   <tr>
-                    {(src ? ["Valor", "Precio", "", src.label, "Histórico"] : ["Valor", "Precio", ""]).map((h, i) => (
+                    {(src ? ["", "Valor", "Precio", "", src.label, "Histórico"] : ["", "Valor", "Precio", ""]).map((h, i) => (
                       <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 8px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                     ))}
                   </tr>
