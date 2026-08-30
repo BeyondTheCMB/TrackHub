@@ -6174,7 +6174,17 @@
         // que la TIR saldría artificialmente cerca de 0% y engañaría igual
         // que "Cambio".
         const xirr = hasPrice ? vsXirrForIsin(isin, transactions, value) : null;
-        rows.push({ isin, name, code, shares, invested, value, hasPrice, change, changePct, xirr, tagIds: (sec && sec.tagIds) || [] });
+        // TTWROR por valor — a diferencia de XIRR, esto no depende de
+        // `hasPrice` (precio en vivo): se calcula sobre security.history
+        // (con arrastre del último precio conocido), así que solo hace
+        // falta que haya histórico descargado, aunque el precio actual no
+        // se haya vuelto a pedir todavía. Hereda a través de splits (ver
+        // vsComputeTtwrorForIsin). Null si no hay histórico suficiente —
+        // la columna simplemente muestra "—" en ese caso.
+        const ttwror = (sec && sec.history && sec.history.length > 0)
+          ? vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog)
+          : null;
+        rows.push({ isin, name, code, shares, invested, value, hasPrice, change, changePct, xirr, ttwror, tagIds: (sec && sec.tagIds) || [] });
       }
       rows.sort((a, b) => b.value - a.value);
       const totalValue = rows.reduce((s, r) => s + r.value, 0);
@@ -6862,10 +6872,10 @@
                 )}
                 {viewMode === "valor" ? (
                   <div style={{ flex: 1, minWidth: 260, overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 620 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 700 }}>
                       <thead>
                         <tr>
-                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", "Desde inicio", "XIRR", "Peso"].map((h, i) => (
+                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", "Desde inicio", "XIRR", "TTWROR", "Peso"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -6888,6 +6898,14 @@
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.xirr != null ? r.xirr * 100 : null) }} title="Anualizada (TIR) — no comparable directamente con 'Desde inicio', que es la rentabilidad total sin anualizar">
                                 {r.xirr != null ? vsFmtPct(r.xirr * 100) : "—"}
+                              </td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.ttwror ? r.ttwror.ttwror : null) }} title="Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Necesita histórico de precios descargado.">
+                                {r.ttwror ? (
+                                  <>
+                                    {vsFmtPct(r.ttwror.ttwror)}
+                                    {r.ttwror.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
+                                  </>
+                                ) : "—"}
                               </td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
                             </tr>
