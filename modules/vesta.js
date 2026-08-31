@@ -5310,6 +5310,19 @@
         setHistBusy(false);
       };
 
+      // Borra el histórico guardado sin volver a descargar nada — para
+      // cuando se sospecha que algún punto quedó mal (p.ej. un contrasplit
+      // que Yahoo no ajustó bien justo en la fecha en que se descargó, y
+      // que el botón de arriba, al ser incremental, no corrige por sí
+      // solo: solo añade días nuevos encima de los que ya había). Después
+      // de borrar, el siguiente "Buscar en Yahoo Finance" hace una
+      // descarga completa desde cero, no incremental.
+      const clearHistory = () => {
+        if (!security.history || security.history.length === 0) return;
+        if (!window.confirm(`¿Borrar los ${security.history.length} puntos de histórico guardados de "${security.name}"? La próxima vez que pulses "Buscar en Yahoo Finance" se descargará todo de nuevo desde cero.`)) return;
+        onUpdate({ history: [], historyCurrency: null, historyOriginalCurrency: null, historyUpdatedAt: null });
+      };
+
       // Igual que downloadHistory pero a partir de un CSV subido a mano en
       // vez de Yahoo — para el fondo que Yahoo no encuentra o no tiene
       // histórico expuesto. `csvCurrency` se le pide al usuario porque el
@@ -5511,8 +5524,12 @@
                 {histBusy ? "…" : "Buscar en Yahoo Finance"}
               </button>
               {security.history && security.history.length > 0 && (
-                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
-                  {security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})
+                <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                  <span>{security.history[0].d} → {security.history[security.history.length - 1].d} ({security.history.length})</span>
+                  <button onClick={clearHistory} type="button" title="Borrar el histórico guardado (para forzar una descarga completa desde cero — útil tras un split/contrasplit)"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 4, padding: "0 4px", fontSize: 10, cursor: "pointer", lineHeight: "14px" }}>
+                    🗑
+                  </button>
                 </div>
               )}
               {histError && <div style={{ color: "#f87171", fontSize: 9, marginTop: 3 }}>{histError}</div>}
@@ -6152,30 +6169,56 @@
     // una importación mal casada) se separan como "anomalías" en vez de
     // esconderlas, que es justo el objetivo: usar esta vista para depurar
     // el importador. Probado de forma aislada antes de integrarlo aquí.
-    function vsComputeAllocation(transactions, securitiesCatalog) {
+    // `periodStart` (opcional, "YYYY-MM-DD") acota "Invertido", "Cambio",
+    // XIRR y TTWROR a ese periodo (ver vsInvestedForIsinInPeriod,
+    // vsXirrForIsinWindowed, vsComputeTtwrorForIsin con startDate). "Valor
+    // actual" y "Títulos" siguen siendo siempre el estado de HOY — no
+    // existe un "valor actual del periodo", solo un valor actual a secas.
+    function vsComputeAllocation(transactions, securitiesCatalog, periodStart) {
       const positions = vsComputePositions(transactions);
       const rows = [], anomalies = [];
       for (const [isin, shares] of Object.entries(positions)) {
         const sec = securitiesCatalog[isin];
         const name = (sec && sec.name) || (transactions.find(t => t.isin === isin) || {}).name || isin;
-        const invested = vsInvestedForIsin(isin, transactions);
-        if (shares < -1e-9) { anomalies.push({ isin, name, shares, invested }); continue; }
+        const investedTotal = vsInvestedForIsin(isin, transactions);
+        if (shares < -1e-9) { anomalies.push({ isin, name, shares, invested: investedTotal }); continue; }
         if (shares <= 1e-9) continue;
         const hasPrice = !!(sec && sec.price != null);
-        const value = hasPrice ? shares * sec.price : Math.max(invested, 0);
-        // Cambio desde el coste — solo tiene sentido si de verdad hay
-        // precio de mercado (si no, value==invested por el propio
-        // fallback y el cambio saldría siempre 0, engañoso).
-        const change = hasPrice ? value - invested : null;
-        const changePct = hasPrice && invested > 0 ? (change / invested) * 100 : null;
+        const value = hasPrice ? shares * sec.price : Math.max(investedTotal, 0);
+
+        const invested = periodStart ? vsInvestedForIsinInPeriod(isin, transactions, periodStart) : investedTotal;
+
+        // Cambio desde el coste (o desde el arranque del periodo elegido)
+        // — solo tiene sentido si de verdad hay precio de mercado (si no,
+        // value==invested por el propio fallback y el cambio saldría
+        // siempre 0, engañoso).
+        let change = null, changePct = null;
+        if (hasPrice) {
+          if (periodStart) {
+            const { value: valueAtStart, missing } = vsValueForIsinAsOf(isin, transactions, securitiesCatalog, periodStart);
+            if (missing === 0) {
+              change = value - valueAtStart - invested;
+              const base = valueAtStart + invested;
+              changePct = base > 0 ? (change / base) * 100 : null;
+            }
+          } else {
+            change = value - investedTotal;
+            changePct = investedTotal > 0 ? (change / investedTotal) * 100 : null;
+          }
+        }
         // Ticker Yahoo para acciones/ETF, ISIN para fondos (y para
         // cualquier acción/ETF que aún no tenga ticker guardado).
         const code = (sec && sec.assetType === "stock" && sec.yahooTicker) ? sec.yahooTicker : isin;
         // XIRR por valor — mismo criterio que hasPrice: sin precio de
         // mercado real, el "valor actual" es solo el coste (fallback), así
         // que la TIR saldría artificialmente cerca de 0% y engañaría igual
-        // que "Cambio".
-        const xirr = hasPrice ? vsXirrForIsin(isin, transactions, value) : null;
+        // que "Cambio". Con periodo elegido, usa la versión ventaneada
+        // (línea base = valor al arranque del periodo).
+        const xirr = hasPrice
+          ? (periodStart
+              ? vsXirrForIsinWindowed(isin, transactions, value, securitiesCatalog, periodStart)
+              : vsXirrForIsin(isin, transactions, value))
+          : null;
         // TTWROR por valor — a diferencia de XIRR, esto no depende de
         // `hasPrice` (precio en vivo): se calcula sobre security.history
         // (con arrastre del último precio conocido), así que solo hace
@@ -6184,7 +6227,7 @@
         // vsComputeTtwrorForIsin). Null si no hay histórico suficiente —
         // la columna simplemente muestra "—" en ese caso.
         const ttwror = (sec && sec.history && sec.history.length > 0)
-          ? vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog)
+          ? vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog, null, periodStart)
           : null;
         rows.push({ isin, name, code, shares, invested, value, hasPrice, change, changePct, xirr, ttwror, tagIds: (sec && sec.tagIds) || [] });
       }
@@ -6414,7 +6457,14 @@
     // null si no hay datos suficientes.
     // `incomplete` es true si en algún corte hubo valores sin precio: el
     // número sigue siendo el mejor disponible, pero hay que decirlo en la UI.
-    function vsComputePortfolioTtwror(transactions, securitiesCatalog, endDate) {
+    // `startDate` (opcional) acota el cálculo a un periodo: en vez de
+    // encadenar subperíodos desde la primera transacción, arranca en
+    // `startDate` — el valor de la cartera justo en esa fecha (con todas
+    // las transacciones anteriores ya contando en las posiciones, vía
+    // vsPortfolioValueAsOf) se toma como línea base, y solo los flujos
+    // POSTERIORES a `startDate` entran en la cadena. Null/omitido = de
+    // toda la vida, comportamiento idéntico al de antes.
+    function vsComputePortfolioTtwror(transactions, securitiesCatalog, endDate, startDate) {
       const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
       if (txs.length === 0) return null;
 
@@ -6425,11 +6475,12 @@
       if (Object.keys(lookups).length === 0) return null;
 
       const today = endDate || new Date().toISOString().slice(0, 10);
+      const chainStart = (startDate && startDate > txs[0].date) ? startDate : txs[0].date;
       const flowDates = new Set();
       for (const t of txs) {
-        if (t.type === "buy" || t.type === "sell" || t.type === "dividend") flowDates.add(t.date);
+        if ((t.type === "buy" || t.type === "sell" || t.type === "dividend") && t.date > chainStart) flowDates.add(t.date);
       }
-      const dates = Array.from(new Set([txs[0].date, ...flowDates, today]))
+      const dates = Array.from(new Set([chainStart, ...flowDates, today]))
         .filter(d => d <= today)
         .sort();
 
@@ -6478,13 +6529,180 @@
 
     // TTWROR de un valor concreto (heredando a través de splits): restringe
     // transacciones y catálogo al conjunto de ISIN relacionados y reutiliza
-    // el motor de cartera completa sobre ese subconjunto.
-    function vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog, endDate) {
+    // el motor de cartera completa sobre ese subconjunto. `startDate`
+    // (opcional) se pasa tal cual a vsComputePortfolioTtwror para acotar
+    // a un periodo.
+    function vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog, endDate, startDate) {
       const isins = vsRelatedIsinsForSplit(isin, transactions);
       const txs = transactions.filter(t => t.isin && isins.has(t.isin));
       const catalog = {};
       for (const i of isins) if (securitiesCatalog[i]) catalog[i] = securitiesCatalog[i];
-      return vsComputePortfolioTtwror(txs, catalog, endDate);
+      return vsComputePortfolioTtwror(txs, catalog, endDate, startDate);
+    }
+
+    // Valor de mercado de un valor concreto (heredando a través de
+    // splits) en una fecha dada, con el mismo arrastre de precio que usa
+    // TTWROR. Base compartida por el "Desde inicio" y el XIRR ventaneados
+    // por periodo (ver más abajo) — ambos necesitan "cuánto valía esto en
+    // el arranque del periodo elegido".
+    function vsValueForIsinAsOf(isin, transactions, securitiesCatalog, date) {
+      const isins = vsRelatedIsinsForSplit(isin, transactions);
+      const relatedTxs = transactions.filter(t => t.isin && isins.has(t.isin));
+      const lookups = {};
+      for (const i of isins) {
+        const sec = securitiesCatalog[i];
+        if (sec && sec.history && sec.history.length) lookups[i] = vsPriceLookup(sec.history);
+      }
+      const positions = vsPositionsAsOf(relatedTxs, date);
+      let value = 0, missing = 0;
+      for (const [i, shares] of Object.entries(positions)) {
+        if (shares <= 1e-9) continue;
+        const priceAt = lookups[i];
+        const p = priceAt ? priceAt(date) : null;
+        if (p == null) { missing++; continue; }
+        value += shares * p;
+      }
+      return { value, missing };
+    }
+
+    // Capital neto aportado a un valor DENTRO de un periodo (desde
+    // `startDate`, exclusive, hasta hoy) — mismo criterio de suma
+    // compra-venta y misma herencia por splits que vsInvestedForIsin,
+    // pero descartando cualquier transacción anterior o igual a
+    // `startDate` (esa parte del coste ya está reflejada en el valor de
+    // arranque del periodo, no hay que contarla dos veces).
+    function vsInvestedForIsinInPeriod(isin, transactions, startDate, visited) {
+      visited = visited || new Set();
+      if (visited.has(isin)) return 0;
+      visited.add(isin);
+      let invested = 0;
+      for (const t of transactions) {
+        if (t.isin !== isin) continue;
+        if (t.date <= startDate) continue;
+        if (t.type === "buy") invested += (t.amount || 0);
+        else if (t.type === "sell") invested -= (t.amount || 0);
+      }
+      const splitIns = transactions.filter(t => t.isin === isin && t.type === "split_in");
+      for (const si of splitIns) {
+        const predecessors = new Set(
+          transactions.filter(t => t.type === "split_out" && t.date === si.date).map(t => t.isin)
+        );
+        for (const pred of predecessors) {
+          if (pred !== isin) invested += vsInvestedForIsinInPeriod(pred, transactions, startDate, visited);
+        }
+      }
+      return invested;
+    }
+
+    // XIRR "ventaneado" de un valor: trata su valor de mercado en
+    // `startDate` como una compra sintética en esa fecha (mismo criterio
+    // de línea base que el TTWROR ventaneado) y añade los flujos reales
+    // (compra/venta/dividendo) posteriores a esa fecha. Necesita
+    // histórico de precios para tasar la línea base — sin eso, null (la
+    // fila simplemente muestra "—" para ese valor en ese periodo).
+    function vsXirrForIsinWindowed(isin, transactions, currentValue, securitiesCatalog, startDate) {
+      if (!startDate) return vsXirrForIsin(isin, transactions, currentValue);
+      const { value: valueAtStart, missing } = vsValueForIsinAsOf(isin, transactions, securitiesCatalog, startDate);
+      if (missing > 0) return null;
+      const isins = vsRelatedIsinsForSplit(isin, transactions);
+      const relatedTxs = transactions.filter(t => t.isin && isins.has(t.isin));
+      const flows = [];
+      if (valueAtStart > 0) flows.push({ date: new Date(startDate + "T00:00:00Z"), amount: -valueAtStart });
+      for (const t of relatedTxs) {
+        if (t.date <= startDate) continue;
+        const sign = VS_CF_SIGN[t.type];
+        if (!sign || !t.amount || !t.date) continue;
+        if (t.type !== "buy" && t.type !== "sell" && t.type !== "dividend") continue;
+        flows.push({ date: new Date(t.date + "T00:00:00Z"), amount: sign * t.amount });
+      }
+      if (currentValue > 0) flows.push({ date: new Date(), amount: currentValue });
+      if (flows.length < 2) return null;
+      return vsXirr(flows);
+    }
+
+    // Igual que vsXirrForIsinWindowed pero para la cartera entera —
+    // usado en la fila de totales de la tabla "Por valor" cuando hay un
+    // periodo seleccionado.
+    function vsComputePortfolioXirrWindowed(transactions, securitiesCatalog, currentValue, startDate) {
+      if (!startDate) return vsComputePortfolioXirr(transactions, currentValue);
+      const lookups = {};
+      for (const [isin, sec] of Object.entries(securitiesCatalog || {})) {
+        if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
+      }
+      const atStart = vsPortfolioValueAsOf(transactions, securitiesCatalog, startDate, lookups);
+      if (atStart.missing > 0) return null;
+      const flows = [];
+      if (atStart.value > 0) flows.push({ date: new Date(startDate + "T00:00:00Z"), amount: -atStart.value });
+      for (const t of transactions) {
+        if (t.date <= startDate) continue;
+        const sign = VS_CF_SIGN[t.type];
+        if (!sign || !t.amount || !t.date) continue;
+        if (t.type !== "buy" && t.type !== "sell" && t.type !== "dividend") continue;
+        flows.push({ date: new Date(t.date + "T00:00:00Z"), amount: sign * t.amount });
+      }
+      if (currentValue > 0) flows.push({ date: new Date(), amount: currentValue });
+      if (flows.length < 2) return null;
+      return vsXirr(flows);
+    }
+
+    // ── Series diarias de evolución de la cartera (para las gráficas de
+    // "Mi cartera") ─────────────────────────────────────────────────────
+    // Una sola pasada día a día desde la primera transacción hasta hoy,
+    // calculando a la vez el valor en € (con los picos de cada compra o
+    // venta bien visibles, tal como se pidió) y el índice de crecimiento
+    // TTWROR (mismo motor y mismos signos que vsComputePortfolioTtwror,
+    // pero evaluado cada día en vez de solo en las fechas de flujo, para
+    // sacar una curva continua en vez de una escalera). Necesita
+    // histórico de precios descargado en al menos un valor — si no,
+    // devuelve series vacías y la UI simplemente no dibuja nada.
+    function vsComputePortfolioEvolution(transactions, securitiesCatalog) {
+      const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
+      if (txs.length === 0) return { valueSeries: [], growthSeries: [] };
+      const lookups = {};
+      for (const [isin, sec] of Object.entries(securitiesCatalog || {})) {
+        if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
+      }
+      if (Object.keys(lookups).length === 0) return { valueSeries: [], growthSeries: [] };
+
+      const today = new Date().toISOString().slice(0, 10);
+      const dates = [];
+      let d = new Date(txs[0].date + "T00:00:00Z");
+      const end = new Date(today + "T00:00:00Z");
+      while (d <= end) {
+        dates.push(d.toISOString().slice(0, 10));
+        d.setUTCDate(d.getUTCDate() + 1);
+      }
+
+      const valueSeries = [], growthSeries = [];
+      let factor = 1, prev = null;
+      for (const date of dates) {
+        const cur = vsPortfolioValueAsOf(txs, securitiesCatalog, date, lookups);
+        valueSeries.push({ date, value: cur.value, isSynthetic: cur.missing > 0 });
+        if (prev && prev.value > 1e-9) {
+          const F = vsExternalFlowOn(txs, date);
+          const r = (cur.value - F) / prev.value - 1;
+          if (isFinite(r)) factor *= (1 + r);
+        }
+        growthSeries.push({ date, value: 100 * factor, isSynthetic: false });
+        prev = { date, value: cur.value };
+      }
+      return { valueSeries, growthSeries };
+    }
+
+    // Traduce la opción de periodo elegida en la tabla "Por valor" a una
+    // fecha de arranque "YYYY-MM-DD" (o null para "Todo" = comportamiento
+    // de siempre, sin acotar). "custom" usa la fecha que haya elegido el
+    // usuario en el selector; si aún no ha elegido ninguna, se trata como
+    // "Todo" en vez de romper el cálculo.
+    function vsPeriodToStartDate(period, customDate) {
+      if (!period || period === "all") return null;
+      if (period === "custom") return customDate || null;
+      const today = new Date();
+      const y = today.getUTCFullYear(), m = today.getUTCMonth(), d = today.getUTCDate();
+      if (period === "ytd") return `${y}-01-01`;
+      const yearsBack = { "1y": 1, "2y": 2, "3y": 3 }[period];
+      if (!yearsBack) return null;
+      return new Date(Date.UTC(y - yearsBack, m, d)).toISOString().slice(0, 10);
     }
 
     const vsPortfolioFmtEUR = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
@@ -6784,17 +7002,61 @@
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
       const tags = portfolio.tags || [];
+
+      // ── Filtro de periodo (solo afecta a esta tabla, no a las tarjetas
+      // KPI de arriba — esas siguen siendo siempre "desde el inicio") ──
+      const [period, setPeriod] = useState("all"); // "all" | "ytd" | "1y" | "2y" | "3y" | "custom"
+      const [customDate, setCustomDate] = useState("");
+      const periodStart = useMemo(() => vsPeriodToStartDate(period, customDate), [period, customDate]);
+
       const { rows, anomalies, totalValue } = useMemo(
-        () => vsComputeAllocation(transactions, securitiesCatalog),
-        [transactions, securitiesCatalog]
+        () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
+        [transactions, securitiesCatalog, periodStart]
       );
       const kpis = useMemo(() => vsComputePortfolioKpis(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
       // null si ningún valor tiene histórico descargado todavía — la
       // tarjeta simplemente no aparece hasta entonces (ver B2, botón
-      // "histórico" en el catálogo de valores).
+      // "histórico" en el catálogo de valores). Esta es SIEMPRE la de
+      // toda la vida (tarjeta KPI) — la de la tabla, ventaneada, se
+      // calcula aparte más abajo (totalTtwrorDisplay).
       const ttwror = useMemo(() => vsComputePortfolioTtwror(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
-      const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
-      const totalChangePct = totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null;
+      const totalInvested = rows.reduce((s, r) => s + r.invested, 0); // ya viene acotado al periodo si hay uno, por fila
+      // Valor de la cartera al arranque del periodo — línea base para el
+      // "Desde inicio" de la fila de totales cuando hay un periodo
+      // elegido (mismo criterio que cada fila individual, ver
+      // vsValueForIsinAsOf).
+      const periodBaseline = useMemo(() => {
+        if (!periodStart) return null;
+        const lookups = {};
+        for (const [isin, sec] of Object.entries(securitiesCatalog)) {
+          if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
+        }
+        return vsPortfolioValueAsOf(transactions, securitiesCatalog, periodStart, lookups);
+      }, [transactions, securitiesCatalog, periodStart]);
+      const totalChangePct = periodStart
+        ? (periodBaseline && periodBaseline.missing === 0
+            ? (() => {
+                const base = periodBaseline.value + totalInvested;
+                return base > 0 ? ((totalValue - periodBaseline.value - totalInvested) / base) * 100 : null;
+              })()
+            : null)
+        : (totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null);
+      // XIRR y TTWROR de la fila de totales — desde el inicio si no hay
+      // periodo elegido (mismos vsComputePortfolioXirr/kpis.xirr y ttwror
+      // de siempre), o ventaneados al periodo si lo hay.
+      const totalXirrDisplay = useMemo(
+        () => periodStart ? vsComputePortfolioXirrWindowed(transactions, securitiesCatalog, totalValue, periodStart) : kpis.xirr,
+        [transactions, securitiesCatalog, totalValue, periodStart, kpis.xirr]
+      );
+      const totalTtwrorDisplay = useMemo(
+        () => periodStart ? vsComputePortfolioTtwror(transactions, securitiesCatalog, null, periodStart) : ttwror,
+        [transactions, securitiesCatalog, periodStart, ttwror]
+      );
+      // Series diarias para las dos gráficas de evolución, debajo del
+      // panel de asignación (ver vsComputePortfolioEvolution) — no
+      // dependen del filtro de periodo de la tabla, siempre muestran la
+      // vida entera de la cartera.
+      const evolution = useMemo(() => vsComputePortfolioEvolution(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
       const [hoveredIsin, setHoveredIsin] = useState(null);
       const [hoveredTagId, setHoveredTagId] = useState(null);
       const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
@@ -6866,12 +7128,27 @@
           )}
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
               <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Asignación por valor</div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => setViewMode("valor")} style={segBtnStyle(viewMode === "valor")}>Por valor</button>
                 <button onClick={() => setViewMode("tag")} style={segBtnStyle(viewMode === "tag")}>Por etiqueta</button>
               </div>
+            </div>
+            {/* Filtro de periodo — solo acota "Invertido", "Desde
+                inicio", XIRR y TTWROR de esta tabla (filas y fila de
+                totales). "Valor actual" y las tarjetas KPI de arriba no
+                cambian: no existe un "valor actual de hace un año", solo
+                un valor actual a secas. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginRight: 2 }}>Periodo:</span>
+              {[["all", "Todo"], ["ytd", "YTD"], ["1y", "1A"], ["2y", "2A"], ["3y", "3A"], ["custom", "Personalizado"]].map(([key, label]) => (
+                <button key={key} onClick={() => setPeriod(key)} style={segBtnStyle(period === key)}>{label}</button>
+              ))}
+              {period === "custom" && (
+                <input type="date" value={customDate} onChange={e => setCustomDate(e.target.value)} max={new Date().toISOString().slice(0, 10)}
+                  style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11, fontFamily: "'DM Mono',monospace" }} />
+              )}
             </div>
             {rows.length === 0 ? (
               <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Sin posiciones abiertas.</div>
@@ -6887,7 +7164,7 @@
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 700 }}>
                       <thead>
                         <tr>
-                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", "Desde inicio", "XIRR", "TTWROR", "Peso"].map((h, i) => (
+                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", periodStart ? "En el periodo" : "Desde inicio", "XIRR", "TTWROR", "Peso"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -6935,16 +7212,16 @@
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalChangePct) }}>
                             {vsFmtPct(totalChangePct)}
                           </td>
-                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}
-                            title="XIRR de toda la cartera — mismo número que la tarjeta KPI de arriba">
-                            {kpis.xirr != null ? vsFmtPct(kpis.xirr * 100) : "—"}
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalXirrDisplay != null ? totalXirrDisplay * 100 : null) }}
+                            title={periodStart ? "XIRR del periodo elegido" : "XIRR de toda la cartera — mismo número que la tarjeta KPI de arriba"}>
+                            {totalXirrDisplay != null ? vsFmtPct(totalXirrDisplay * 100) : "—"}
                           </td>
-                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(ttwror ? ttwror.ttwror : null) }}
-                            title="TTWROR de toda la cartera — mismo número que la tarjeta KPI de arriba">
-                            {ttwror ? (
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: vsChangeColor(totalTtwrorDisplay ? totalTtwrorDisplay.ttwror : null) }}
+                            title={periodStart ? "TTWROR del periodo elegido" : "TTWROR de toda la cartera — mismo número que la tarjeta KPI de arriba"}>
+                            {totalTtwrorDisplay ? (
                               <>
-                                {vsFmtPct(ttwror.ttwror)}
-                                {ttwror.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
+                                {vsFmtPct(totalTtwrorDisplay.ttwror)}
+                                {totalTtwrorDisplay.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
                               </>
                             ) : "—"}
                           </td>
@@ -6987,6 +7264,42 @@
                     )}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Dos gráficas de evolución de la cartera entera — mismo motor
+              diario que la fila de totales/TTWROR (vsComputePortfolioEvolution),
+              no dependen del filtro de periodo de la tabla de arriba: siempre
+              muestran la vida entera de la cartera, desde la primera transacción. */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginTop: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución del valor (€)</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+              Valor de mercado de toda la cartera, día a día. Las compras y ventas grandes se notan como saltos — es normal, no es un error del gráfico.
+            </div>
+            {evolution.valueSeries.length > 1 ? (
+              censored ? (
+                <div style={{ textAlign: "center", padding: "40px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Oculto en modo privado.</div>
+              ) : (
+                <VsLineChart series={evolution.valueSeries} height={220} />
+              )
+            ) : (
+              <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
+                Necesitas histórico de precios descargado en al menos un valor (botón "Buscar en Yahoo Finance" o CSV manual, en Configuración → catálogo de valores).
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginTop: 20 }}>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución de la rentabilidad</div>
+            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+              Índice de crecimiento TTWROR (base 100) — cómo lo han hecho tus valores en sí, sin que influya cuándo metiste o sacaste dinero.
+            </div>
+            {evolution.growthSeries.length > 1 ? (
+              <VsLineChart series={evolution.growthSeries} height={220} />
+            ) : (
+              <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
+                Necesitas histórico de precios descargado en al menos un valor.
               </div>
             )}
           </div>
