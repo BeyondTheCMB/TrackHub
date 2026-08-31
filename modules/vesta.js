@@ -7221,11 +7221,15 @@
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.xirr != null ? r.xirr * 100 : null) }} title="Anualizada (TIR) — no comparable directamente con 'Desde inicio', que es la rentabilidad total sin anualizar">
                                 {r.xirr != null ? vsFmtPct(r.xirr * 100) : "—"}
                               </td>
-                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.ttwror ? r.ttwror.ttwror : null) }} title="Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Necesita histórico de precios descargado.">
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.ttwror ? r.ttwror.ttwror : null) }}
+                                title={r.ttwror
+                                  ? `Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Calculada desde ${r.ttwror.firstDate} (si hereda de un split anterior, es la fecha de la primera transacción de ese ISIN, no de este) hasta ${r.ttwror.lastDate}.`
+                                  : "Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Necesita histórico de precios descargado."}>
                                 {r.ttwror ? (
                                   <>
                                     {vsFmtPct(r.ttwror.ttwror)}
                                     {r.ttwror.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
+                                    <div style={{ fontSize: 8, color: "#3a4550", marginTop: 1 }}>desde {r.ttwror.firstDate}</div>
                                   </>
                                 ) : "—"}
                               </td>
