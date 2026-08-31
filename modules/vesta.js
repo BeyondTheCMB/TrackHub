@@ -5798,6 +5798,7 @@
       const [showManual, setShowManual] = useState(false);
       const [filterAccount, setFilterAccount] = useState("all");
       const [filterType, setFilterType] = useState("all");
+      const [filterIsin, setFilterIsin] = useState("all");
       // ISIN -> { name, finectUrl } en edición para valores nuevos
       // detectados al importar, pendientes de que el usuario los confirme
       // antes de guardarse en el catálogo (portfolio.securities).
@@ -6036,9 +6037,26 @@
       };
 
       const accounts = useMemo(() => [...new Set(transactions.map(t => t.account))].sort(), [transactions]);
+      // Solo valores que de verdad aparecen en alguna transacción — usa el
+      // nombre del catálogo si existe (más legible), y si no, el que trae
+      // la propia transacción o, en último caso, el ISIN a secas. Las
+      // transacciones sin ISIN (aportación, retirada, comisión...) no
+      // entran en esta lista, ya que "filtrar por valor" no aplica ahí.
+      const securitiesInTx = useMemo(() => {
+        const map = new Map();
+        for (const t of transactions) {
+          if (!t.isin) continue;
+          if (!map.has(t.isin)) {
+            const name = (securitiesCatalog[t.isin] && securitiesCatalog[t.isin].name) || t.name || t.isin;
+            map.set(t.isin, name);
+          }
+        }
+        return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+      }, [transactions, securitiesCatalog]);
       const filtered = transactions
         .filter(t => filterAccount === "all" || t.account === filterAccount)
         .filter(t => filterType === "all" || t.type === filterType)
+        .filter(t => filterIsin === "all" || t.isin === filterIsin)
         .slice()
         .sort((a, b) => b.date.localeCompare(a.date));
 
@@ -6172,6 +6190,11 @@
                     style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11 }}>
                     <option value="all">Todos los tipos</option>
                     {VS_TX_TYPES.map(t => <option key={t} value={t}>{VS_TX_TYPE_LABEL[t]}</option>)}
+                  </select>
+                  <select value={filterIsin} onChange={e => setFilterIsin(e.target.value)}
+                    style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11, maxWidth: 180 }}>
+                    <option value="all">Todos los valores</option>
+                    {securitiesInTx.map(([isin, name]) => <option key={isin} value={isin}>{name}</option>)}
                   </select>
                   <button onClick={deleteAllTx} disabled={transactions.length === 0}
                     title="Solo para pruebas: elimina todas las transacciones"
