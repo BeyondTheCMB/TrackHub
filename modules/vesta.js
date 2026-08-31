@@ -5323,42 +5323,6 @@
         onUpdate({ history: [], historyCurrency: null, historyOriginalCurrency: null, historyUpdatedAt: null });
       };
 
-      // Recorta el histórico en una de las dos direcciones — a diferencia
-      // de "borrar" (que lo vacía entero y fuerza una descarga completa
-      // la próxima vez), esto se queda con los puntos buenos y solo tira
-      // los del lado sobrante. Pensado para un valor que cambió de ISIN
-      // por una operación de capital (contrasplit, agrupación...) cuyo
-      // ticker de Yahoo empalma el histórico de los dos ISIN sin
-      // reescalar:
-      //   - "antes de": para el ISIN NUEVO — si nunca tuviste el ISIN
-      //     viejo, no quieres ningún dato de antes del cambio.
-      //   - "después de": para el ISIN VIEJO — ya no existe para ti desde
-      //     la fecha del cambio, así que cualquier punto en o después de
-      //     esa fecha es del feed continuo de Yahoo colándose con la
-      //     escala nueva, no un dato real de ese ISIN.
-      // "Buscar en Yahoo Finance" con el mismo ticker volvería a traer la
-      // misma mezcla en ambos casos, así que la descarga no es el
-      // arreglo aquí, el recorte sí.
-      const [trimDate, setTrimDate] = useState("");
-      const trimHistoryBefore = () => {
-        if (!trimDate || !security.history || security.history.length === 0) return;
-        const kept = security.history.filter(p => p.d >= trimDate);
-        const removed = security.history.length - kept.length;
-        if (removed === 0) { setHistError("No hay puntos anteriores a esa fecha."); return; }
-        if (!window.confirm(`¿Eliminar los ${removed} puntos de histórico ANTERIORES a ${trimDate}? Los ${kept.length} puntos desde esa fecha se conservan tal cual.`)) return;
-        onUpdate({ history: kept, historyUpdatedAt: new Date().toISOString().slice(0, 10) });
-        setTrimDate(""); setHistError("");
-      };
-      const trimHistoryAfter = () => {
-        if (!trimDate || !security.history || security.history.length === 0) return;
-        const kept = security.history.filter(p => p.d < trimDate);
-        const removed = security.history.length - kept.length;
-        if (removed === 0) { setHistError("No hay puntos en o después de esa fecha."); return; }
-        if (!window.confirm(`¿Eliminar los ${removed} puntos de histórico EN O DESPUÉS de ${trimDate}? Los ${kept.length} puntos anteriores se conservan tal cual.`)) return;
-        onUpdate({ history: kept, historyUpdatedAt: new Date().toISOString().slice(0, 10) });
-        setTrimDate(""); setHistError("");
-      };
-
       // Igual que downloadHistory pero a partir de un CSV subido a mano en
       // vez de Yahoo — para el fondo que Yahoo no encuentra o no tiene
       // histórico expuesto. `csvCurrency` se le pide al usuario porque el
@@ -5565,21 +5529,6 @@
                   <button onClick={clearHistory} type="button" title="Borrar el histórico guardado (para forzar una descarga completa desde cero — útil tras un split/contrasplit)"
                     style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 4, padding: "0 4px", fontSize: 10, cursor: "pointer", lineHeight: "14px" }}>
                     🗑
-                  </button>
-                </div>
-              )}
-              {security.history && security.history.length > 0 && (
-                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 3, flexWrap: "wrap" }}>
-                  <input type="date" value={trimDate} onChange={e => setTrimDate(e.target.value)}
-                    title="Fecha de corte para recortar el histórico — útil cuando el valor cambió de ISIN/ticker (contrasplit, agrupación de acciones...) y el histórico de Yahoo mezcla precios de antes y de después sin reescalar."
-                    style={{ width: 96, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "2px 4px", fontSize: 9 }} />
-                  <button onClick={trimHistoryBefore} disabled={!trimDate} type="button" title="Borrar los puntos ANTERIORES a la fecha elegida (para el ISIN nuevo tras un split: no quieres datos de antes del cambio)"
-                    style={{ background: "none", border: "1px solid #1a2535", color: trimDate ? "#7a90a8" : "#3a4550", borderRadius: 4, padding: "1px 5px", fontSize: 9, cursor: trimDate ? "pointer" : "not-allowed" }}>
-                    ✂️ antes
-                  </button>
-                  <button onClick={trimHistoryAfter} disabled={!trimDate} type="button" title="Borrar los puntos EN O DESPUÉS de la fecha elegida (para el ISIN viejo tras un split: ya no existe para ti desde esa fecha, cualquier dato posterior es del feed de Yahoo colándose con la escala nueva)"
-                    style={{ background: "none", border: "1px solid #1a2535", color: trimDate ? "#7a90a8" : "#3a4550", borderRadius: 4, padding: "1px 5px", fontSize: 9, cursor: trimDate ? "pointer" : "not-allowed" }}>
-                    ✂️ después
                   </button>
                 </div>
               )}
@@ -7239,15 +7188,11 @@
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.xirr != null ? r.xirr * 100 : null) }} title="Anualizada (TIR) — no comparable directamente con 'Desde inicio', que es la rentabilidad total sin anualizar">
                                 {r.xirr != null ? vsFmtPct(r.xirr * 100) : "—"}
                               </td>
-                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.ttwror ? r.ttwror.ttwror : null) }}
-                                title={r.ttwror
-                                  ? `Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Calculada desde ${r.ttwror.firstDate} (si hereda de un split anterior, es la fecha de la primera transacción de ese ISIN, no de este) hasta ${r.ttwror.lastDate}.`
-                                  : "Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Necesita histórico de precios descargado."}>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(r.ttwror ? r.ttwror.ttwror : null) }} title="Ponderada por tiempo — cómo lo ha hecho el valor en sí, sin que influya cuándo compraste. Necesita histórico de precios descargado.">
                                 {r.ttwror ? (
                                   <>
                                     {vsFmtPct(r.ttwror.ttwror)}
                                     {r.ttwror.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
-                                    <div style={{ fontSize: 8, color: "#3a4550", marginTop: 1 }}>desde {r.ttwror.firstDate}</div>
                                   </>
                                 ) : "—"}
                               </td>
