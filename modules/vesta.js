@@ -5323,24 +5323,38 @@
         onUpdate({ history: [], historyCurrency: null, historyOriginalCurrency: null, historyUpdatedAt: null });
       };
 
-      // Recorta el histórico, descartando todo lo anterior a una fecha —
-      // a diferencia de "borrar" (que lo vacía entero y fuerza una
-      // descarga completa la próxima vez), esto se queda con los puntos
-      // buenos y solo tira los de antes del corte. Pensado para el caso
-      // de un valor que cambió de ISIN por una operación de capital
-      // (contrasplit, agrupación...) y cuyo ticker de Yahoo sirve el
-      // histórico de ambos ISIN empalmado sin reescalar: si nunca tuviste
-      // acciones del ISIN viejo, no hace falta ni se quiere ningún dato
-      // de antes del cambio — "Buscar en Yahoo Finance" con el mismo
-      // ticker volvería a traer la misma mezcla, así que la descarga no
-      // es el arreglo aquí, el recorte sí.
+      // Recorta el histórico en una de las dos direcciones — a diferencia
+      // de "borrar" (que lo vacía entero y fuerza una descarga completa
+      // la próxima vez), esto se queda con los puntos buenos y solo tira
+      // los del lado sobrante. Pensado para un valor que cambió de ISIN
+      // por una operación de capital (contrasplit, agrupación...) cuyo
+      // ticker de Yahoo empalma el histórico de los dos ISIN sin
+      // reescalar:
+      //   - "antes de": para el ISIN NUEVO — si nunca tuviste el ISIN
+      //     viejo, no quieres ningún dato de antes del cambio.
+      //   - "después de": para el ISIN VIEJO — ya no existe para ti desde
+      //     la fecha del cambio, así que cualquier punto en o después de
+      //     esa fecha es del feed continuo de Yahoo colándose con la
+      //     escala nueva, no un dato real de ese ISIN.
+      // "Buscar en Yahoo Finance" con el mismo ticker volvería a traer la
+      // misma mezcla en ambos casos, así que la descarga no es el
+      // arreglo aquí, el recorte sí.
       const [trimDate, setTrimDate] = useState("");
-      const trimHistory = () => {
+      const trimHistoryBefore = () => {
         if (!trimDate || !security.history || security.history.length === 0) return;
         const kept = security.history.filter(p => p.d >= trimDate);
         const removed = security.history.length - kept.length;
         if (removed === 0) { setHistError("No hay puntos anteriores a esa fecha."); return; }
-        if (!window.confirm(`¿Eliminar los ${removed} puntos de histórico anteriores a ${trimDate}? Los ${kept.length} puntos desde esa fecha se conservan tal cual.`)) return;
+        if (!window.confirm(`¿Eliminar los ${removed} puntos de histórico ANTERIORES a ${trimDate}? Los ${kept.length} puntos desde esa fecha se conservan tal cual.`)) return;
+        onUpdate({ history: kept, historyUpdatedAt: new Date().toISOString().slice(0, 10) });
+        setTrimDate(""); setHistError("");
+      };
+      const trimHistoryAfter = () => {
+        if (!trimDate || !security.history || security.history.length === 0) return;
+        const kept = security.history.filter(p => p.d < trimDate);
+        const removed = security.history.length - kept.length;
+        if (removed === 0) { setHistError("No hay puntos en o después de esa fecha."); return; }
+        if (!window.confirm(`¿Eliminar los ${removed} puntos de histórico EN O DESPUÉS de ${trimDate}? Los ${kept.length} puntos anteriores se conservan tal cual.`)) return;
         onUpdate({ history: kept, historyUpdatedAt: new Date().toISOString().slice(0, 10) });
         setTrimDate(""); setHistError("");
       };
@@ -5555,13 +5569,17 @@
                 </div>
               )}
               {security.history && security.history.length > 0 && (
-                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 3 }}>
+                <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 3, flexWrap: "wrap" }}>
                   <input type="date" value={trimDate} onChange={e => setTrimDate(e.target.value)}
-                    title="Recortar histórico: borra los puntos ANTERIORES a esta fecha, conservando el resto. Útil cuando el valor cambió de ISIN/ticker (contrasplit, agrupación de acciones...) y el histórico de Yahoo mezcla precios de antes y de después sin reescalar — no necesitas ni quieres esos datos viejos si nunca tuviste el ISIN anterior."
+                    title="Fecha de corte para recortar el histórico — útil cuando el valor cambió de ISIN/ticker (contrasplit, agrupación de acciones...) y el histórico de Yahoo mezcla precios de antes y de después sin reescalar."
                     style={{ width: 96, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "2px 4px", fontSize: 9 }} />
-                  <button onClick={trimHistory} disabled={!trimDate} type="button" title="Borrar los puntos anteriores a la fecha elegida"
+                  <button onClick={trimHistoryBefore} disabled={!trimDate} type="button" title="Borrar los puntos ANTERIORES a la fecha elegida (para el ISIN nuevo tras un split: no quieres datos de antes del cambio)"
                     style={{ background: "none", border: "1px solid #1a2535", color: trimDate ? "#7a90a8" : "#3a4550", borderRadius: 4, padding: "1px 5px", fontSize: 9, cursor: trimDate ? "pointer" : "not-allowed" }}>
-                    ✂️ recortar
+                    ✂️ antes
+                  </button>
+                  <button onClick={trimHistoryAfter} disabled={!trimDate} type="button" title="Borrar los puntos EN O DESPUÉS de la fecha elegida (para el ISIN viejo tras un split: ya no existe para ti desde esa fecha, cualquier dato posterior es del feed de Yahoo colándose con la escala nueva)"
+                    style={{ background: "none", border: "1px solid #1a2535", color: trimDate ? "#7a90a8" : "#3a4550", borderRadius: 4, padding: "1px 5px", fontSize: 9, cursor: trimDate ? "pointer" : "not-allowed" }}>
+                    ✂️ después
                   </button>
                 </div>
               )}
