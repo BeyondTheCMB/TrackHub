@@ -5089,7 +5089,7 @@
       yahoo: { field: "yahooTicker", label: "Ticker Yahoo", placeholder: "ticker", fetchQuote: vsFetchYahooQuote, resolve: vsResolveYahooTicker, searchUrl: vsYahooSearchUrl, resolvedField: "ticker" },
     };
 
-    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate, onRename, tags, onUpdateTagIds }) {
+    function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate, onRename, onRemove, tags, onUpdateTagIds }) {
       const src = mode ? VS_PRICE_SOURCES[mode] : null;
       const [fieldDraft, setFieldDraft] = useState((src && security[src.field]) || "");
       const [fetching, setFetching] = useState(false);
@@ -5444,17 +5444,23 @@
               </>
             ) : (
               <>
-                {src && (
-                  <button onClick={refresh} disabled={!canRefresh || fetching} title="Actualizar precio"
-                    style={{ background: "none", border: "1px solid #1a2535", color: canRefresh ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: canRefresh && !fetching ? "pointer" : "not-allowed", marginRight: 6 }}>
-                    {fetching ? "…" : <VsIcon name="refresh" />}
-                  </button>
-                )}
-                <button onClick={() => { setEditingManual(true); setEditingInfo(false); }} title="Precio manual"
-                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}><VsIcon name="tag" /></button>
-                <button onClick={openEditInfo} title="Editar nombre / ISIN"
-                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer", marginRight: 6 }}><VsIcon name="edit" /></button>
-                <button onClick={onMove} title={moveLabel} style={{ background: "none", border: "1px solid #1a2535", color: "#5a7080", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>{moveLabel}</button>
+                <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                  {src && (
+                    <button onClick={refresh} disabled={!canRefresh || fetching} title="Actualizar precio"
+                      style={{ background: "none", border: "1px solid #1a2535", color: canRefresh ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: canRefresh && !fetching ? "pointer" : "not-allowed" }}>
+                      {fetching ? "…" : <VsIcon name="refresh" />}
+                    </button>
+                  )}
+                  <button onClick={() => { setEditingManual(true); setEditingInfo(false); }} title="Precio manual"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer" }}><VsIcon name="tag" /></button>
+                  <button onClick={openEditInfo} title="Editar nombre / ISIN"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer" }}><VsIcon name="edit" /></button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={onRemove} title="Eliminar valor del catálogo"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#f87171", borderRadius: 6, padding: "5px 9px", fontSize: 13, cursor: "pointer" }}>🗑</button>
+                  <button onClick={onMove} title={moveLabel} style={{ background: "none", border: "1px solid #1a2535", color: "#5a7080", borderRadius: 6, padding: "5px 9px", fontSize: 11, cursor: "pointer" }}>{moveLabel}</button>
+                </div>
               </>
             )}
           </td>
@@ -5571,7 +5577,7 @@
       );
     }
 
-    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate, onRenameSecurity, tags, onUpdateTagIds }) {
+    function VsSecuritiesPanel({ title, securities, mode, moveLabel, onMove, onUpdateSecurity, onBulkUpdate, onRenameSecurity, onRemoveSecurity, tags, onUpdateTagIds }) {
       const [open, setOpen] = useState(false);
       const [bulkRefreshing, setBulkRefreshing] = useState(false);
       const [bulkResolving, setBulkResolving] = useState(false);
@@ -5752,7 +5758,7 @@
                   {securities.map(s => (
                     <VsSecurityRow key={s.isin} security={s} mode={mode} moveLabel={moveLabel}
                       onMove={() => onMove(s.isin)} onUpdate={patch => onUpdateSecurity(s.isin, patch)}
-                      onRename={patch => onRenameSecurity(s.isin, patch)}
+                      onRename={patch => onRenameSecurity(s.isin, patch)} onRemove={() => onRemoveSecurity(s.isin)}
                       tags={tags} onUpdateTagIds={ids => onUpdateTagIds(s.isin, ids)} />
                   ))}
                 </tbody>
@@ -5969,6 +5975,26 @@
         updateSecurity(isin, { assetType: newType });
       };
 
+      // Elimina un valor del catálogo (ticker, histórico, etiquetas, precio
+      // guardado — todo). No toca las transacciones: si aún hay alguna con
+      // este ISIN, se avisa en la confirmación, porque el valor podría
+      // reaparecer en "Mi cartera" sin nombre bonito ni precio si todavía
+      // quedan títulos en posición (usaría el ISIN a secas como nombre,
+      // igual que cualquier valor nunca registrado en el catálogo).
+      const removeSecurity = async (isin) => {
+        const sec = securitiesCatalog[isin];
+        if (!sec) return;
+        const txCount = transactions.filter(t => t.isin === isin).length;
+        const warning = txCount > 0
+          ? `Ojo: hay ${txCount} transacción${txCount === 1 ? "" : "es"} con este ISIN — no se borran, pero el valor perderá el ticker, histórico y etiquetas guardados. Si todavía quedan títulos en posición, reaparecerá en "Mi cartera" sin esos datos.`
+          : `No tiene transacciones asociadas.`;
+        if (!window.confirm(`¿Eliminar "${sec.name}" (${isin}) del catálogo?\n\n${warning}\n\nEsta acción no se puede deshacer.`)) return;
+        const nextSecurities = { ...securitiesCatalog };
+        delete nextSecurities[isin];
+        const next = { ...portfolio, securities: nextSecurities };
+        await onSave(next);
+      };
+
       // Editar nombre/ISIN de un valor ya registrado. Cambiar el nombre es
       // trivial (un patch más); cambiar el ISIN no lo es — es la clave del
       // catálogo, así que hay que mover la entrada a la nueva clave Y
@@ -6059,8 +6085,8 @@
 
             <VsTagsPanel tags={tags} securities={securitiesList} onAdd={addTag} onUpdate={updateTag} onDelete={deleteTag} onToggleAssignment={toggleSecurityTag} onBulkAssign={bulkAssignTag} />
 
-            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
-            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
+            <VsSecuritiesPanel title="Fondos" securities={fundsList} mode="finect" moveLabel="→ Acción/ETF" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} onRemoveSecurity={removeSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
+            <VsSecuritiesPanel title="Acciones/ETF" securities={stocksList} mode="yahoo" moveLabel="→ Fondo" onMove={moveSecurityType} onUpdateSecurity={updateSecurity} onBulkUpdate={bulkUpdateSecurities} onRenameSecurity={renameSecurity} onRemoveSecurity={removeSecurity} tags={tags} onUpdateTagIds={updateSecurityTagIds} />
           </div>
 
           <div>
