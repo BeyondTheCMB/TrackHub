@@ -252,7 +252,7 @@
         <>
         <div style={{ display: "flex", gap: 0, alignItems: "flex-start", padding: "16px 20px 60px" }}>
           {/* Left: filter + player list */}
-          <div style={{ flex: 1, minWidth: 0, marginRight: 20 }}>
+          <div style={{ flex: 1, minWidth: 0, marginRight: 32 }}>
             {/* Filter bar */}
             <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar jugador…"
@@ -272,7 +272,8 @@
                 const ganancia = (p.oferta || p.precio) - p.compra;
                 const isEditing = editOffer === p.id;
                 return (
-                  <div key={p.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "11px 14px" }}>
+                  <div key={p.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "14px 18px" }}>
+                    <div style={{ position: "relative" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <BwAvatar id={p.id} nombre={p.nombre} pos={p.pos} size={44} />
                       <BwPosBadge pos={p.pos} />
@@ -285,7 +286,6 @@
                               onError={e => e.target.style.display = "none"} />
                           )}
                           <span style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</span>
-                          <BwProbBadge prob={p.prob} />
                         </div>
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -311,6 +311,13 @@
                       <div style={{ textAlign: "right", flexShrink: 0, minWidth: 80 }}>
                         <BwDelta value={ganancia} />
                       </div>
+                    </div>
+                    {p.prob != null && (
+                      <div style={{ position: "absolute", top: "50%", right: -22, transform: "translateY(-50%)", width: 34, height: 34, borderRadius: "50%", background: "#0d1825", border: `2px solid ${bwProbColor(p.prob)}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: bwProbColor(p.prob), boxShadow: "0 2px 6px rgba(0,0,0,0.4)" }}
+                        title="Probabilidad de ser titular la próxima jornada (FutbolFantasy)">
+                        {p.prob}%
+                      </div>
+                    )}
                     </div>
                     <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #0d1825", display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 11, color: "#7a90a8", flexShrink: 0 }}>Oferta recibida:</span>
