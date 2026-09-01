@@ -7358,28 +7358,11 @@
             )}
           </div>
 
-          {/* Dos gráficas de evolución de la cartera entera — mismo motor
-              diario que la fila de totales/TTWROR (vsComputePortfolioEvolution),
-              no dependen del filtro de periodo de la tabla de arriba: siempre
-              muestran la vida entera de la cartera, desde la primera transacción. */}
-          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginTop: 20 }}>
-            <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución del valor (€)</div>
-            <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
-              Valor de mercado de toda la cartera, día a día. Las compras y ventas grandes se notan como saltos — es normal, no es un error del gráfico.
-            </div>
-            {evolution.valueSeries.length > 1 ? (
-              censored ? (
-                <div style={{ textAlign: "center", padding: "40px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>Oculto en modo privado.</div>
-              ) : (
-                <VsLineChart series={evolution.valueSeries} height={220} />
-              )
-            ) : (
-              <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
-                Necesitas histórico de precios descargado en al menos un valor (botón "Buscar en Yahoo Finance" o CSV manual, en Configuración → catálogo de valores).
-              </div>
-            )}
-          </div>
-
+          {/* Gráfica de evolución de la rentabilidad de la cartera entera —
+              mismo motor diario que la fila de totales/TTWROR
+              (vsComputePortfolioEvolution), no depende del filtro de
+              periodo de la tabla de arriba: siempre muestra la vida
+              entera de la cartera, desde la primera transacción. */}
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginTop: 20 }}>
             <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución de la rentabilidad</div>
             <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
