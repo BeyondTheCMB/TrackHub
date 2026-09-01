@@ -4441,26 +4441,53 @@
     // compras/ventas, y el coste real se queda "atrapado" en el ISIN
     // viejo que ya no tiene posición abierta. `visited` evita bucles
     // si algún día hubiera un ciclo raro en los datos.
+    // Coste medio ponderado de los títulos que TODAVÍA se tienen — no
+    // "compras menos importe cobrado en ventas" (criterio anterior). La
+    // diferencia importa en cuanto hay una venta con ganancia: restar el
+    // importe COBRADO (en vez del coste real de esos títulos) infla la
+    // plusvalía aparente de lo que queda, porque reduce "invertido" de
+    // más. Es el mismo criterio contable que usa cualquier bróker
+    // (MyInvestor incluido) para calcular la plusvalía de una posición
+    // parcialmente vendida — verificado contra un caso real con muchas
+    // compraventas (Groupama Trésorerie): con flujo neto salía ~190€ por
+    // debajo de lo que reporta MyInvestor; con coste medio, coincide.
+    // Hereda a través de splits igual que antes: si el valor tiene un
+    // split_in, arrastra el coste acumulado del ISIN predecesor en la
+    // fecha del split — no sus títulos (los títulos ya vienen en la
+    // propia transacción split_in, con la conversión ya aplicada). El
+    // split_out del predecesor no se procesa aquí a propósito: es el
+    // sucesor quien, al llegar a su split_in, va a buscar ese coste — el
+    // predecesor no necesita "cerrar sus propios libros" por sí mismo.
     function vsInvestedForIsin(isin, transactions, visited) {
       visited = visited || new Set();
       if (visited.has(isin)) return 0;
       visited.add(isin);
-      let invested = 0;
-      for (const t of transactions) {
-        if (t.isin !== isin) continue;
-        if (t.type === "buy") invested += (t.amount || 0);
-        else if (t.type === "sell") invested -= (t.amount || 0);
-      }
-      const splitIns = transactions.filter(t => t.isin === isin && t.type === "split_in");
-      for (const si of splitIns) {
-        const predecessors = new Set(
-          transactions.filter(t => t.type === "split_out" && t.date === si.date).map(t => t.isin)
-        );
-        for (const pred of predecessors) {
-          if (pred !== isin) invested += vsInvestedForIsin(pred, transactions, visited);
+      const txs = transactions.filter(t => t.isin === isin).slice().sort((a, b) => a.date.localeCompare(b.date));
+      let shares = 0, cost = 0;
+      for (const t of txs) {
+        if (t.type === "buy") {
+          shares += (t.shares || 0);
+          cost += (t.amount || 0);
+        } else if (t.type === "sell") {
+          if (shares > 1e-9) {
+            const costPerShare = cost / shares;
+            const sold = Math.min(t.shares || 0, shares); // por si algún dato vendiera de más
+            cost -= costPerShare * sold;
+            shares -= sold;
+          }
+        } else if (t.type === "split_in") {
+          shares += (t.shares || 0);
+          const predecessors = new Set(
+            transactions.filter(pt => pt.type === "split_out" && pt.date === t.date).map(pt => pt.isin)
+          );
+          for (const pred of predecessors) {
+            if (pred !== isin) cost += vsInvestedForIsin(pred, transactions, visited);
+          }
         }
+        // "split_out" no cambia el coste acumulado de ESTE isin — se
+        // ignora aquí a propósito (ver comentario de arriba).
       }
-      return invested;
+      return cost;
     }
 
     // ── Etiquetas · Fase 3 — clasificación jerárquica y personalizable ────
@@ -6615,32 +6642,46 @@
     }
 
     // Capital neto aportado a un valor DENTRO de un periodo (desde
-    // `startDate`, exclusive, hasta hoy) — mismo criterio de suma
-    // compra-venta y misma herencia por splits que vsInvestedForIsin,
-    // pero descartando cualquier transacción anterior o igual a
-    // `startDate` (esa parte del coste ya está reflejada en el valor de
-    // arranque del periodo, no hay que contarla dos veces).
+    // `startDate`, exclusive, hasta hoy) — mismo criterio de coste medio
+    // ponderado que vsInvestedForIsin, pero solo contando el DELTA que
+    // ocurre dentro del periodo. A diferencia de la versión "de siempre",
+    // aquí sí hace falta recorrer TODO el histórico (no solo lo posterior
+    // a `startDate`): sin las compras de antes del periodo no se puede
+    // calcular bien el coste medio de lo que se vende dentro de él.
     function vsInvestedForIsinInPeriod(isin, transactions, startDate, visited) {
       visited = visited || new Set();
       if (visited.has(isin)) return 0;
       visited.add(isin);
-      let invested = 0;
-      for (const t of transactions) {
-        if (t.isin !== isin) continue;
-        if (t.date <= startDate) continue;
-        if (t.type === "buy") invested += (t.amount || 0);
-        else if (t.type === "sell") invested -= (t.amount || 0);
-      }
-      const splitIns = transactions.filter(t => t.isin === isin && t.type === "split_in");
-      for (const si of splitIns) {
-        const predecessors = new Set(
-          transactions.filter(t => t.type === "split_out" && t.date === si.date).map(t => t.isin)
-        );
-        for (const pred of predecessors) {
-          if (pred !== isin) invested += vsInvestedForIsinInPeriod(pred, transactions, startDate, visited);
+      const txs = transactions.filter(t => t.isin === isin).slice().sort((a, b) => a.date.localeCompare(b.date));
+      let shares = 0, cost = 0, investedInPeriod = 0;
+      for (const t of txs) {
+        if (t.type === "buy") {
+          shares += (t.shares || 0);
+          cost += (t.amount || 0);
+          if (t.date > startDate) investedInPeriod += (t.amount || 0);
+        } else if (t.type === "sell") {
+          if (shares > 1e-9) {
+            const costPerShare = cost / shares;
+            const sold = Math.min(t.shares || 0, shares);
+            const costRemoved = costPerShare * sold;
+            cost -= costRemoved;
+            shares -= sold;
+            if (t.date > startDate) investedInPeriod -= costRemoved;
+          }
+        } else if (t.type === "split_in") {
+          shares += (t.shares || 0);
+          const predecessors = new Set(
+            transactions.filter(pt => pt.type === "split_out" && pt.date === t.date).map(pt => pt.isin)
+          );
+          for (const pred of predecessors) {
+            if (pred !== isin) cost += vsInvestedForIsin(pred, transactions, new Set(visited));
+            // El coste arrastrado por un split no cuenta como "aportación
+            // del periodo" — mismo criterio que en todas partes: un split
+            // no aporta capital nuevo, solo mueve lo que ya había.
+          }
         }
       }
-      return invested;
+      return investedInPeriod;
     }
 
     // XIRR "ventaneado" de un valor: trata su valor de mercado en
