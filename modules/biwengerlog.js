@@ -473,17 +473,24 @@
 
         return (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 54, position: "relative" }}>
-            <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
-              onDragLeave={() => setDragTarget(null)}
-              onDrop={() => handleDrop(slotKey)}
-              onClick={() => player && !readOnly ? assignSlot(slotKey, null) : !player && handlePlusClick()}
-              style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s", cursor: readOnly ? "default" : "pointer" }}>
-              {player
-                ? (player.isBuy
-                    ? <span style={{ fontSize: 10, color: BW_B, fontWeight: 700 }}>{player.nombre.slice(0,3).toUpperCase()}</span>
-                    : <img src={bwPlayerPhoto(player.id)} alt={player.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />)
-                : <span style={{ fontSize: 18, color: over ? BW_A : isPickerOpen ? BW_A : "#ffffff44" }}>+</span>
-              }
+            <div style={{ position: "relative", width: 44, height: 44 }}>
+              <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
+                onDragLeave={() => setDragTarget(null)}
+                onDrop={() => handleDrop(slotKey)}
+                onClick={() => player && !readOnly ? assignSlot(slotKey, null) : !player && handlePlusClick()}
+                style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s", cursor: readOnly ? "default" : "pointer" }}>
+                {player
+                  ? (player.isBuy
+                      ? <span style={{ fontSize: 10, color: BW_B, fontWeight: 700 }}>{player.nombre.slice(0,3).toUpperCase()}</span>
+                      : <img src={bwPlayerPhoto(player.id)} alt={player.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />)
+                  : <span style={{ fontSize: 18, color: over ? BW_A : isPickerOpen ? BW_A : "#ffffff44" }}>+</span>
+                }
+              </div>
+              {player && player.prob != null && (
+                <div style={{ position: "absolute", bottom: -3, right: -3, background: "#060d14", border: `1px solid ${bwProbColor(player.prob)}`, borderRadius: 4, padding: "0 3px", fontSize: 8, fontWeight: 800, lineHeight: "12px", minWidth: 16, textAlign: "center", color: bwProbColor(player.prob) }}>
+                  {player.prob}%
+                </div>
+              )}
             </div>
             <span style={{ fontSize: 10, color: player ? "#e2e8f0" : "#ffffff33", fontWeight: 600, maxWidth: 54, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", textShadow: "0 1px 3px #000" }}>
               {player ? player.nombre.split(" ").slice(-1)[0] : ""}
@@ -634,7 +641,7 @@
       const removeTarget = (id) => setTargets(t => t.filter(x => x.id !== id));
       const addFromMarket = (p) => {
         if (targets.find(t => t.marketId === p.id)) return;
-        setTargets(t => [...t, { id: "tgt_" + Date.now(), marketId: p.id, nombre: p.nombre, precio: p.precio, pos: p.pos }]);
+        setTargets(t => [...t, { id: "tgt_" + Date.now(), marketId: p.id, nombre: p.nombre, precio: p.precio, pos: p.pos, prob: p.prob ?? null }]);
       };
 
       // ── Simulation ──────────────────────────────────────────────────────────
@@ -720,14 +727,21 @@
       // reducen la lista, nunca cambian el criterio de orden.
       const filteredMarket = useMemo(() => {
         if (!Array.isArray(marketData)) return [];
-        let list = marketData;
+        // Adjunta la probabilidad de jugar aquí mismo (una sola vez por
+        // jugador) para que tanto la fila del mercado como el pitch, si
+        // se añade como objetivo, lean directamente `p.prob`.
+        let list = marketData.map(p => {
+          const teamData = ffData && p.teamSlug ? ffData[p.teamSlug] : null;
+          const match = teamData ? bwMatchProb(p.nombre, teamData.players) : null;
+          return match ? { ...p, prob: match.prob } : p;
+        });
         if (marketFilter === "biwenger") list = list.filter(p => p.isBiwenger);
         if (marketFilter === "others")   list = list.filter(p => !p.isBiwenger && !p.isOwn);
         if (marketFilter === "own")      list = list.filter(p => p.isOwn);
         const q = marketSearch.toLowerCase();
         if (q) list = list.filter(p => p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q));
         return [...list].sort((a, b) => b.precio - a.precio);
-      }, [marketData, marketSearch, marketFilter]);
+      }, [marketData, marketSearch, marketFilter, ffData]);
 
       return (
         <div style={{ padding: "16px 20px 60px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -919,7 +933,6 @@
                             const canPuja       = simPujaHoy >= p.precio;
                             const alreadyTarget = targets.some(t => t.marketId === p.id);
                             const priceDiff     = p.precio - p.precioMercado;
-                            const marketProb    = ffData && p.teamSlug ? bwMatchProb(p.nombre, ffData[p.teamSlug]?.players)?.prob : null;
                             return (
                               <div key={p.player?.id || p.id || Math.random()} style={{ display: "flex", alignItems: "center", gap: 8, background: p.isOwn ? BW_A + "08" : "#0d1825", border: `1px solid ${p.isOwn ? BW_A + "33" : canPuja ? "#1a2535" : "#1a2535"}`, borderRadius: 8, padding: "8px 12px" }}>
                                 <div style={{ width: 28, height: 28, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
@@ -929,7 +942,7 @@
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                     <span style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{p.nombre}</span>
-                                    <BwProbBadge prob={marketProb} />
+                                    <BwProbBadge prob={p.prob} />
                                   </div>
                                   <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                                     <span style={{ fontSize: 11, color: "#5a7080" }}>{p.equipo}</span>
