@@ -80,7 +80,10 @@
     // Devuelve la MISMA lista de jugadores con el campo `prob` añadido —
     // un único objeto de salida, para respetar el patrón de bulk-update
     // de toda la app (evita el bug de closures obsoletas de actualizar
-    // jugador a jugador con setState en bucle).
+    // jugador a jugador con setState en bucle). También devuelve `teams`
+    // (los datos crudos por equipo) para poder emparejar jugadores que NO
+    // están en la plantilla propia — p.ej. el mercado — sin tener que
+    // volver a golpear el proxy.
     const bwFetchProbabilities = async (players) => {
       const res = await fetch("/api/futbolfantasy?all=1");
       const d = await res.json();
@@ -90,7 +93,7 @@
         const match = teamData ? bwMatchProb(p.nombre, teamData.players) : null;
         return match ? { ...p, prob: match.prob, probAsOf: d.asOf } : p;
       });
-      return { players: next, errors: d.errors || [], asOf: d.asOf };
+      return { players: next, errors: d.errors || [], asOf: d.asOf, teams: d.teams };
     };
 
     // ── Supabase helpers ──────────────────────────────────────────────────────
@@ -607,7 +610,7 @@
       );
     }
 
-    function BwSimular({ players, saldo, valorEquipo, token, savedLineup, settings }) {
+    function BwSimular({ players, saldo, valorEquipo, token, savedLineup, settings, ffData }) {
       const [sellIds,      setSellIds]      = useState(new Set());
       const [targets,      setTargets]      = useState([]); // buy targets — for checking only
       const [newBuyName,   setNewBuyName]   = useState("");
@@ -690,7 +693,11 @@
       const hasChanges     = hasSellChanges || hasBuyChanges;
       const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box" };
 
-      // Load market
+      // Mercado siempre visible: se carga solo al entrar en la pestaña (si
+      // hay credenciales configuradas), sin necesidad de pulsar nada.
+      const { userId: mUserId, leagueId: mLeagueId, token: mTok, version: mVersion } = settings || {};
+      const hasCreds = !!(mUserId?.trim() && mLeagueId?.trim() && mTok?.trim() && mVersion?.trim());
+
       const loadMarket = async () => {
         setMarketData("loading");
         try {
@@ -704,6 +711,13 @@
         }
       };
 
+      useEffect(() => {
+        if (hasCreds) loadMarket();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+
+      // Orden descendente de precio siempre — el resto de filtros solo
+      // reducen la lista, nunca cambian el criterio de orden.
       const filteredMarket = useMemo(() => {
         if (!Array.isArray(marketData)) return [];
         let list = marketData;
@@ -711,7 +725,8 @@
         if (marketFilter === "others")   list = list.filter(p => !p.isBiwenger && !p.isOwn);
         if (marketFilter === "own")      list = list.filter(p => p.isOwn);
         const q = marketSearch.toLowerCase();
-        return q ? list.filter(p => p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q)) : list;
+        if (q) list = list.filter(p => p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q));
+        return [...list].sort((a, b) => b.precio - a.precio);
       }, [marketData, marketSearch, marketFilter]);
 
       return (
@@ -861,22 +876,16 @@
                   <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
                     Mercado de la liga {Array.isArray(marketData) && <span style={{ color: "#5a7080", fontWeight: 400 }}>({marketData.length})</span>}
                   </div>
-                  {marketData === null && (
-                    <button onClick={loadMarket}
-                      style={{ background: BW_A + "22", border: `1px solid ${BW_A}44`, color: BW_A, borderRadius: 7, padding: "4px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
-                      Cargar mercado
-                    </button>
-                  )}
                   {Array.isArray(marketData) && (
                     <button onClick={loadMarket}
                       style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 12 }}>↻ Actualizar</button>
                   )}
                 </div>
 
-                {marketData === null && (
-                  <div style={{ fontSize: 13, color: "#3a5060", padding: "8px 0" }}>Carga el mercado para ver los jugadores disponibles en tu liga.</div>
+                {!hasCreds && (
+                  <div style={{ fontSize: 13, color: "#3a5060", padding: "8px 0" }}>Configura tus credenciales de Biwenger en Ajustes para ver el mercado.</div>
                 )}
-                {marketData === "loading" && (
+                {hasCreds && (marketData === null || marketData === "loading") && (
                   <div style={{ fontSize: 13, color: "#7a90a8", padding: "8px 0" }}>Cargando mercado…</div>
                 )}
                 {typeof marketData === "string" && marketData.startsWith("error:") && (
@@ -910,6 +919,7 @@
                             const canPuja       = simPujaHoy >= p.precio;
                             const alreadyTarget = targets.some(t => t.marketId === p.id);
                             const priceDiff     = p.precio - p.precioMercado;
+                            const marketProb    = ffData && p.teamSlug ? bwMatchProb(p.nombre, ffData[p.teamSlug]?.players)?.prob : null;
                             return (
                               <div key={p.player?.id || p.id || Math.random()} style={{ display: "flex", alignItems: "center", gap: 8, background: p.isOwn ? BW_A + "08" : "#0d1825", border: `1px solid ${p.isOwn ? BW_A + "33" : canPuja ? "#1a2535" : "#1a2535"}`, borderRadius: 8, padding: "8px 12px" }}>
                                 <div style={{ width: 28, height: 28, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
@@ -917,7 +927,10 @@
                                 </div>
                                 <BwPosBadge pos={p.pos} />
                                 <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{p.nombre}</div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    <span style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{p.nombre}</span>
+                                    <BwProbBadge prob={marketProb} />
+                                  </div>
                                   <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                                     <span style={{ fontSize: 11, color: "#5a7080" }}>{p.equipo}</span>
                                     {p.vendedor && (
@@ -1035,11 +1048,11 @@
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px", marginBottom: 20 }}>
             <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 700, marginBottom: 4 }}>Probabilidad de jugar (FutbolFantasy)</div>
             <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 12, lineHeight: 1.6 }}>
-              Descarga de una vez la probabilidad de ser titular la próxima jornada para los 20 equipos de LaLiga y la empareja con tu plantilla por nombre y equipo. Se muestra como un badge de color junto a cada jugador en Plantilla y Simular.
+              Se sincroniza sola al abrir la app — la probabilidad de ser titular la próxima jornada para los 20 equipos de LaLiga, emparejada con tu plantilla y con el mercado por nombre y equipo. Se muestra como un badge de color junto a cada jugador en Plantilla, Simular y el mercado. Este botón solo hace falta para forzar un refresco manual.
             </div>
             <button onClick={onSyncProb} disabled={probSyncing}
               style={{ background: probSyncing ? "#1a2535" : BW_A + "22", color: probSyncing ? "#5a7080" : BW_A, border: `1px solid ${BW_A}44`, borderRadius: 9, padding: "9px 18px", cursor: probSyncing ? "default" : "pointer", fontWeight: 600, fontSize: 13 }}>
-              {probSyncing ? "Sincronizando…" : "↻ Sincronizar probabilidades"}
+              {probSyncing ? "Sincronizando…" : "↻ Forzar refresco"}
             </button>
             {probSyncError && <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 10, background: "#f59e0b18", borderRadius: 8, padding: "8px 12px" }}>{probSyncError}</div>}
           </div>
@@ -1073,61 +1086,105 @@
       const [syncErr,  setSyncErr]  = useState(null);
       const [probSyncing, setProbSyncing] = useState(false);
       const [probSyncErr, setProbSyncErr] = useState(null);
+      const [probSyncedAt, setProbSyncedAt] = useState(null); // persistido, informativo
+      const [ffData, setFfData] = useState(null); // caché en memoria (NO persistido) de las ~500 fichas de FutbolFantasy, para poder mostrar el % también en jugadores del mercado que no son tuyos
       const isMobile = useIsMobile();
 
       const valorEquipo = useMemo(() => players.reduce((s, p) => s + (p.precio || 0), 0), [players]);
 
-      // Load from Supabase, then auto-sync if credentials are configured
+      // Carga desde Supabase y encadena, en orden, los dos auto-syncs
+      // silenciosos: (1) Biwenger, si hay credenciales, y (2) probabilidad
+      // de jugar (FutbolFantasy) — siempre, sin necesidad de pulsar nada.
+      // Van en secuencia (no en paralelo) para que ninguno de los dos pise
+      // los cambios del otro sobre `players`; cada uno usa variables
+      // locales (currentPlayers/currentSaldo), no el estado de React, así
+      // que no hay closures obsoletas entre pasos.
       useEffect(() => {
         if (!profileId) return;
-        setLoading(true);
-        bwLoad(profileId).then(d => {
+        let cancelled = false;
+        (async () => {
+          setLoading(true);
+          const d = await bwLoad(profileId);
+          if (cancelled) return;
           const loadedSettings = d.settings || {};
-          setPlayers(d.players || []);
-          setSaldo(d.saldo || 0);
+          let currentPlayers = d.players || [];
+          let currentSaldo   = d.saldo || 0;
+          setPlayers(currentPlayers);
+          setSaldo(currentSaldo);
           setSettings(loadedSettings);
           setLineup(d.lineup || null);
+          setProbSyncedAt(d.probSyncedAt || null);
           setLoading(false);
-          // Auto-sync if credentials are present
+
+          // 1) Auto-sync con Biwenger si hay credenciales configuradas.
           const { userId, leagueId, token, version } = loadedSettings;
           if (userId?.trim() && leagueId?.trim() && token?.trim() && version?.trim()) {
             setSyncing(true); setSyncErr(null);
-            bwFetchTeam(loadedSettings).then(raw => {
-              const newSaldo   = raw.balance ?? d.saldo ?? 0;
+            try {
+              const raw = await bwFetchTeam(loadedSettings);
               const apiPlayers = raw.players || [];
-              if (apiPlayers.length === 0) { setSyncing(false); return; }
-              const existingPlayers = d.players || [];
-              const next = apiPlayers.map(ap => {
-                const existing = existingPlayers.find(p => p.id === ap.id);
-                return {
-                  id:             ap.id,
-                  nombre:         ap.nombre,
-                  slug:           ap.slug || "",
-                  pos:            ap.pos,
-                  equipo:         ap.equipo,
-                  teamSlug:       ap.teamSlug || "",
-                  precio:         ap.precio,
-                  priceIncrement: ap.priceIncrement || 0,
-                  compra:         existing?.compra || ap.compra || ap.precio,
-                  oferta:         ap.oferta || existing?.oferta || null,
-                  fechaCompra:    ap.fechaCompra || null,
-                };
-              });
-              setPlayers(next); setSaldo(newSaldo);
-              bwSave(profileId, { players: next, saldo: newSaldo, settings: loadedSettings, lineup: d.lineup || null });
-              setSyncing(false);
-            }).catch(() => setSyncing(false));
+              if (apiPlayers.length > 0) {
+                const existingPlayers = currentPlayers;
+                currentPlayers = apiPlayers.map(ap => {
+                  const existing = existingPlayers.find(p => p.id === ap.id);
+                  return {
+                    id:             ap.id,
+                    nombre:         ap.nombre,
+                    slug:           ap.slug || "",
+                    pos:            ap.pos,
+                    equipo:         ap.equipo,
+                    teamSlug:       ap.teamSlug || "",
+                    precio:         ap.precio,
+                    priceIncrement: ap.priceIncrement || 0,
+                    compra:         existing?.compra || ap.compra || ap.precio,
+                    oferta:         ap.oferta || existing?.oferta || null,
+                    fechaCompra:    ap.fechaCompra || null,
+                    prob:           existing?.prob ?? null,     // se conserva — este sync no toca probabilidades
+                    probAsOf:       existing?.probAsOf ?? null,
+                  };
+                });
+                currentSaldo = raw.balance ?? currentSaldo;
+                setPlayers(currentPlayers); setSaldo(currentSaldo);
+              }
+            } catch (e) { /* silencioso, igual que antes */ }
+            setSyncing(false);
           }
-        });
+
+          // 2) Auto-sync de probabilidad de jugar — siempre, sin botón. A
+          // diferencia de los precios de fondos (que sí se cachean por
+          // fecha), las alineaciones probables se actualizan durante el
+          // propio día según ruedas de prensa y entrenamientos, así que
+          // no conviene cachear "ya sincronizado hoy" — se vuelve a pedir
+          // en cada carga de la app.
+          if (currentPlayers.length > 0) {
+            setProbSyncing(true); setProbSyncErr(null);
+            try {
+              const { players: withProb, errors, teams, asOf } = await bwFetchProbabilities(currentPlayers);
+              currentPlayers = withProb;
+              setFfData(teams);
+              setPlayers(currentPlayers);
+              setProbSyncedAt(asOf);
+              await bwSave(profileId, { players: currentPlayers, saldo: currentSaldo, settings: loadedSettings, lineup: d.lineup || null, probSyncedAt: asOf });
+              if (errors.length > 0) {
+                setProbSyncErr(`Sincronizado, pero ${errors.length} equipo(s) fallaron: ${errors.map(e => e.slug).join(", ")}`);
+              }
+            } catch (e) {
+              setProbSyncErr(e.message);
+            }
+            setProbSyncing(false);
+          }
+        })();
+        return () => { cancelled = true; };
       }, [profileId]);
 
-      const persist = async (newPlayers, newSaldo, newSettings, newLineup) => {
-        const p  = newPlayers  ?? players;
-        const s  = newSaldo    ?? saldo;
-        const st = newSettings ?? settings;
-        const ln = newLineup   ?? lineup;
-        setPlayers(p); setSaldo(s); setSettings(st); setLineup(ln);
-        await bwSave(profileId, { players: p, saldo: s, settings: st, lineup: ln });
+      const persist = async (newPlayers, newSaldo, newSettings, newLineup, newProbSyncedAt) => {
+        const p   = newPlayers      ?? players;
+        const s   = newSaldo        ?? saldo;
+        const st  = newSettings     ?? settings;
+        const ln  = newLineup       ?? lineup;
+        const psa = newProbSyncedAt ?? probSyncedAt;
+        setPlayers(p); setSaldo(s); setSettings(st); setLineup(ln); setProbSyncedAt(psa);
+        await bwSave(profileId, { players: p, saldo: s, settings: st, lineup: ln, probSyncedAt: psa });
       };
 
       const handleOfferChange  = (id, offer)  => {
@@ -1164,6 +1221,8 @@
             precio,
             compra:  existing?.compra || precio, // keep original purchase price
             oferta:  existing?.oferta || null,
+            prob:    existing?.prob ?? null,
+            probAsOf: existing?.probAsOf ?? null,
           };
         });
         persist(next, null, null);
@@ -1198,6 +1257,8 @@
               compra:         ap.compra || existing?.compra || ap.precio,
               oferta:         ap.oferta || existing?.oferta || null,
               fechaCompra:    ap.fechaCompra || null,
+              prob:           existing?.prob ?? null,
+              probAsOf:       existing?.probAsOf ?? null,
             };
           });
 
@@ -1214,11 +1275,14 @@
       };
 
       // Sincroniza probabilidad de jugar (FutbolFantasy) para toda la plantilla
+      // — botón manual en Ajustes, por si se quiere forzar un refresco fuera
+      // del auto-sync silencioso de la carga inicial.
       const handleSyncProb = async () => {
         setProbSyncing(true); setProbSyncErr(null);
         try {
-          const { players: next, errors } = await bwFetchProbabilities(players);
-          await persist(next, null, null, null);
+          const { players: next, errors, teams, asOf } = await bwFetchProbabilities(players);
+          setFfData(teams);
+          await persist(next, null, null, null, asOf);
           if (errors.length > 0) {
             setProbSyncErr(`Sincronizado, pero ${errors.length} equipo(s) fallaron: ${errors.map(e => e.slug).join(", ")}`);
           }
@@ -1292,7 +1356,7 @@
             ) : (
               <>
                 {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} lineup={lineup} onLineupSave={handleLineupSave} />}
-                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} settings={settings} />}
+                {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} settings={settings} ffData={ffData} />}
                 {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} onSyncProb={handleSyncProb} probSyncing={probSyncing} probSyncError={probSyncErr} />}
               </>
             )}
