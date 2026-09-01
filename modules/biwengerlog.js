@@ -559,22 +559,60 @@
         setTargets(t => [...t, { id: "tgt_" + Date.now(), marketId: p.id, nombre: p.nombre, precio: p.precio, pos: p.pos }]);
       };
 
-      // Simulation — sell side only, targets don't affect numbers
-      const simSaldo = useMemo(() => {
+      // ── Simulation ──────────────────────────────────────────────────────────
+      // Ventas: efecto inmediato. El jugador sale de tu plantilla al instante,
+      // así que tanto el saldo (+oferta) como el valor de equipo (-precio) se
+      // actualizan ya para el cálculo de la puja máxima.
+      //
+      // Compras: efecto inmediato solo en el saldo (el dinero queda
+      // comprometido), pero NO en el valor de equipo. El valor de equipo de
+      // Biwenger solo se recalcula cuando el jugador pasa a ser tuyo de verdad
+      // (cierre de mercado / resolución de la puja) — no en el momento de
+      // ofertar. Por eso "hoy" el valor de equipo no sube por tus propias
+      // compras, y la puja máxima disponible hoy solo baja por el efectivo que
+      // vas comprometiendo, no crece con lo que aún no es tuyo.
+      const simSaldoTrasVentas = useMemo(() => {
         let s = saldo;
         players.forEach(p => { if (sellIds.has(p.id)) s += (p.oferta || p.precio); });
         return s;
       }, [saldo, players, sellIds]);
 
-      const simValor = useMemo(() => {
+      const simValorTrasVentas = useMemo(() => {
         let v = valorEquipo;
         players.forEach(p => { if (sellIds.has(p.id)) v -= p.precio; });
         return v;
       }, [valorEquipo, players, sellIds]);
 
-      const simPuja  = bwPuja(simSaldo, simValor);
+      const totalCompras = useMemo(() => targets.reduce((s, t) => s + (t.precio || 0), 0), [targets]);
+
+      // Saldo/puja disponible en cada punto de la cola de compras (en orden),
+      // para poder comprobar cada objetivo contra el presupuesto que quedaría
+      // tras las compras anteriores — no contra el total de golpe.
+      const buyRunway = useMemo(() => {
+        let running = simSaldoTrasVentas;
+        return targets.map(t => {
+          const saldoAntes = running;
+          const pujaAntes  = bwPuja(saldoAntes, simValorTrasVentas); // valor no cambia por compras
+          running -= (t.precio || 0);
+          return { id: t.id, saldoDisponible: saldoAntes, pujaDisponible: pujaAntes };
+        });
+      }, [targets, simSaldoTrasVentas, simValorTrasVentas]);
+
+      // Estado "hoy": ventas ya liquidadas + compras ya comprometidas (efectivo),
+      // pero valor de equipo aún sin el jugador comprado.
+      const simSaldoHoy = simSaldoTrasVentas - totalCompras;
+      const simValorHoy = simValorTrasVentas;
+      const simPujaHoy  = bwPuja(simSaldoHoy, simValorHoy);
+
+      // Estado "proyectado": una vez el mercado cierre y las compras se
+      // confirmen, el valor de equipo sí incorpora lo comprado.
+      const simValorFuturo = simValorTrasVentas + totalCompras;
+      const simPujaFutura  = bwPuja(simSaldoHoy, simValorFuturo);
+
       const origPuja = bwPuja(saldo, valorEquipo);
-      const hasChanges = sellIds.size > 0;
+      const hasSellChanges = sellIds.size > 0;
+      const hasBuyChanges  = targets.length > 0;
+      const hasChanges     = hasSellChanges || hasBuyChanges;
       const inp = { background: "#080f18", border: "1px solid #1a2535", borderRadius: 7, padding: "7px 10px", color: "#e2e8f0", fontSize: 13, boxSizing: "border-box" };
 
       // Load market
@@ -604,15 +642,18 @@
       return (
         <div style={{ padding: "16px 20px 60px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Simulation result — sell side only */}
+          {/* Simulation result — ventas + compras */}
           <div style={{ background: "#080f18", border: `1px solid ${hasChanges ? BW_A + "44" : "#1a2535"}`, borderRadius: 12, padding: "16px 18px" }}>
-            <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Resultado simulación (ventas)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+            <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Resultado simulación</div>
+            <div style={{ display: "grid", gridTemplateColumns: isMob ? "repeat(2,1fr)" : "repeat(4,1fr)", gap: 12 }}>
               {[
-                { label: "Valor equipo", orig: valorEquipo, sim: simValor, color: BW_B },
-                { label: "Saldo",        orig: saldo,       sim: simSaldo, color: simSaldo >= 0 ? BW_A : "#f87171" },
-                { label: "Puja máxima",  orig: origPuja,    sim: simPuja,  color: BW_A, bold: true },
-              ].map(s => {
+                { label: "Valor equipo (hoy)", orig: valorEquipo, sim: simValorHoy, color: BW_B,
+                  note: totalCompras > 0 ? `+ ${bwFmt(totalCompras)} cuando se confirmen las compras` : null },
+                { label: "Saldo",              orig: saldo,       sim: simSaldoHoy, color: simSaldoHoy >= 0 ? BW_A : "#f87171" },
+                { label: "Puja máxima (hoy)",  orig: origPuja,    sim: simPujaHoy,  color: BW_A, bold: true },
+                { label: "Puja máxima (tras compras)", orig: origPuja, sim: simPujaFutura, color: "#c084fc", bold: true,
+                  hide: totalCompras === 0 },
+              ].filter(s => !s.hide).map(s => {
                 const diff = s.sim - s.orig;
                 return (
                   <div key={s.label} style={{ background: "#0d1825", borderRadius: 10, padding: "12px 14px" }}>
@@ -623,12 +664,18 @@
                         {diff > 0 ? "▲" : "▼"} {bwFmt(Math.abs(diff))}
                       </div>
                     )}
+                    {s.note && <div style={{ fontSize: 10, color: "#5a7080", marginTop: 4 }}>{s.note}</div>}
                   </div>
                 );
               })}
             </div>
+            {hasBuyChanges && (
+              <div style={{ fontSize: 11, color: "#5a7080", marginTop: 12, lineHeight: 1.5 }}>
+                El valor de tu equipo no sube por una compra hasta que el mercado cierre y el jugador sea tuyo — hasta entonces, la <b style={{ color: "#9aaabb" }}>puja máxima de hoy</b> solo baja por el efectivo que comprometes. La <b style={{ color: "#9aaabb" }}>puja máxima tras compras</b> es la que tendrás disponible una vez se confirmen.
+              </div>
+            )}
             {hasChanges && (
-              <button onClick={() => setSellIds(new Set())}
+              <button onClick={() => { setSellIds(new Set()); setTargets([]); }}
                 style={{ marginTop: 12, background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 12, padding: 0 }}
                 onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>
                 ↺ Reiniciar simulación
@@ -673,13 +720,13 @@
             {/* Right: targets + market + pitch */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
-              {/* Buy targets — check only, don't affect simulation */}
+              {/* Compras — participan en la simulación con presupuesto en cascada */}
               <div>
                 <div style={{ fontSize: 12, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontWeight: 700 }}>
-                  Objetivos de compra ({targets.length})
+                  Compras ({targets.length})
                 </div>
                 <div style={{ background: "#080f18", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: "#5a7080", marginBottom: 8 }}>Los objetivos no modifican la simulación — solo comprueban si puedes permitírtelos.</div>
+                  <div style={{ fontSize: 11, color: "#5a7080", marginBottom: 8 }}>Se descuentan de tu saldo simulado en el orden de la lista — cada una comprueba el presupuesto que queda tras las anteriores. No aumentan el valor de tu equipo hasta que se confirmen (ver nota abajo).</div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <input value={newBuyName} onChange={e => setNewBuyName(e.target.value)} placeholder="Nombre del jugador"
                       style={{ ...inp, flex: 1 }} onFocus={e => e.target.style.borderColor = BW_B + "66"} onBlur={e => e.target.style.borderColor = "#1a2535"}
@@ -697,12 +744,14 @@
                 </div>
                 {targets.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {targets.map(b => {
-                      const canPuja  = simPuja  >= b.precio;
-                      const canSaldo = simSaldo >= b.precio;
+                    {targets.map((b, i) => {
+                      const runway   = buyRunway[i] || { pujaDisponible: simPujaHoy, saldoDisponible: simSaldoTrasVentas };
+                      const canPuja  = runway.pujaDisponible  >= b.precio;
+                      const canSaldo = runway.saldoDisponible >= b.precio;
                       return (
                         <div key={b.id} style={{ background: canPuja ? BW_B + "0f" : "#f8717110", border: `1px solid ${canPuja ? BW_B + "44" : "#f8717144"}`, borderRadius: 9, padding: "10px 12px" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                            <span style={{ fontSize: 10, color: "#3a5060", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>#{i + 1}</span>
                             {b.pos && <BwPosBadge pos={b.pos} />}
                             <span style={{ flex: 1, fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{b.nombre}</span>
                             <span style={{ fontSize: 13, color: BW_B, fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{bwFmt(b.precio)}</span>
@@ -712,14 +761,14 @@
                           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
                               <span style={{ color: canPuja ? "#34d399" : "#f87171" }}>{canPuja ? "✓" : "✗"}</span>
-                              <span style={{ color: "#9aaabb" }}>Puja máxima:</span>
-                              <span style={{ color: canPuja ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simPuja)}</span>
-                              {!canPuja && <span style={{ color: "#f87171" }}>— faltan {bwFmt(b.precio - simPuja)}</span>}
+                              <span style={{ color: "#9aaabb" }}>Puja máxima disponible{i > 0 ? " (tras compras anteriores)" : ""}:</span>
+                              <span style={{ color: canPuja ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums" }}>{bwFmt(runway.pujaDisponible)}</span>
+                              {!canPuja && <span style={{ color: "#f87171" }}>— faltan {bwFmt(b.precio - runway.pujaDisponible)}</span>}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
                               <span style={{ color: canSaldo ? "#34d399" : "#f59e0b" }}>{canSaldo ? "✓" : "⚠"}</span>
-                              <span style={{ color: "#9aaabb" }}>Saldo:</span>
-                              <span style={{ color: canSaldo ? "#34d399" : "#f59e0b", fontVariantNumeric: "tabular-nums" }}>{bwFmt(simSaldo)}</span>
+                              <span style={{ color: "#9aaabb" }}>Saldo disponible:</span>
+                              <span style={{ color: canSaldo ? "#34d399" : "#f59e0b", fontVariantNumeric: "tabular-nums" }}>{bwFmt(runway.saldoDisponible)}</span>
                               {!canSaldo && canPuja && <span style={{ color: "#f59e0b" }}>— necesitas vender más para tener saldo</span>}
                             </div>
                           </div>
@@ -782,7 +831,7 @@
                       ? <div style={{ fontSize: 13, color: "#5a7080" }}>Sin resultados.</div>
                       : <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 340, overflowY: "auto" }}>
                           {filteredMarket.map(p => {
-                            const canPuja       = simPuja >= p.precio;
+                            const canPuja       = simPujaHoy >= p.precio;
                             const alreadyTarget = targets.some(t => t.marketId === p.id);
                             const priceDiff     = p.precio - p.precioMercado;
                             return (
@@ -826,7 +875,7 @@
               </div>
 
               {/* Tactical pitch */}
-              <BwPitch players={players} sellIds={sellIds} buys={[]} savedLineup={savedLineup} />
+              <BwPitch players={players} sellIds={sellIds} buys={targets} savedLineup={savedLineup} />
             </div>
           </div>
         </div>
