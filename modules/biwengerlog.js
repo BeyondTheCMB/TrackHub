@@ -599,11 +599,18 @@
                     onDragStart={() => setDragging(p.id)}
                     onDragEnd={() => { setDragging(null); setDragTarget(null); }}
                     style={{ display: "flex", alignItems: "center", gap: 4, background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, padding: "4px 10px 4px 4px", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
-                    <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                      {p.isBuy
-                        ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
-                        : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
-                      }
+                    <div style={{ position: "relative", width: 22, height: 22, flexShrink: 0 }}>
+                      <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden" }}>
+                        {p.isBuy
+                          ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
+                          : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+                        }
+                      </div>
+                      {p.prob != null && (
+                        <div style={{ position: "absolute", bottom: -3, right: -3, background: "#060d14", border: `1px solid ${bwProbColor(p.prob)}`, borderRadius: 3, padding: "0 2px", fontSize: 7, fontWeight: 800, lineHeight: "10px", minWidth: 13, textAlign: "center", color: bwProbColor(p.prob) }}>
+                          {p.prob}%
+                        </div>
+                      )}
                     </div>
                     <BwPosBadge pos={p.pos} />
                     <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
