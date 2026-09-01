@@ -487,7 +487,7 @@
                 }
               </div>
               {player && player.prob != null && (
-                <div style={{ position: "absolute", bottom: -3, right: -3, background: "#060d14", border: `1px solid ${bwProbColor(player.prob)}`, borderRadius: 4, padding: "0 3px", fontSize: 8, fontWeight: 800, lineHeight: "12px", minWidth: 16, textAlign: "center", color: bwProbColor(player.prob) }}>
+                <div style={{ position: "absolute", bottom: -5, right: -5, background: "#060d14", border: `1px solid ${bwProbColor(player.prob)}`, borderRadius: 5, padding: "0 4px", fontSize: 11, fontWeight: 900, lineHeight: "16px", minWidth: 22, textAlign: "center", color: bwProbColor(player.prob) }}>
                   {player.prob}%
                 </div>
               )}
@@ -610,7 +610,7 @@
                       <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
                     </div>
                     {p.prob != null && (
-                      <div style={{ background: bwProbColor(p.prob), color: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 12px", fontSize: 15, fontWeight: 900, flexShrink: 0 }}
+                      <div style={{ background: bwProbColor(p.prob), color: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 9px", fontSize: 12, fontWeight: 900, flexShrink: 0 }}
                         title="Probabilidad de ser titular la próxima jornada (FutbolFantasy)">
                         {p.prob}%
                       </div>
