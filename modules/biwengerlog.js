@@ -31,6 +31,68 @@
 
     const bwPct = (n, ref) => ref ? ((n - ref) / ref * 100).toFixed(1) : null;
 
+    // ── Probabilidad de jugar (FutbolFantasy, centralizado) ────────────────────
+    // Colores del badge de probabilidad: mismo criterio de tres bandas que el
+    // resto de indicadores de riesgo de la app (verde/ámbar/rojo).
+    const bwProbColor = (prob) => prob >= 70 ? "#34d399" : prob >= 40 ? "#f59e0b" : "#f87171";
+
+    // Normaliza un nombre para comparar entre fuentes (Biwenger vs
+    // FutbolFantasy no siempre usan el mismo nombre para el mismo
+    // jugador — apodo corto vs nombre completo): sin acentos, minúsculas,
+    // sin puntuación, espacios colapsados.
+    const bwNormName = (s) => (s || "")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[.'’-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // Empareja un jugador de Biwenger con su ficha de FutbolFantasy dentro
+    // del mismo equipo (teamSlug ya coincide entre ambas fuentes — ver
+    // BW_SOFASCORE_TEAMS más abajo). Con el candidato acotado a ~20-25
+    // jugadores de un solo equipo, una coincidencia por inclusión de
+    // substring (en cualquier dirección, ya que Biwenger a veces solo
+    // muestra el apodo y FutbolFantasy el nombre completo, o viceversa)
+    // es suficientemente fiable sin necesitar fuzzy-matching real.
+    const bwMatchProb = (nombreBiwenger, candidatos) => {
+      if (!candidatos || candidatos.length === 0) return null;
+      const target = bwNormName(nombreBiwenger);
+      if (!target) return null;
+      let exact = candidatos.find(c => bwNormName(c.nombre) === target);
+      if (exact) return exact;
+      const bySubstring = candidatos.filter(c => {
+        const n = bwNormName(c.nombre);
+        return n.includes(target) || target.includes(n);
+      });
+      if (bySubstring.length > 0) return bySubstring[0];
+      // Último recurso: coincidencia por última palabra (apellido más
+      // habitual como apodo corto en Biwenger).
+      const lastWord = target.split(" ").slice(-1)[0];
+      if (lastWord && lastWord.length > 2) {
+        const byLast = candidatos.find(c => bwNormName(c.nombre).split(" ").includes(lastWord));
+        if (byLast) return byLast;
+      }
+      return null;
+    };
+
+    // Descarga las probabilidades de los 20 equipos de LaLiga de una vez
+    // (modo centralizado del proxy) y las empareja con la plantilla dada.
+    // Devuelve la MISMA lista de jugadores con el campo `prob` añadido —
+    // un único objeto de salida, para respetar el patrón de bulk-update
+    // de toda la app (evita el bug de closures obsoletas de actualizar
+    // jugador a jugador con setState en bucle).
+    const bwFetchProbabilities = async (players) => {
+      const res = await fetch("/api/futbolfantasy?all=1");
+      const d = await res.json();
+      if (!d.teams) throw new Error(d.error || "Respuesta inesperada del proxy de FutbolFantasy.");
+      const next = players.map(p => {
+        const teamData = p.teamSlug ? d.teams[p.teamSlug] : null;
+        const match = teamData ? bwMatchProb(p.nombre, teamData.players) : null;
+        return match ? { ...p, prob: match.prob, probAsOf: d.asOf } : p;
+      });
+      return { players: next, errors: d.errors || [], asOf: d.asOf };
+    };
+
     // ── Supabase helpers ──────────────────────────────────────────────────────
     const bwLoad = async (profileId) => {
       const { data, error } = await _sb.from("bw_data").select("data")
@@ -78,6 +140,18 @@
     const BwPosBadge = ({ pos }) => (
       <span style={{ fontSize: 10, fontWeight: 700, color: BW_POS_COLOR[pos] || "#9aaabb", background: (BW_POS_COLOR[pos] || "#9aaabb") + "22", border: `1px solid ${(BW_POS_COLOR[pos] || "#9aaabb")}44`, borderRadius: 5, padding: "1px 5px", flexShrink: 0 }}>{pos}</span>
     );
+
+    // ── Badge de probabilidad de jugar ──────────────────────────────────────
+    const BwProbBadge = ({ prob, style }) => {
+      if (prob == null) return null;
+      const color = bwProbColor(prob);
+      return (
+        <span style={{ fontSize: 10, fontWeight: 700, color, background: color + "1a", border: `1px solid ${color}44`, borderRadius: 5, padding: "1px 5px", flexShrink: 0, ...style }}
+          title="Probabilidad de ser titular la próxima jornada (FutbolFantasy)">
+          {prob}%
+        </span>
+      );
+    };
 
     // ── Delta chip ────────────────────────────────────────────────────────────
     const BwDelta = ({ value, style }) => {
@@ -208,6 +282,7 @@
                               onError={e => e.target.style.display = "none"} />
                           )}
                           <span style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</span>
+                          <BwProbBadge prob={p.prob} />
                         </div>
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -703,6 +778,7 @@
                       <BwPosBadge pos={p.pos} />
                       <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 13, color: "#c8d8e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</span>
+                        <BwProbBadge prob={p.prob} />
                         {p.priceIncrement !== 0 && p.priceIncrement != null && (
                           <span style={{ fontSize: 11, color: p.priceIncrement > 0 ? "#34d399" : "#f87171", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
                             ({p.priceIncrement > 0 ? "+" : ""}{bwFmt(p.priceIncrement)})
@@ -883,7 +959,7 @@
     }
 
     // ── Ajustes tab ───────────────────────────────────────────────────────────
-    function BwAjustes({ settings, saldo, onSettingsSave, onImportCSV, onSyncAPI, syncing, syncError }) {
+    function BwAjustes({ settings, saldo, onSettingsSave, onImportCSV, onSyncAPI, syncing, syncError, onSyncProb, probSyncing, probSyncError }) {
       const [userId,   setUserId]   = useState(settings.userId   || "");
       const [leagueId, setLeagueId] = useState(settings.leagueId || "");
       const [token,    setToken]    = useState(settings.token    || "");
@@ -955,6 +1031,19 @@
           </div>
           {syncError && <div style={{ fontSize: 12, color: "#f87171", marginBottom: 16, background: "#f8717120", borderRadius: 8, padding: "8px 12px" }}>Error: {syncError}</div>}
 
+          {/* Probabilidad de jugar (FutbolFantasy) */}
+          <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px", marginBottom: 20 }}>
+            <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 700, marginBottom: 4 }}>Probabilidad de jugar (FutbolFantasy)</div>
+            <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 12, lineHeight: 1.6 }}>
+              Descarga de una vez la probabilidad de ser titular la próxima jornada para los 20 equipos de LaLiga y la empareja con tu plantilla por nombre y equipo. Se muestra como un badge de color junto a cada jugador en Plantilla y Simular.
+            </div>
+            <button onClick={onSyncProb} disabled={probSyncing}
+              style={{ background: probSyncing ? "#1a2535" : BW_A + "22", color: probSyncing ? "#5a7080" : BW_A, border: `1px solid ${BW_A}44`, borderRadius: 9, padding: "9px 18px", cursor: probSyncing ? "default" : "pointer", fontWeight: 600, fontSize: 13 }}>
+              {probSyncing ? "Sincronizando…" : "↻ Sincronizar probabilidades"}
+            </button>
+            {probSyncError && <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 10, background: "#f59e0b18", borderRadius: 8, padding: "8px 12px" }}>{probSyncError}</div>}
+          </div>
+
           {/* CSV import */}
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "18px 20px" }}>
             <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 700, marginBottom: 4 }}>Importar CSV (Biwenger export)</div>
@@ -982,6 +1071,8 @@
       const [loading,  setLoading]  = useState(true);
       const [syncing,  setSyncing]  = useState(false);
       const [syncErr,  setSyncErr]  = useState(null);
+      const [probSyncing, setProbSyncing] = useState(false);
+      const [probSyncErr, setProbSyncErr] = useState(null);
       const isMobile = useIsMobile();
 
       const valorEquipo = useMemo(() => players.reduce((s, p) => s + (p.precio || 0), 0), [players]);
@@ -1122,6 +1213,21 @@
         setSyncing(false);
       };
 
+      // Sincroniza probabilidad de jugar (FutbolFantasy) para toda la plantilla
+      const handleSyncProb = async () => {
+        setProbSyncing(true); setProbSyncErr(null);
+        try {
+          const { players: next, errors } = await bwFetchProbabilities(players);
+          await persist(next, null, null, null);
+          if (errors.length > 0) {
+            setProbSyncErr(`Sincronizado, pero ${errors.length} equipo(s) fallaron: ${errors.map(e => e.slug).join(", ")}`);
+          }
+        } catch (e) {
+          setProbSyncErr(e.message);
+        }
+        setProbSyncing(false);
+      };
+
       const TABS = [
         { id: "plantilla", label: "Plantilla", icon: "👥" },
         { id: "simular",   label: "Simular",   icon: "🧮" },
@@ -1187,7 +1293,7 @@
               <>
                 {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} lineup={lineup} onLineupSave={handleLineupSave} />}
                 {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} settings={settings} />}
-                {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} />}
+                {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} onSyncProb={handleSyncProb} probSyncing={probSyncing} probSyncError={probSyncErr} />}
               </>
             )}
           </div>
