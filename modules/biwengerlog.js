@@ -593,22 +593,24 @@
               <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
                 Banquillo — arrastra al campo
               </div>
-              <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {bench.map(p => (
                   <div key={p.id} draggable
                     onDragStart={() => setDragging(p.id)}
                     onDragEnd={() => { setDragging(null); setDragTarget(null); }}
-                    style={{ position: "relative", display: "flex", alignItems: "center", gap: 4, background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, padding: "4px 14px 4px 4px", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
-                    <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                      {p.isBuy
-                        ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
-                        : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
-                      }
+                    style={{ display: "flex", alignItems: "stretch", background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, overflow: "hidden", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px 4px 4px" }}>
+                      <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+                        {p.isBuy
+                          ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
+                          : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+                        }
+                      </div>
+                      <BwPosBadge pos={p.pos} />
+                      <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
                     </div>
-                    <BwPosBadge pos={p.pos} />
-                    <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
                     {p.prob != null && (
-                      <div style={{ position: "absolute", top: "50%", right: -9, transform: "translateY(-50%)", width: 20, height: 20, borderRadius: "50%", background: "#060d14", border: `1.5px solid ${bwProbColor(p.prob)}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 7, fontWeight: 800, color: bwProbColor(p.prob), boxShadow: "0 1px 4px rgba(0,0,0,0.4)" }}
+                      <div style={{ background: bwProbColor(p.prob), color: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 12px", fontSize: 15, fontWeight: 900, flexShrink: 0 }}
                         title="Probabilidad de ser titular la próxima jornada (FutbolFantasy)">
                         {p.prob}%
                       </div>
