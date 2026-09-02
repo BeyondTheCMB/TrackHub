@@ -5120,7 +5120,7 @@
     // identificador (URL de Finect o ticker de Yahoo).
     const VS_PRICE_SOURCES = {
       finect: { field: "finectUrl", label: "URL Finect", placeholder: "URL Finect", fetchQuote: vsFetchFinectQuote, resolve: vsResolveFinectByIsin, searchUrl: vsFinectSearchUrl, resolvedField: "url" },
-      yahoo: { field: "yahooTicker", label: "Ticker Yahoo", placeholder: "ticker", fetchQuote: vsFetchYahooQuote, resolve: vsResolveYahooTicker, searchUrl: vsYahooSearchUrl, resolvedField: "ticker" },
+      yahoo: { field: "yahooTicker", label: "Ticker Yahoo", placeholder: "ticker, ISIN o nombre", fetchQuote: vsFetchYahooQuote, resolve: vsResolveYahooTicker, searchUrl: vsYahooSearchUrl, resolvedField: "ticker" },
     };
 
     function VsSecurityRow({ security, mode, moveLabel, onMove, onUpdate, onRename, onRemove, tags, onUpdateTagIds }) {
@@ -5290,8 +5290,13 @@
             // Búsqueda de Yahoo sin clave, sin filtrar en el proxy — un
             // solo resultado se aplica directo, varios se muestran para
             // que el usuario elija (un ETF puede cotizar en varias
-            // bolsas y el proxy no tiene criterio para elegir).
-            const results = await vsSearchYahooSymbols(security.isin);
+            // bolsas y el proxy no tiene criterio para elegir). Busca
+            // por lo que haya escrito el usuario en el campo (ticker,
+            // ISIN o nombre libre — igual que el buscador de Análisis de
+            // fondos, que resuelve mucho mejor que buscar solo por ISIN)
+            // y solo cae al ISIN del valor si el campo está vacío.
+            const query = (fieldDraft && fieldDraft.trim()) || security.isin;
+            const results = await vsSearchYahooSymbols(query);
             if (results.length === 1) {
               await chooseCandidate(results[0].symbol);
             } else {
@@ -5314,7 +5319,11 @@
       const yResolve = async () => {
         setYResolving(true); setYError(""); setYCandidates(null);
         try {
-          const results = await vsSearchYahooSymbols(security.isin);
+          // Mismo criterio que resolve() de arriba: busca por lo que
+          // haya escrito el usuario en el campo de respaldo, y solo cae
+          // al ISIN si lo ha dejado vacío.
+          const query = (yFieldDraft && yFieldDraft.trim()) || security.isin;
+          const results = await vsSearchYahooSymbols(query);
           if (results.length === 1) {
             await chooseYCandidate(results[0].symbol);
           } else {
@@ -5503,7 +5512,7 @@
               <div style={{ display: "flex", gap: 4 }}>
                 <input value={fieldDraft} onChange={e => setFieldDraft(e.target.value)} onBlur={saveField} placeholder={src.placeholder}
                   style={{ width: 80, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
-                <button onClick={resolve} disabled={resolving} title="Resolver automáticamente"
+                <button onClick={resolve} disabled={resolving} title={mode === "yahoo" ? "Buscar / resolver (ticker, ISIN o nombre del campo; ISIN del valor si está vacío)" : "Resolver automáticamente"}
                   style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: resolving ? "not-allowed" : "pointer" }}>
                   {resolving ? "…" : <VsIcon name="zap" />}
                 </button>
@@ -5533,9 +5542,9 @@
                 <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #1a2535" }}>
                   <div style={{ fontSize: 9, color: "#5a7080", marginBottom: 3 }}>Yahoo (resp. / histórico)</div>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <input value={yFieldDraft} onChange={e => setYFieldDraft(e.target.value)} onBlur={saveYField} placeholder="ticker"
+                    <input value={yFieldDraft} onChange={e => setYFieldDraft(e.target.value)} onBlur={saveYField} placeholder="ticker, ISIN o nombre"
                       style={{ width: 80, background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 6px", fontSize: 10 }} />
-                    <button onClick={yResolve} disabled={yResolving} title="Buscar en Yahoo"
+                    <button onClick={yResolve} disabled={yResolving} title="Buscar / resolver (ticker, ISIN o nombre del campo; ISIN del valor si está vacío)"
                       style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: yResolving ? "not-allowed" : "pointer" }}>
                       {yResolving ? "…" : <VsIcon name="zap" />}
                     </button>
@@ -6061,13 +6070,37 @@
       // el campo sin que el usuario tenga que buscarlo a mano.
       const resolveDraftSource = async (isin, mode) => {
         const src = VS_PRICE_SOURCES[mode];
-        setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: true, _resolveError: "" } }));
+        setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: true, _resolveError: "", _candidates: null } }));
         try {
+          if (mode === "yahoo") {
+            // Antes usaba vsResolveYahooTicker (el endpoint ?yisin= que
+            // elige un ticker por su cuenta sin poder distinguir entre
+            // bolsas) — el mismo motivo por el que la resolución de
+            // valores nuevos vía Yahoo a veces no acertaba. Ahora busca
+            // con candidatos (igual que el catálogo y que Análisis de
+            // fondos) usando lo que haya en el campo, o el ISIN si está
+            // vacío, y deja elegir cuando hay más de un resultado.
+            const draft = newSecurityDrafts[isin];
+            const query = (draft && draft.yahooTicker && draft.yahooTicker.trim()) || isin;
+            const results = await vsSearchYahooSymbols(query);
+            if (results.length === 1) {
+              setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], yahooTicker: results[0].symbol, _resolving: false } }));
+            } else {
+              setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: false, _candidates: results } }));
+            }
+            return;
+          }
           const q = await src.resolve(isin);
           setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], [src.field]: q[src.resolvedField], _resolving: false } }));
         } catch (e) {
           setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _resolving: false, _resolveError: e.message } }));
         }
+      };
+
+      // Aplica un candidato elegido de la lista que deja resolveDraftSource
+      // cuando hay más de un resultado de Yahoo para un valor nuevo.
+      const chooseDraftYahooCandidate = (isin, symbol) => {
+        setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], yahooTicker: symbol, _candidates: null } }));
       };
 
       const accounts = useMemo(() => [...new Set(transactions.map(t => t.account))].sort(), [transactions]);
@@ -6189,14 +6222,26 @@
                         <div style={{ fontSize: 10, color: "#5a7080" }}>Ticker Yahoo</div>
                         <input
                           style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "6px 9px", fontSize: 11 }}
-                          type="text" value={draft.yahooTicker} placeholder="opcional — ej: AAPL, SWDA.MI"
+                          type="text" value={draft.yahooTicker} placeholder="opcional — ticker, ISIN o nombre (ej: AAPL, MSCI World)"
                           onChange={e => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], yahooTicker: e.target.value } }))}
                         />
-                        <button onClick={() => resolveDraftSource(isin, "yahoo")} disabled={draft._resolving} title="Resolver automáticamente"
+                        <button onClick={() => resolveDraftSource(isin, "yahoo")} disabled={draft._resolving} title="Buscar / resolver (ticker, ISIN o nombre)"
                           style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "4px 6px", fontSize: 13, cursor: draft._resolving ? "not-allowed" : "pointer" }}>
                           {draft._resolving ? "…" : <VsIcon name="zap" />}
                         </button>
                         <a href={vsYahooSearchUrl(isin)} target="_blank" rel="noopener noreferrer" title="Buscar en Yahoo" style={{ fontSize: 13, color: VS_A, whiteSpace: "nowrap" }}><VsIcon name="search" /></a>
+                      </div>
+                    )}
+                    {draft.assetType === "stock" && draft._candidates && (
+                      <div style={{ marginTop: 6, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 130, overflowY: "auto", background: "#060d14" }}>
+                        {draft._candidates.map(c => (
+                          <div key={c.symbol} onClick={() => chooseDraftYahooCandidate(isin, c.symbol)}
+                            style={{ padding: "3px 4px", fontSize: 10, cursor: "pointer", borderRadius: 4 }}
+                            onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                          </div>
+                        ))}
+                        <div onClick={() => setNewSecurityDrafts(prev => ({ ...prev, [isin]: { ...prev[isin], _candidates: null } }))} style={{ padding: "3px 4px", fontSize: 9, color: "#5a7080", cursor: "pointer" }}>cancelar</div>
                       </div>
                     )}
                     {draft._resolveError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{draft._resolveError}</div>}
