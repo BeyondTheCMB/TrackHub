@@ -4555,24 +4555,31 @@
     function vsBuildTagAllocationTree(rows, tags) {
       const tagsById = vsTagsById(tags);
       const byParent = vsTagsByParent(tags);
-      const acc = new Map(); // tagId -> { value, invested, directRows: [] }
-      const ensure = (id) => { if (!acc.has(id)) acc.set(id, { value: 0, invested: 0, directRows: [] }); return acc.get(id); };
-      const untagged = { value: 0, invested: 0, rows: [] };
+      const acc = new Map(); // tagId -> { value, invested, investedPeriodDelta, valueAtStart, directRows: [] }
+      const ensure = (id) => { if (!acc.has(id)) acc.set(id, { value: 0, invested: 0, investedPeriodDelta: 0, valueAtStart: 0, directRows: [] }); return acc.get(id); };
+      const untagged = { value: 0, invested: 0, investedPeriodDelta: 0, valueAtStart: 0, rows: [] };
       for (const row of rows) {
         const tagIds = (row.tagIds || []).filter(id => tagsById.has(id));
         if (tagIds.length === 0) {
-          untagged.value += row.value; untagged.invested += row.invested; untagged.rows.push(row);
+          untagged.value += row.value; untagged.invested += row.invested;
+          untagged.investedPeriodDelta += (row.investedPeriodDelta != null ? row.investedPeriodDelta : row.invested);
+          untagged.valueAtStart += (row.valueAtStart || 0); untagged.rows.push(row);
           continue;
         }
         const touched = new Set();
         for (const tid of tagIds) for (const anc of vsTagAncestorChain(tagsById, tid)) touched.add(anc);
-        for (const id of touched) { const n = ensure(id); n.value += row.value; n.invested += row.invested; }
+        for (const id of touched) {
+          const n = ensure(id);
+          n.value += row.value; n.invested += row.invested;
+          n.investedPeriodDelta += (row.investedPeriodDelta != null ? row.investedPeriodDelta : row.invested);
+          n.valueAtStart += (row.valueAtStart || 0);
+        }
         for (const tid of tagIds) ensure(tid).directRows.push(row);
       }
       const buildBranch = (parentId) => (byParent.get(parentId) || [])
         .map(t => {
           const n = ensure(t.id);
-          return { tag: t, value: n.value, invested: n.invested, directRows: n.directRows, children: buildBranch(t.id) };
+          return { tag: t, value: n.value, invested: n.invested, investedPeriodDelta: n.investedPeriodDelta, valueAtStart: n.valueAtStart, directRows: n.directRows, children: buildBranch(t.id) };
         })
         .filter(node => node.value > 0 || node.directRows.length > 0 || node.children.length > 0)
         .sort((a, b) => b.value - a.value);
@@ -6262,19 +6269,34 @@
         const hasPrice = !!(sec && sec.price != null);
         const value = hasPrice ? shares * sec.price : Math.max(investedTotal, 0);
 
-        const invested = periodStart ? vsInvestedForIsinInPeriod(isin, transactions, periodStart) : investedTotal;
+        // "Invertido" que se MUESTRA es siempre el coste acumulado total
+        // (mismo valor haya o no periodo elegido) — un periodo filtra
+        // rentabilidades, no reescribe cuánto llevas puesto de toda la
+        // vida. `investedPeriodDelta` es aparte, solo interno: lo que
+        // entró/salió DENTRO del periodo, que es lo que de verdad hace
+        // falta para la fórmula de "Desde inicio" ventaneada (junto con
+        // `valueAtStart`) — sin periodo, coincide con investedTotal.
+        const invested = investedTotal;
+        const investedPeriodDelta = periodStart ? vsInvestedForIsinInPeriod(isin, transactions, periodStart) : investedTotal;
 
         // Cambio desde el coste (o desde el arranque del periodo elegido)
         // — solo tiene sentido si de verdad hay precio de mercado (si no,
         // value==invested por el propio fallback y el cambio saldría
-        // siempre 0, engañoso).
-        let change = null, changePct = null;
+        // siempre 0, engañoso). `valueAtStart` se expone en la fila (0 si
+        // no aplica) para que vsBuildTagAllocationTree pueda agregar
+        // correctamente el "Desde inicio" de un grupo de etiquetas con
+        // periodo activo — sin esto, el grupo recalcularía el % desde
+        // cero con (valor-invertido)/invertido, que con "invertido del
+        // periodo" cerca de 0 (sin aportaciones nuevas) dispara el
+        // porcentaje a números absurdos.
+        let change = null, changePct = null, valueAtStart = 0;
         if (hasPrice) {
           if (periodStart) {
-            const { value: valueAtStart, missing } = vsValueForIsinAsOf(isin, transactions, securitiesCatalog, periodStart);
+            const { value: vStart, missing } = vsValueForIsinAsOf(isin, transactions, securitiesCatalog, periodStart);
             if (missing === 0) {
-              change = value - valueAtStart - invested;
-              const base = valueAtStart + invested;
+              valueAtStart = vStart;
+              change = value - valueAtStart - investedPeriodDelta;
+              const base = valueAtStart + investedPeriodDelta;
               changePct = base > 0 ? (change / base) * 100 : null;
             }
           } else {
@@ -6305,7 +6327,7 @@
         const ttwror = (sec && sec.history && sec.history.length > 0)
           ? vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog, null, periodStart)
           : null;
-        rows.push({ isin, name, code, shares, invested, value, hasPrice, change, changePct, xirr, ttwror, tagIds: (sec && sec.tagIds) || [] });
+        rows.push({ isin, name, code, shares, invested, investedPeriodDelta, value, valueAtStart, hasPrice, change, changePct, xirr, ttwror, tagIds: (sec && sec.tagIds) || [] });
       }
       rows.sort((a, b) => b.value - a.value);
       const totalValue = rows.reduce((s, r) => s + r.value, 0);
@@ -7038,7 +7060,18 @@
       const expandable = hasChildren || hasDirect;
       const isOpen = expanded.has(node.tag.id);
       const weightPct = totalValue > 0 ? (node.value / totalValue) * 100 : 0;
-      const changePct = node.invested > 0 ? ((node.value - node.invested) / node.invested) * 100 : null;
+      // Misma fórmula que usa vsComputeAllocation por fila — con
+      // valueAtStart=0 e investedPeriodDelta==invested (sin periodo
+      // activo) se reduce exactamente a (valor-invertido)/invertido, así
+      // que no hace falta rama aparte para el caso "sin periodo". Ojo:
+      // aquí se usa investedPeriodDelta (lo aportado DENTRO del periodo),
+      // no `invested` (que es el coste acumulado de siempre y es lo que
+      // se muestra en la celda de "Invertido" — dos cosas distintas a
+      // propósito, ver vsComputeAllocation).
+      const investedForPct = node.investedPeriodDelta != null ? node.investedPeriodDelta : node.invested;
+      const changePct = (node.valueAtStart + investedForPct) > 0
+        ? ((node.value - node.valueAtStart - investedForPct) / (node.valueAtStart + investedForPct)) * 100
+        : null;
       const cellStyle = { padding: depth === 0 ? "8px 7px" : "5px 7px", borderBottom: "1px solid #16202c" };
       // El resaltado por hover cubre tanto las raíces (anillo interior)
       // como las subetiquetas (anillo exterior) — ambas existen ahora como
@@ -7065,7 +7098,6 @@
             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A, fontWeight: depth === 0 ? 700 : 500 }}>{weightPct.toFixed(1)}%</td>
           </tr>
           {isOpen && hasDirect && node.directRows.map(r => {
-            const rChangePct = r.invested > 0 ? ((r.value - r.invested) / r.invested) * 100 : null;
             const rWeight = totalValue > 0 ? (r.value / totalValue) * 100 : 0;
             return (
               <tr key={node.tag.id + "_" + r.isin}>
@@ -7076,7 +7108,7 @@
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", color: "#7a90a8", fontSize: 11 }}>{r.shares.toFixed(4).replace(/\.?0+$/, "")}</td>
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#9aaabb" }}>{fmtEUR(r.invested)}</td>
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#cbd5e1" }}>{fmtEUR(r.value)}</td>
-                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: vsChangeColor(rChangePct) }}>{vsFmtPct(rChangePct)}</td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#5a7080" }}>{rWeight.toFixed(1)}%</td>
               </tr>
             );
@@ -7110,7 +7142,13 @@
       // toda la vida (tarjeta KPI) — la de la tabla, ventaneada, se
       // calcula aparte más abajo (totalTtwrorDisplay).
       const ttwror = useMemo(() => vsComputePortfolioTtwror(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
-      const totalInvested = rows.reduce((s, r) => s + r.invested, 0); // ya viene acotado al periodo si hay uno, por fila
+      // "Invertido" de la fila de totales: siempre el coste acumulado
+      // total (mismo criterio que cada fila, ver vsComputeAllocation) —
+      // no cambia con el periodo elegido.
+      const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
+      // Aparte, para la fórmula del % (que sí necesita el delta del
+      // periodo, no el acumulado) — sin periodo, coincide con totalInvested.
+      const totalInvestedPeriodDelta = rows.reduce((s, r) => s + (r.investedPeriodDelta != null ? r.investedPeriodDelta : r.invested), 0);
       // Valor de la cartera al arranque del periodo — línea base para el
       // "Desde inicio" de la fila de totales cuando hay un periodo
       // elegido (mismo criterio que cada fila individual, ver
@@ -7126,8 +7164,8 @@
       const totalChangePct = periodStart
         ? (periodBaseline && periodBaseline.missing === 0
             ? (() => {
-                const base = periodBaseline.value + totalInvested;
-                return base > 0 ? ((totalValue - periodBaseline.value - totalInvested) / base) * 100 : null;
+                const base = periodBaseline.value + totalInvestedPeriodDelta;
+                return base > 0 ? ((totalValue - periodBaseline.value - totalInvestedPeriodDelta) / base) * 100 : null;
               })()
             : null)
         : (totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null);
@@ -7342,7 +7380,7 @@
                             ))}
                             {tagTree.untagged.rows.length > 0 && (
                               <VsTagAllocGroupRows
-                                node={{ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, value: tagTree.untagged.value, invested: tagTree.untagged.invested, directRows: tagTree.untagged.rows, children: [] }}
+                                node={{ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, value: tagTree.untagged.value, invested: tagTree.untagged.invested, investedPeriodDelta: tagTree.untagged.investedPeriodDelta, valueAtStart: tagTree.untagged.valueAtStart, directRows: tagTree.untagged.rows, children: [] }}
                                 depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={tagTree.branches.length === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} />
                             )}
                           </tbody>
