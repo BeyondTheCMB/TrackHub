@@ -90,7 +90,12 @@
       if (!d.teams) throw new Error(d.error || "Respuesta inesperada del proxy de FutbolFantasy.");
       const next = players.map(p => {
         const teamData = p.teamSlug ? d.teams[p.teamSlug] : null;
-        const match = teamData ? bwMatchProb(p.nombre, teamData.players) : null;
+        // `ffSlug` es un alias manual (ver Ajustes → "Corregir nombre
+        // FutbolFantasy") para cuando el nombre de Biwenger y el de
+        // FutbolFantasy difieren demasiado como para que el emparejado
+        // por substring/apellido los reconozca (p.ej. "Bardeli" vs
+        // "Bardelli") — si existe, se usa en vez de `p.nombre`.
+        const match = teamData ? bwMatchProb(p.ffSlug || p.nombre, teamData.players) : null;
         return match ? { ...p, prob: match.prob, probAsOf: d.asOf } : p;
       });
       return { players: next, errors: d.errors || [], asOf: d.asOf, teams: d.teams };
@@ -227,11 +232,12 @@
       );
     };
 
-    function BwPlantilla({ players, onOfferChange, onCompraChange, token, lineup, onLineupSave }) {
+    function BwPlantilla({ players, onOfferChange, onCompraChange, onFfSlugChange, token, lineup, onLineupSave }) {
       const [sortBy,     setSortBy]     = useState("pos");
       const [search,     setSearch]     = useState("");
       const [editOffer,  setEditOffer]  = useState(null);
       const [editCompra, setEditCompra] = useState(null);
+      const [editSlug,   setEditSlug]   = useState(null);
 
       const sorted = useMemo(() => {
         let list = [...players];
@@ -286,6 +292,23 @@
                           )}
                           <span style={{ fontSize: 11, color: "#7a90a8" }}>{p.equipo}</span>
                           <BwProbBadge prob={p.prob} />
+                          {editSlug === p.id ? (
+                            <input type="text" defaultValue={p.ffSlug || ""} placeholder={p.nombre}
+                              autoFocus
+                              style={{ ...inp, width: 130, fontSize: 10, padding: "2px 6px" }}
+                              onFocus={e => e.target.style.borderColor = BW_A + "66"}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") { onFfSlugChange(p.id, e.target.value); setEditSlug(null); }
+                                if (e.key === "Escape") setEditSlug(null);
+                              }}
+                              onBlur={e => { onFfSlugChange(p.id, e.target.value); setEditSlug(null); }} />
+                          ) : (
+                            <button onClick={() => setEditSlug(p.id)}
+                              title="Corregir el nombre usado para emparejar con FutbolFantasy (p.ej. si el nombre de Biwenger no coincide)"
+                              style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 10, color: p.ffSlug ? BW_B : "#3a5060", textDecoration: "underline dotted" }}>
+                              {p.ffSlug ? `↳ ${p.ffSlug}` : "✎"}
+                            </button>
+                          )}
                         </div>
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -524,6 +547,30 @@
         );
       };
 
+      const BenchPill = ({ p }) => (
+        <div draggable
+          onDragStart={() => setDragging(p.id)}
+          onDragEnd={() => { setDragging(null); setDragTarget(null); }}
+          style={{ display: "flex", alignItems: "stretch", background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, overflow: "hidden", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px 4px 4px" }}>
+            <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+              {p.isBuy
+                ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
+                : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+              }
+            </div>
+            <BwPosBadge pos={p.pos} />
+            <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
+          </div>
+          {p.prob != null && (
+            <div style={{ background: bwProbColor(p.prob), color: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 9px", fontSize: 12, fontWeight: 900, flexShrink: 0 }}
+              title="Probabilidad de ser titular la próxima jornada (FutbolFantasy)">
+              {p.prob}%
+            </div>
+          )}
+        </div>
+      );
+
       return (
         <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, overflow: "hidden" }}>
           {/* Formation pills + size selector */}
@@ -593,32 +640,38 @@
               <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
                 Banquillo — arrastra al campo
               </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {bench.map(p => (
-                  <div key={p.id} draggable
-                    onDragStart={() => setDragging(p.id)}
-                    onDragEnd={() => { setDragging(null); setDragTarget(null); }}
-                    style={{ display: "flex", alignItems: "stretch", background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, overflow: "hidden", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px 4px 4px" }}>
-                      <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                        {p.isBuy
-                          ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
-                          : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
-                        }
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {["POR", "DEF", "MC", "DEL"].map(pos => {
+                  const group = bench.filter(p => p.pos === pos);
+                  if (group.length === 0) return null;
+                  return (
+                    <div key={pos}>
+                      <div style={{ fontSize: 10, color: BW_POS_COLOR[pos], fontWeight: 800, letterSpacing: "0.06em", marginBottom: 5 }}>
+                        {pos} <span style={{ color: "#3a5060", fontWeight: 400 }}>({group.length})</span>
                       </div>
-                      <BwPosBadge pos={p.pos} />
-                      <span style={{ fontSize: 11, color: "#c8d8e8" }}>{p.nombre.split(" ").slice(-1)[0]}</span>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {group.map(p => <BenchPill key={p.id} p={p} />)}
+                      </div>
                     </div>
-                    {p.prob != null && (
-                      <div style={{ background: bwProbColor(p.prob), color: "#060d14", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 9px", fontSize: 12, fontWeight: 900, flexShrink: 0 }}
-                        title="Probabilidad de ser titular la próxima jornada (FutbolFantasy)">
-                        {p.prob}%
+                  );
+                })}
+                {(() => {
+                  const other = bench.filter(p => !["POR", "DEF", "MC", "DEL"].includes(p.pos));
+                  if (other.length === 0) return null;
+                  return (
+                    <div>
+                      <div style={{ fontSize: 10, color: BW_B, fontWeight: 800, letterSpacing: "0.06em", marginBottom: 5 }}>
+                        OBJETIVOS <span style={{ color: "#3a5060", fontWeight: 400 }}>({other.length})</span>
                       </div>
-                    )}
-                  </div>
-                ))}
-                {bench.length === 0 && <span style={{ fontSize: 12, color: "#3a5060" }}>Todos colocados ✓</span>}
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {other.map(p => <BenchPill key={p.id} p={p} />)}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
+
+              {bench.length === 0 && <span style={{ fontSize: 12, color: "#3a5060" }}>Todos colocados ✓</span>}
             </div>
           )}
         </div>
@@ -632,7 +685,7 @@
       const [newBuyPrice,  setNewBuyPrice]  = useState("");
       const [marketData,   setMarketData]   = useState(null);
       const [marketSearch, setMarketSearch] = useState("");
-      const [marketFilter, setMarketFilter] = useState("all"); // all | biwenger | others | own
+      const [marketFilter, setMarketFilter] = useState("biwenger"); // all | biwenger | others | own
       const isMob = useIsMobile();
 
       const toggleSell = (id) => setSellIds(prev => {
@@ -737,10 +790,14 @@
         if (!Array.isArray(marketData)) return [];
         // Adjunta la probabilidad de jugar aquí mismo (una sola vez por
         // jugador) para que tanto la fila del mercado como el pitch, si
-        // se añade como objetivo, lean directamente `p.prob`.
+        // se añade como objetivo, lean directamente `p.prob`. Si el
+        // jugador del mercado es tuyo (isOwn), reutiliza el alias manual
+        // (`ffSlug`) que le hayas puesto en Plantilla, por si el nombre de
+        // Biwenger y el de FutbolFantasy no casan bien.
         let list = marketData.map(p => {
           const teamData = ffData && p.teamSlug ? ffData[p.teamSlug] : null;
-          const match = teamData ? bwMatchProb(p.nombre, teamData.players) : null;
+          const owned = p.isOwn ? players.find(op => op.id === p.id) : null;
+          const match = teamData ? bwMatchProb((owned && owned.ffSlug) || p.nombre, teamData.players) : null;
           return match ? { ...p, prob: match.prob } : p;
         });
         if (marketFilter === "biwenger") list = list.filter(p => p.isBiwenger);
@@ -749,7 +806,7 @@
         const q = marketSearch.toLowerCase();
         if (q) list = list.filter(p => p.nombre?.toLowerCase().includes(q) || p.equipo?.toLowerCase().includes(q) || p.pos?.toLowerCase().includes(q));
         return [...list].sort((a, b) => b.precio - a.precio);
-      }, [marketData, marketSearch, marketFilter, ffData]);
+      }, [marketData, marketSearch, marketFilter, ffData, players]);
 
       return (
         <div style={{ padding: "16px 20px 60px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1162,6 +1219,7 @@
                     fechaCompra:    ap.fechaCompra || null,
                     prob:           existing?.prob ?? null,     // se conserva — este sync no toca probabilidades
                     probAsOf:       existing?.probAsOf ?? null,
+                    ffSlug:         existing?.ffSlug ?? null,    // alias manual para el emparejado con FutbolFantasy
                   };
                 });
                 currentSaldo = raw.balance ?? currentSaldo;
@@ -1218,6 +1276,15 @@
         persist(next, null, null, null);
       };
 
+      // Alias manual para el emparejado con FutbolFantasy — para cuando el
+      // nombre de Biwenger y el de FutbolFantasy difieren demasiado (p.ej.
+      // "Bardeli" vs "Bardelli") como para que el matching automático
+      // (substring/apellido) los reconozca como la misma persona.
+      const handleFfSlugChange = (id, ffSlug) => {
+        const next = players.map(p => p.id === id ? { ...p, ffSlug: (ffSlug || "").trim() || null } : p);
+        persist(next, null, null, null);
+      };
+
       const handleSettingsSave = (newSettings, newSaldo) => {
         persist(null, newSaldo, newSettings, null);
       };
@@ -1244,6 +1311,7 @@
             oferta:  existing?.oferta || null,
             prob:    existing?.prob ?? null,
             probAsOf: existing?.probAsOf ?? null,
+            ffSlug:  existing?.ffSlug ?? null,
           };
         });
         persist(next, null, null);
@@ -1280,6 +1348,7 @@
               fechaCompra:    ap.fechaCompra || null,
               prob:           existing?.prob ?? null,
               probAsOf:       existing?.probAsOf ?? null,
+              ffSlug:         existing?.ffSlug ?? null,
             };
           });
 
@@ -1376,7 +1445,7 @@
               </div>
             ) : (
               <>
-                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} token={settings.token} lineup={lineup} onLineupSave={handleLineupSave} />}
+                {tab === "plantilla" && <BwPlantilla players={players} onOfferChange={handleOfferChange} onCompraChange={handleCompraChange} onFfSlugChange={handleFfSlugChange} token={settings.token} lineup={lineup} onLineupSave={handleLineupSave} />}
                 {tab === "simular"   && <BwSimular   players={players} saldo={saldo} valorEquipo={valorEquipo} token={settings.token} savedLineup={lineup} settings={settings} ffData={ffData} />}
                 {tab === "ajustes"   && <BwAjustes   settings={settings} saldo={saldo} onSettingsSave={handleSettingsSave} onImportCSV={handleImportCSV} onSyncAPI={handleSyncAPI} syncing={syncing} syncError={syncErr} onSyncProb={handleSyncProb} probSyncing={probSyncing} probSyncError={probSyncErr} />}
               </>
