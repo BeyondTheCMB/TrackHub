@@ -235,6 +235,15 @@
         // vsCompoundFactorInWindow.
         rets.push({date: monthly[i].date, startDate: monthly[i-1].date, value:r});
       }
+      // La última observación puede ser un mes a medias: si la serie llega al
+      // día 3 del mes en curso, ese "retorno mensual" cubre 3 días pero entra
+      // en la regresión con el mismo peso que un mes entero. Se descarta si su
+      // ventana es demasiado corta para ser comparable.
+      if (rets.length > 1) {
+        const last = rets[rets.length - 1];
+        const dias = (last.date - last.startDate) / 86400000;
+        if (dias < 20) rets.pop();
+      }
       return rets;
     }
     function vsDaysInMonth(y,m){ return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
@@ -759,9 +768,10 @@
       const fitted = vsMatVec(X, weights);
       const resid = r.map((ri, i) => ri - fitted[i]);
       const rMean = r.reduce((a, b) => a + b, 0) / nObs;
-      const ssRes = resid.reduce((a, e) => a + e * e, 0);
-      const ssTot = r.reduce((a, ri) => a + (ri - rMean) ** 2, 0);
-      const rSquared = ssTot > 0 ? 1 - ssRes / ssTot : NaN;
+      const residMean = resid.reduce((a, b) => a + b, 0) / resid.length;
+      const residVar = resid.reduce((a, e) => a + (e - residMean) ** 2, 0) / (resid.length - 1);
+      const rVar = r.reduce((a, ri) => a + (ri - rMean) ** 2, 0) / (nObs - 1);
+      const rSquared = rVar > 0 ? 1 - residVar / rVar : NaN;
 
       const weightsByFactor = {};
       factorNames.forEach((name, i) => (weightsByFactor[name] = weights[i]));
@@ -778,21 +788,62 @@
     // "encoge" los pesos hacia un reparto más uniforme entre ellos, dando
     // una solución más estable frente a pequeños cambios en los datos.
     // lambda=0 es exactamente el mismo resultado que vsSolveRBSA sin Ridge.
+
+    // ── Centrado para el objetivo de Sharpe ──────────────────────────────────
+    // Sharpe (1992) minimiza la VARIANZA del tracking error, no la suma de sus
+    // cuadrados: "the goal of style analysis is to select the style that
+    // minimizes the variance of this difference... the objective is not to
+    // minimize either the average value of this difference or the sum of the
+    // squared differences".
+    //
+    // Minimizar Var(r - Xw) equivale exactamente a minimizar SUM((r-Xw)^2)
+    // sobre las series CENTRADAS (restada la media de r y la de cada columna
+    // de X). El alfa del gestor se recupera después, fuera del optimizador.
+    //
+    // Sin centrar, como el modelo no tiene intercepto se cumple
+    //     SUM(e^2) = SUM((e - ebar)^2) + n*ebar^2
+    // es decir, el optimizador minimiza a la vez el tracking error Y el alfa,
+    // desplazando peso hacia los factores cuyo retorno medio se parece al del
+    // fondo. Es un sesgo sistemático, no ruido.
+    function vsCenterForStyle(r, X) {
+      const n = r.length, nF = X[0].length;
+      const rMean = r.reduce((a, b) => a + b, 0) / n;
+      const xMeans = new Array(nF).fill(0);
+      for (let i = 0; i < n; i++) for (let j = 0; j < nF; j++) xMeans[j] += X[i][j];
+      for (let j = 0; j < nF; j++) xMeans[j] /= n;
+      return {
+        rc: r.map(v => v - rMean),
+        Xc: X.map(row => row.map((v, j) => v - xMeans[j])),
+        rMean, xMeans,
+      };
+    }
     function vsSolveRBSA(r, X, maxIter, tol, lambda){
-      maxIter = maxIter || 5000;
-      tol = tol || 1e-10;
+      maxIter = maxIter || 50000;
+      tol = tol || 1e-12;
       lambda = lambda || 0;
       const nF = X[0].length;
-      const L = vsEstimateLipschitz(X) + 2*lambda; const step = 1/L;
+      // Objetivo de Sharpe: varianza del tracking error -> resolver sobre las
+      // series centradas. Ver vsCenterForStyle.
+      const { rc, Xc } = vsCenterForStyle(r, X);
+      const L = vsEstimateLipschitz(Xc) + 2*lambda; const step = 1/L;
       let w = new Array(nF).fill(1/nF); let prevObj = Infinity; let converged=false; let iter=0;
       for(iter=0; iter<maxIter; iter++){
-        const fitted = vsMatVec(X,w); const resid = r.map((ri,i)=>ri-fitted[i]);
-        const grad = vsTransposeMatVec(X,resid).map((g,j)=>-2*g + 2*lambda*w[j]);
+        const fitted = vsMatVec(Xc,w); const resid = rc.map((ri,i)=>ri-fitted[i]);
+        const grad = vsTransposeMatVec(Xc,resid).map((g,j)=>-2*g + 2*lambda*w[j]);
         const wNew = vsProjectToSimplex(w.map((wi,j)=>wi-step*grad[j]));
-        const fittedNew = vsMatVec(X,wNew); const residNew = r.map((ri,i)=>ri-fittedNew[i]);
+        const fittedNew = vsMatVec(Xc,wNew); const residNew = rc.map((ri,i)=>ri-fittedNew[i]);
         const ridgePenalty = lambda * wNew.reduce((s,wi)=>s+wi*wi, 0);
         const obj = residNew.reduce((a,e)=>a+e*e,0) + ridgePenalty;
-        if(Math.abs(prevObj-obj) < tol){ w=wNew; converged=true; iter++; break; }
+        // Criterio RELATIVO más norma del paso. El objetivo es una suma de
+        // cuadrados de retornos mensuales (orden 1e-2 a 1e-3): un umbral
+        // ABSOLUTO de 1e-10 se alcanza cuando el descenso se frena, no cuando
+        // llega al óptimo, y aun así reportaba "convergió". Con factores muy
+        // colineales eso dejaba los pesos hasta 0,2 pp fuera del óptimo.
+        const relChange = Math.abs(prevObj - obj) / Math.max(Math.abs(prevObj), 1e-30);
+        let stepNorm = 0;
+        for (let j = 0; j < nF; j++) stepNorm += (wNew[j] - w[j]) ** 2;
+        stepNorm = Math.sqrt(stepNorm);
+        if (relChange < tol && stepNorm < 1e-9) { w = wNew; converged = true; iter++; break; }
         w = wNew; prevObj = obj;
       }
       w = w.map(wi => Math.abs(wi)<1e-6 ? 0 : wi);
@@ -803,13 +854,22 @@
     function vsRunRBSA(r, X, factorNames, maxIter, tol, lambda){
       const {weights, iterations, converged, maxIter: usedMaxIter, tol: usedTol, lambda: usedLambda} = vsSolveRBSA(r, X, maxIter, tol, lambda);
       const fitted = vsMatVec(X,weights); const resid = r.map((ri,i)=>ri-fitted[i]);
-      const rMean = r.reduce((a,b)=>a+b,0)/r.length;
-      const ssRes = resid.reduce((a,e)=>a+e*e,0);
-      const ssTot = r.reduce((a,ri)=>a+(ri-rMean)**2,0);
-      const rSquared = ssTot>0 ? 1-ssRes/ssTot : NaN;
+      const nR = r.length;
+      const rMean = r.reduce((a,b)=>a+b,0)/nR;
       const residMean = resid.reduce((a,b)=>a+b,0)/resid.length;
+      // R² de Sharpe, ecuación (2): 1 - Var(residuo) / Var(retorno del fondo).
+      // AMBOS términos centrados. Antes el numerador NO se centraba, lo que
+      // contabilizaba todo el alfa del gestor como error de ajuste y podía
+      // dar R² negativos en fondos perfectamente bien modelados.
       const residVar = resid.reduce((a,e)=>a+(e-residMean)**2,0)/(resid.length-1);
+      const rVar = r.reduce((a,ri)=>a+(ri-rMean)**2,0)/(nR-1);
+      const rSquared = rVar>0 ? 1-residVar/rVar : NaN;
       const trackingErrorAnnual = Math.sqrt(residVar)*Math.sqrt(12);
+      // Retorno de selección (alfa): la parte del retorno que NO explica el
+      // estilo. Es el residuo medio, y ahora es un estimador limpio porque el
+      // optimizador ya no lo estaba minimizando junto con el tracking error.
+      const alphaMonthly = residMean;
+      const alphaAnnual = Math.pow(1 + alphaMonthly, 12) - 1;
       const nObs = r.length, nFactors = X[0].length;
       const warnings = [];
       if(nObs < 36) warnings.push(`Solo ${nObs} observaciones mensuales (<36 recomendado). Los pesos pueden ser inestables.`);
@@ -830,7 +890,7 @@
       }
       const weightsByFactor = {};
       factorNames.forEach((name,i)=> weightsByFactor[name] = weights[i]);
-      return {weights:weightsByFactor, rSquared, trackingErrorAnnual, nObs, nFactors, warnings, converged, iterations, maxIter: usedMaxIter, tol: usedTol, lambda: usedLambda};
+      return {weights:weightsByFactor, rSquared, trackingErrorAnnual, alphaMonthly, alphaAnnual, nObs, nFactors, warnings, converged, iterations, maxIter: usedMaxIter, tol: usedTol, lambda: usedLambda};
     }
 
     // ── RBSA rodante (evolución del estilo en el tiempo) ──────────────────────
@@ -902,27 +962,96 @@
       return denom > 0 ? cov/denom : null;
     }
 
-    // Matriz de correlación pareja a pareja para un conjunto de factores
-    // del pool. Alinea por mes de calendario (ya son series mensuales) y
-    // exige al menos 6 meses en común para calcular cada celda.
-    function vsFactorCorrelationMatrix(factorsObj, names) {
-      const maps = {};
-      for (const nm of names) {
-        maps[nm] = new Map(factorsObj[nm].returns.map(p => [p.date.slice(0,7), p.value]));
-      }
-      const matrix = {};
-      for (const a of names) {
-        matrix[a] = {};
-        for (const b of names) {
-          if (a === b) { matrix[a][b] = 1; continue; }
-          const commonKeys = [...maps[a].keys()].filter(k => maps[b].has(k));
-          if (commonKeys.length < 6) { matrix[a][b] = null; continue; }
-          const va = commonKeys.map(k => maps[a].get(k));
-          const vb = commonKeys.map(k => maps[b].get(k));
-          matrix[a][b] = vsPearsonCorr(va, vb);
+    // Matriz de correlación pareja a pareja. Para cada pareja se toma la serie
+    // con MENOS observaciones como rejilla de referencia, y la otra se COMPONE
+    // dentro de la ventana real de cada observación — el mismo criterio que ya
+    // usaba el RBSA vía vsCompoundFactorInWindow, que nunca se había propagado
+    // aquí.
+    //
+    // Por qué importa: emparejando por etiqueta de mes, el "retorno de abril"
+    // de una serie con huecos es en realidad el compuesto de feb-mar-abr, y se
+    // estaba comparando contra el abril suelto de la otra. En una prueba con
+    // una serie que ES la otra observada 1 de cada 3 meses (correlación
+    // verdadera = 1,00), el método anterior devolvía 0,40. El sesgo siempre va
+    // hacia abajo.
+    //
+    // Devuelve { matrix, counts, minCommon, warnings }.
+    const VS_CORR_MIN_OBS = 24;
+
+    function vsHydrateSeriesForCorr(entry) {
+      const pts = entry.returns
+        .map(p => ({
+          date: new Date(p.date + "T00:00:00Z"),
+          startDate: p.startDate ? new Date(p.startDate + "T00:00:00Z") : null,
+          value: p.value,
+        }))
+        .sort((a, b) => a.date - b.date);
+      for (let i = 0; i < pts.length; i++) {
+        if (!pts[i].startDate) {
+          if (i > 0) pts[i].startDate = pts[i - 1].date;
+          else { const d = new Date(pts[i].date); d.setUTCMonth(d.getUTCMonth() - 1); pts[i].startDate = d; }
         }
       }
-      return matrix;
+      return pts;
+    }
+
+    function vsFactorCorrelationMatrix(factorsObj, names) {
+      const series = {};
+      for (const nm of names) series[nm] = vsHydrateSeriesForCorr(factorsObj[nm]);
+
+      const matrix = {}, counts = {};
+      let minCommon = Infinity;
+      for (const a of names) { matrix[a] = {}; counts[a] = {}; }
+
+      for (let i = 0; i < names.length; i++) {
+        const a = names[i];
+        matrix[a][a] = 1; counts[a][a] = series[a].length;
+        for (let j = i + 1; j < names.length; j++) {
+          const b = names[j];
+          // Rejilla = la serie con menos observaciones; la otra se compone.
+          const [gridName, otherName] = series[a].length <= series[b].length ? [a, b] : [b, a];
+          const grid = series[gridName], other = series[otherName];
+          const va = [], vb = [];
+          for (const p of grid) {
+            const comp = vsCompoundFactorInWindow(other, p.startDate, p.date);
+            if (comp === null) continue;
+            va.push(p.value); vb.push(comp);
+          }
+          const n = va.length;
+          counts[a][b] = counts[b][a] = n;
+          const val = n >= VS_CORR_MIN_OBS ? vsPearsonCorr(va, vb) : null;
+          matrix[a][b] = matrix[b][a] = val;
+          if (val !== null && n < minCommon) minCommon = n;
+        }
+      }
+
+      // Aviso de eliminación por parejas: cada celda puede salir de una muestra
+      // distinta, y eso puede producir una matriz que ninguna combinación de
+      // datos reales podría generar (no semidefinida positiva). Se detecta
+      // reutilizando el mismo Jacobi que ya usa el PCA.
+      const warnings = [];
+      const complete = names.every(a => names.every(b => matrix[a][b] !== null));
+      if (complete && names.length >= 2) {
+        const M = names.map(a => names.map(b => matrix[a][b]));
+        try {
+          const { eigenvalues } = vsJacobiEigen(M);
+          const minEig = Math.min(...eigenvalues);
+          if (minEig < -1e-8) {
+            warnings.push(`La matriz no es semidefinida positiva (autovalor mínimo ${minEig.toFixed(3)}). Cada celda se ha calculado con los meses en común de esa pareja concreta, y con historiales muy dispares eso puede producir una combinación de correlaciones que ningún conjunto de datos real podría generar. Fíate de cada celda por separado, no de la matriz como bloque, y no la uses para PCA ni optimización.`);
+          }
+        } catch (e) { /* si el Jacobi falla, no bloquear el render */ }
+      }
+      const nulls = [];
+      for (let i = 0; i < names.length; i++)
+        for (let j = i + 1; j < names.length; j++)
+          if (matrix[names[i]][names[j]] === null) nulls.push(`${names[i]}↔${names[j]}`);
+      if (nulls.length) {
+        warnings.push(`${nulls.length} pareja${nulls.length === 1 ? "" : "s"} sin suficiente historial en común (mínimo ${VS_CORR_MIN_OBS} observaciones): ${nulls.slice(0, 4).join(", ")}${nulls.length > 4 ? "…" : ""}.`);
+      }
+      if (isFinite(minCommon) && minCommon < 36) {
+        warnings.push(`La pareja con menos solape tiene solo ${minCommon} observaciones. Con menos de 36, el intervalo de confianza de una correlación es muy ancho — trata esos valores como orientativos.`);
+      }
+      return { matrix, counts, minCommon: isFinite(minCommon) ? minCommon : null, warnings };
     }
 
     // Trunca etiquetas largas para las cabeceras verticales (el nombre
@@ -938,7 +1067,7 @@
     const VS_CORR_LABEL_MAX = 20;
 
     function VsCorrHeatmap({ dataMap, names }) {
-      const matrix = vsFactorCorrelationMatrix(dataMap, names);
+      const { matrix, counts, warnings } = vsFactorCorrelationMatrix(dataMap, names);
       const [hoverRow, setHoverRow] = useState(null);
       const [hoverCol, setHoverCol] = useState(null);
 
@@ -951,6 +1080,13 @@
 
       return (
         <div>
+          {warnings.length > 0 && (
+            <div style={{ marginBottom: 12, padding: "10px 12px", background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 8 }}>
+              {warnings.map((w, i) => (
+                <div key={i} style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace", lineHeight: 1.5, marginTop: i ? 6 : 0 }}>⚠ {w}</div>
+              ))}
+            </div>
+          )}
           <div style={{ overflow: "auto", maxHeight: 520, borderRadius: 8, border: "1px solid #1a2535" }}>
             <table style={{ borderCollapse: "separate", borderSpacing: 0, fontSize: 11 }}>
               <thead>
@@ -1001,7 +1137,7 @@
                       const isDiag = rowNm === colNm;
                       const isHi = hoverRow === rowNm || hoverCol === colNm;
                       return (
-                        <td key={colNm} title={`${rowNm} × ${colNm}${v !== null ? `: ${v.toFixed(3)}` : ""}`}
+                        <td key={colNm} title={`${rowNm} ↔ ${colNm}: ${v === null ? "sin datos suficientes" : v.toFixed(3)} (${counts[rowNm][colNm]} obs.)`}
                           onMouseEnter={()=>{ setHoverRow(rowNm); setHoverCol(colNm); }}
                           onMouseLeave={()=>{ setHoverRow(null); setHoverCol(null); }}
                           style={{
@@ -1838,8 +1974,15 @@
 
       const indexNames = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
-      const allNames = [...indexNames, ...fundNames];
-      const combinedData = { ...factors, ...funds };
+      // Mismo tratamiento de colisiones que VsCorrelationTab (ver Fase 4.3
+      // del diagnóstico RBSA/correlación) — este combinedData alimenta la
+      // misma VsCorrHeatmap, así que necesita las mismas claves desambiguadas.
+      const poolCollisions = new Set(indexNames.filter(nm => funds[nm]));
+      const poolLabel = (nm, kind) => (poolCollisions.has(nm) ? `${nm} (${kind === "index" ? "índice" : "fondo"})` : nm);
+      const combinedData = {};
+      indexNames.forEach(nm => { combinedData[poolLabel(nm, "index")] = factors[nm]; });
+      fundNames.forEach(nm => { combinedData[poolLabel(nm, "fund")] = funds[nm]; });
+      const allNames = Object.keys(combinedData);
 
       const sourceOptionsForType = type === "index"
         ? [
@@ -2169,7 +2312,12 @@
       const [yahooCandidates, setYahooCandidates] = useState(null);
       const [yahooSearching, setYahooSearching] = useState(false);
       const [yahooSearchError, setYahooSearchError] = useState("");
-      const [selected, setSelected] = useState(new Set());
+      // La caja entra por defecto: sin un factor de liquidez, la restricción
+      // Σw=1 obliga a repartir el 100% entre activos de riesgo, inflando la
+      // beta de cualquier fondo que mantenga reservas. Sharpe (1992) incluye
+      // "Bills" entre sus doce clases exactamente por esto.
+      const [selected, setSelected] = useState(() =>
+        new Set(Object.keys(factors).filter(nm => factors[nm].category === "cash")));
       const [status, setStatus] = useState("");
       const [busy, setBusy] = useState(false);
       const [result, setResult] = useState(null);
@@ -2184,11 +2332,26 @@
       const [rollingStepInput, setRollingStepInput] = useState("6");
       const [rollingResult, setRollingResult] = useState(null);
       const [rollingBusy, setRollingBusy] = useState(false);
-      const [maxIter, setMaxIter] = useState(5000);
-      const [tolInput, setTolInput] = useState("1e-10");
+      const [maxIter, setMaxIter] = useState(50000);
+      const [tolInput, setTolInput] = useState("1e-12");
       const [saving, setSaving] = useState(false);
       const [saveMsg, setSaveMsg] = useState("");
       const fileRef = useRef(null);
+
+      // `factors` llega vacío en el primer render (aún cargando de Supabase)
+      // y se rellena después — el useState de arriba solo se evalúa al
+      // montar, así que si en ese momento no había caja, nunca se marcaría
+      // sola. Este efecto la preselecciona la primera vez que aparece, sin
+      // pisar una deselección manual posterior del usuario (por eso solo
+      // corre una vez, con cashSeeded).
+      const cashSeeded = useRef(false);
+      useEffect(() => {
+        if (cashSeeded.current) return;
+        const cashNames = Object.keys(factors).filter(nm => factors[nm].category === "cash");
+        if (cashNames.length === 0) return;
+        cashSeeded.current = true;
+        setSelected(prev => { const next = new Set(prev); cashNames.forEach(nm => next.add(nm)); return next; });
+      }, [factors]);
 
       const names = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
@@ -2210,6 +2373,8 @@
             weights: result.weights,
             rSquared: result.rSquared,
             trackingErrorAnnual: result.trackingErrorAnnual,
+            alphaMonthly: result.alphaMonthly,
+            alphaAnnual: result.alphaAnnual,
             nObs: result.nObs,
             nFactors: result.nFactors,
             warnings: result.warnings,
@@ -2218,6 +2383,11 @@
             tol: result.tol,
             converged: result.converged,
             savedAt: new Date().toISOString(),
+            // Los análisis guardados con el motor anterior (suma de cuadrados
+            // sin centrar) tienen pesos sistemáticamente sesgados en fondos
+            // con alfa — ver diagnóstico RBSA/correlación, fase 1. Este campo
+            // permite distinguirlos en VsSavedAnalyses sin borrar nada.
+            engineVersion: 2,
           });
           setSaveMsg("Guardado ✓");
         } catch (e) {
@@ -2256,7 +2426,7 @@
         setRidgeBusy(true);
         try {
           const parsedTol = parseFloat(tolInput);
-          const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
+          const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-12;
           const res = vsRunRBSA(lastRX.r, lastRX.X, lastRX.selNames, maxIter, effectiveTol, lambda);
           setRidgeResult(res);
         } catch (e) {
@@ -2278,7 +2448,7 @@
         setTimeout(() => {
           try {
             const parsedTol = parseFloat(tolInput);
-            const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
+            const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-12;
             const res = vsRollingRBSA(lastRX.r, lastRX.X, lastRX.dates, lastRX.selNames, windowSize, step, maxIter, effectiveTol);
             setRollingResult(res);
           } catch (e) {
@@ -2396,8 +2566,12 @@
           }
 
           const parsedTol = parseFloat(tolInput);
-          const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-10;
+          const effectiveTol = (isFinite(parsedTol) && parsedTol > 0) ? parsedTol : 1e-12;
           const res = vsRunRBSA(r, X, selNames, maxIter, effectiveTol);
+          const haySinCaja = !selNames.some(nm => factors[nm] && factors[nm].category === "cash");
+          if (haySinCaja) {
+            res.warnings.push("No hay ningún factor de caja en la cesta. La restricción de que los pesos sumen 100% obligará al modelo a repartir toda la liquidez del fondo entre activos de riesgo, inflando sus betas. Añade Cash_ESTR_EUR.");
+          }
           setResult(res); setNObs(r.length);
           setLastRX({ r, X, selNames, dates });
           setStatus(`Ajuste completado con ${r.length} observaciones (${res.iterations}/${maxIter} iteraciones, tol=${effectiveTol.toExponential(0)}${res.converged ? ", convergió" : ", NO convergió"}).`);
@@ -2545,19 +2719,19 @@
               <span style={{ fontWeight: 400, color: "#5a7080" }}> — sube esto si el ajuste avisa de que no convergió</span>
             </label>
             <input style={inputStyle} type="number" min={100} step={500} value={maxIter}
-              onChange={e=>setMaxIter(Math.max(100, parseInt(e.target.value) || 5000))} />
+              onChange={e=>setMaxIter(Math.max(100, parseInt(e.target.value) || 50000))} />
 
             <label style={labelStyle}>
               Tolerancia de convergencia
-              <span style={{ fontWeight: 400, color: "#5a7080" }}> — más pequeña = más exigente (para el objetivo antes)</span>
+              <span style={{ fontWeight: 400, color: "#5a7080" }}> — cambio RELATIVO del objetivo entre iteraciones; más pequeña = más exigente</span>
             </label>
             <input style={inputStyle} type="text" value={tolInput}
               onChange={e=>setTolInput(e.target.value)}
-              placeholder="1e-10" />
+              placeholder="1e-12" />
             <small style={{ display: "block", fontSize: 10, color: (isFinite(parseFloat(tolInput)) && parseFloat(tolInput) > 0) ? "#3a4550" : "#f87171", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
               {(isFinite(parseFloat(tolInput)) && parseFloat(tolInput) > 0)
-                ? `se usará: ${parseFloat(tolInput).toExponential(0)} — por defecto Vesta usa 1e-10; bajar a 1e-12/1e-13 exige más precisión pero puede necesitar más iteraciones`
-                : "valor no válido, se usará 1e-10 por defecto"}
+                ? `se usará: ${parseFloat(tolInput).toExponential(0)} — por defecto Vesta usa 1e-12 (relativo, no absoluto); bajar a 1e-13/1e-14 exige más precisión pero puede necesitar más iteraciones`
+                : "valor no válido, se usará 1e-12 por defecto"}
             </small>
 
             <button onClick={run} disabled={busy || !canRun}
@@ -2581,6 +2755,16 @@
                     <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 28, fontWeight: 700, color: rsqColor }}>{result.rSquared.toFixed(2)}</span>
                     <span style={{ fontSize: 11, color: "#7a90a8" }}>R² del estilo</span>
                   </div>
+                  {result.alphaAnnual != null && (
+                    <div style={{ display: "inline-flex", alignItems: "baseline", gap: 6, padding: "10px 14px", borderRadius: 8, background: "#060d14", border: "1px solid #1a2535" }}>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 28, fontWeight: 700, color: result.alphaAnnual >= 0 ? "#4ade80" : "#f87171" }}>
+                        {result.alphaAnnual >= 0 ? "+" : ""}{(result.alphaAnnual*100).toFixed(2)}%
+                      </span>
+                      <span style={{ fontSize: 11, color: "#7a90a8" }}>alfa anual
+                        <VsInfoTip text="Retorno de selección: cuánto ha aportado el gestor por encima (o por debajo) de la cesta de índices que replica su estilo. Es lo que queda del retorno del fondo después de descontar lo que explican los factores. Un alfa positivo con tracking error bajo es la combinación buena; un alfa positivo con tracking error muy alto puede ser suerte." />
+                      </span>
+                    </div>
+                  )}
                   <div style={{ flex: 1, minWidth: 140 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #1a2535", fontSize: 12 }}>
                       <span style={{ color: "#7a90a8" }}>Observaciones</span><span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>{nObs}</span>
@@ -2867,6 +3051,12 @@
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</span>
                       <span style={{ fontSize: 9, color: badge.color, border: `1px solid ${badge.color}55`, borderRadius: 100, padding: "1px 6px", fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{badge.label}</span>
+                      {type === "rbsa" && (!d.engineVersion || d.engineVersion < 2) && (
+                        <span title="Calculado con el objetivo antiguo (suma de cuadrados sin centrar) — los pesos pueden estar sesgados en fondos con alfa. Vuelve a ejecutar el análisis para recalcularlo con el motor actual."
+                          style={{ fontSize: 9, color: "#f59e0b", border: "1px solid #f59e0b55", borderRadius: 100, padding: "1px 6px", fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>
+                          motor anterior
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace" }}>{subtitle}</div>
                   </div>
@@ -2926,6 +3116,7 @@
                     <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 12 }}>
                       <div><span style={{ color: "#7a90a8" }}>Observaciones: </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{d.nObs}</span></div>
                       <div><span style={{ color: "#7a90a8" }}>Tracking error: </span><span style={{ fontFamily: "'DM Mono',monospace", color: "#e2e8f0" }}>{(d.trackingErrorAnnual*100).toFixed(2)}%</span></div>
+                      <div><span style={{ color: "#7a90a8" }}>Alfa anual: </span><span style={{ fontFamily: "'DM Mono',monospace", color: d.alphaAnnual != null ? (d.alphaAnnual >= 0 ? "#4ade80" : "#f87171") : "#e2e8f0" }}>{d.alphaAnnual != null ? `${d.alphaAnnual >= 0 ? "+" : ""}${(d.alphaAnnual*100).toFixed(2)}%` : "—"}</span></div>
                     </div>
                     {Object.entries(d.weights || {}).sort((x,y)=>y[1]-x[1]).map(([nm,w]) => <VsWeightBar key={nm} name={nm} weight={w} />)}
                     {d.warnings && d.warnings.length > 0 && (
@@ -3212,8 +3403,15 @@
     function VsCorrelationTab({ factors, funds }) {
       const indexNames = Object.keys(factors).sort();
       const fundNames = Object.keys(funds).sort();
-      const allNames = [...indexNames, ...fundNames];
-      const combinedData = { ...factors, ...funds };
+      // Un índice y un fondo pueden llamarse igual. Con { ...factors, ...funds }
+      // el fondo pisaba al índice en silencio y el nombre salía dos veces en
+      // allNames (clave React duplicada + fila repetida). Se desambigua.
+      const collisions = new Set(indexNames.filter(nm => funds[nm]));
+      const label = (nm, kind) => (collisions.has(nm) ? `${nm} (${kind === "index" ? "índice" : "fondo"})` : nm);
+      const combinedData = {};
+      indexNames.forEach(nm => { combinedData[label(nm, "index")] = factors[nm]; });
+      fundNames.forEach(nm => { combinedData[label(nm, "fund")] = funds[nm]; });
+      const allNames = Object.keys(combinedData);
 
       // Todo seleccionado por defecto al entrar en la pestaña.
       const [selected, setSelected] = useState(() => new Set(allNames));
@@ -3246,46 +3444,52 @@
             {indexNames.length > 0 && (
               <div style={{ marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>índices</div>
-                {indexNames.map(nm => (
-                  <div key={nm}>
+                {indexNames.map(nm => {
+                  const key = label(nm, "index");
+                  return (
+                  <div key={key}>
                     <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
-                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
-                      <span style={{ flex: 1 }}>{nm}</span>
-                      <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
-                        style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1 }}>{key}</span>
+                      <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===key?null:key); }}
+                        style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===key?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
                         📈
                       </button>
                     </label>
-                    {chartOpenFor === nm && (
+                    {chartOpenFor === key && (
                       <div style={{ padding: "8px 4px 12px" }}>
                         <VsLineChart series={vsReturnsToGrowthSeries(factors[nm].returns)} height={180} />
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
             {fundNames.length > 0 && (
               <div>
                 <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>fondos</div>
-                {fundNames.map(nm => (
-                  <div key={nm}>
+                {fundNames.map(nm => {
+                  const key = label(nm, "fund");
+                  return (
+                  <div key={key}>
                     <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12, cursor: "pointer" }}>
-                      <input type="checkbox" checked={selected.has(nm)} onChange={()=>toggle(nm)} style={{ accentColor: VS_A }} />
-                      <span style={{ flex: 1 }}>{nm}</span>
-                      <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===nm?null:nm); }}
-                        style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===nm?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1 }}>{key}</span>
+                      <button onClick={(e)=>{ e.preventDefault(); setChartOpenFor(chartOpenFor===key?null:key); }}
+                        style={{ background: "none", border: "1px solid #1a2535", color: chartOpenFor===key?VS_A:"#7a90a8", borderRadius: 6, padding: "2px 7px", fontSize: 10, cursor: "pointer" }}>
                         📈
                       </button>
                     </label>
-                    {chartOpenFor === nm && (
+                    {chartOpenFor === key && (
                       <div style={{ padding: "8px 4px 12px" }}>
                         <VsLineChart series={vsReturnsToGrowthSeries(funds[nm].returns)} height={180} />
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
