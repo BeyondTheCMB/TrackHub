@@ -3699,8 +3699,9 @@
       fundNames.forEach(nm => { combinedData[label(nm, "fund")] = funds[nm]; });
       const allNames = Object.keys(combinedData);
 
-      // Todo seleccionado por defecto al entrar en la pestaña.
-      const [selected, setSelected] = useState(() => new Set(allNames));
+      // Vacío por defecto al entrar en la pestaña — es el usuario quien
+      // elige qué fondos/índices incluir en la matriz.
+      const [selected, setSelected] = useState(() => new Set());
       const [chartOpenFor, setChartOpenFor] = useState(null);
 
       const toggle = (nm) => {
