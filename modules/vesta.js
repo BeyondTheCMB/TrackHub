@@ -222,14 +222,90 @@
         const rawValue = row[1];
         const value = typeof rawValue === "number"
           ? rawValue
-          : vsNum(typeof rawValue === "string" ? rawValue.replace(/\./g, "").replace(",", ".") : rawValue);
+          : (typeof rawValue === "string" ? vsParseLocaleNumber(rawValue) : vsNum(rawValue));
         if (value === null || (typeof value === "number" && isNaN(value))) continue;
         series.push({ date: new Date(iso + "T00:00:00Z"), value });
       }
       series.sort((a, b) => a.date - b.date);
       return vsDedupeSeries(series);
     }
+    // Un .csv NUNCA debe pasar por XLSX.read. SheetJS acepta CSV de buena gana
+    // (por eso el alta en bloque "funcionaba" con ellos), pero interpreta los
+    // números en formato inglés: "4.945,61" lo lee como 4,94561 (punto =
+    // decimal) y "998,25" como 99825 (coma = miles). Como llegan ya
+    // convertidos a `number`, vsParseInvestingXLSXRows los daba por buenos.
+    //
+    // El error de escala es CONSTANTE mientras todos los precios lleven el
+    // mismo formato, y una escala constante no altera los retornos — por eso
+    // la mayoría de series se importaban bien. Se rompe solo cuando la serie
+    // CRUZA el nivel 1.000, porque ahí el formato cambia de "1.047,86" a
+    // "998,25" y aparece un factor 100.000 entre dos meses contiguos.
+    // Medido sobre datos reales: MSCI World +9.227.466%, S&P 500 +9.824.305%,
+    // MSCI Emerging +9.883.815%, Oro +9.855.157%. Las series que nunca cruzan
+    // 1.000 (IBEX 2032–19811, Brent 10–140...) salían intactas.
+    //
+    // La ruta de CSV de texto (vsParseInvestingCSV) ya sabe que el formato es
+    // español, así que para .csv se usa esa y punto.
+    // Convierte un número escrito en formato europeo ("3.100,50") o inglés
+    // ("3,100.50") sin saber de antemano cuál es. Regla: de los dos posibles
+    // separadores, el que aparece MÁS A LA DERECHA es el decimal; el otro es
+    // de millares. Si solo hay uno, se decide por el número de cifras que le
+    // siguen — exactamente 3 se trata como separador de millares ("1.050" →
+    // 1050), que es la convención de los históricos de Investing.com.
+    //
+    // Ese último caso es genuinamente ambiguo: "1.050" podría ser 1,05 en
+    // inglés. Se resuelve a favor del formato español porque es el que
+    // exportan los archivos que alimentan Vesta; si algún día hiciera falta
+    // lo contrario, este es el único punto a tocar.
+    function vsParseLocaleNumber(s) {
+      if (s === null || s === undefined) return null;
+      const t = String(s).replace(/[\s\u00a0]/g, "").trim();
+      if (!t) return null;
+      const lastDot = t.lastIndexOf("."), lastComma = t.lastIndexOf(",");
+      let limpio;
+      if (lastDot >= 0 && lastComma >= 0) {
+        limpio = lastComma > lastDot
+          ? t.replace(/\./g, "").replace(",", ".")   // europeo: 3.100,50
+          : t.replace(/,/g, "");                     // inglés:  3,100.50
+      } else if (lastComma >= 0) {
+        const decimales = t.length - lastComma - 1;
+        limpio = (t.split(",").length === 2 && decimales !== 3)
+          ? t.replace(",", ".")                      // 93,45 → 93.45
+          : t.replace(/,/g, "");                     // 3,100 → 3100
+      } else if (lastDot >= 0) {
+        const decimales = t.length - lastDot - 1;
+        limpio = (t.split(".").length === 2 && decimales !== 3)
+          ? t                                        // 93.45 → 93.45
+          : t.replace(/\./g, "");                    // 1.050 → 1050
+      } else {
+        limpio = t;
+      }
+      const n = parseFloat(limpio);
+      return isNaN(n) ? null : n;
+    }
+
+    // Guardián de importación. Un retorno mensual de +500% es imposible en
+    // cualquier índice o fondo real, así que si aparece uno es que el archivo
+    // se ha leído mal (formato numérico confundido, columnas cruzadas, precios
+    // corruptos). Más vale rechazar la importación señalando la fecha que
+    // dejar entrar una serie que congela el solver del RBSA y destroza las
+    // correlaciones sin que nada lo avise.
+    const VS_MAX_RETORNO_PLAUSIBLE = 5; // ±500% mensual
+
+    function vsRetornoImplausible(returns) {
+      for (const p of returns) {
+        if (!isFinite(p.value) || Math.abs(p.value) > VS_MAX_RETORNO_PLAUSIBLE) {
+          const f = p.date instanceof Date ? p.date.toISOString().slice(0, 10) : String(p.date);
+          return `Retorno imposible de ${(p.value * 100).toFixed(0)}% en ${f}. El archivo no se ha leído bien — revisa que la primera columna sea la fecha y la segunda el precio, y que el formato numérico del archivo sea el que esperas.`;
+        }
+      }
+      return null;
+    }
+
     async function vsParseInvestingXLSXFile(file) {
+      if (/\.csv$/i.test(file.name || "")) {
+        return vsParseInvestingCSV(await file.text());
+      }
       const buf = await vsReadFileAsArrayBuffer(file);
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
@@ -2109,6 +2185,8 @@
 
           const returns = (sourceType === "investing") ? vsToMonthlyReturns(raw) : vsRateToMonthlyReturn(raw);
           if (returns.length < 3) { setStatus("Error: muy pocas observaciones mensuales resultantes."); setBusy(false); return; }
+          const implausible = vsRetornoImplausible(returns);
+          if (implausible) { setStatus("Error: " + implausible); setBusy(false); return; }
 
           const data = {
             category, sourceType, description,
@@ -2147,7 +2225,11 @@
             } else {
               const returns = vsToMonthlyReturns(raw);
               if (returns.length < 3) draft.error = "Muy pocas observaciones mensuales resultantes.";
-              else draft.returns = returns;
+              else {
+                const implausible = vsRetornoImplausible(returns);
+                if (implausible) draft.error = implausible;
+                else draft.returns = returns;
+              }
             }
           } catch (e) {
             draft.error = e.message;
@@ -2328,11 +2410,11 @@
 
             {type === "index" && bulkMode ? (
               <>
-                <label style={labelStyle}>Archivos Excel (varios a la vez)</label>
-                <input ref={bulkFileRef} style={{...inputStyle, padding: 6}} type="file" accept=".xlsx,.xls" multiple
+                <label style={labelStyle}>Archivos CSV o Excel (varios a la vez)</label>
+                <input ref={bulkFileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv,.xlsx,.xls" multiple
                   onChange={e => { handleBulkFiles(e.target.files); if (bulkFileRef.current) bulkFileRef.current.value = ""; }} />
                 <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
-                  Mismo formato que "Investing.com" pero en Excel (columna 1 = fecha, columna 2 = precio, cabecera en la fila 1 — como el que descarga fondos.com/Investing.com al elegir xlsx en vez de CSV). El nombre de cada índice se propone a partir del nombre del archivo; puedes cambiarlo antes de confirmar.
+                  Mismo formato que "Investing.com": columna 1 = fecha, columna 2 = precio, cabecera en la fila 1. Acepta tanto los CSV como los Excel que descargan Investing.com y fondos.com. El nombre de cada índice se propone a partir del nombre del archivo; puedes cambiarlo antes de confirmar.
                 </small>
                 {bulkParsing && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>leyendo archivos…</div>}
 
