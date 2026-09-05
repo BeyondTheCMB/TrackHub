@@ -8527,12 +8527,16 @@
                   Mismo cálculo que las tarjetas de arriba, pero recalculado ventana a ventana — muestra si la relación riesgo/retorno ha mejorado o empeorado con el tiempo, no solo su nivel actual.
                 </div>
                 {rollingSharpeSeries.length > 1 ? (
-                  <>
-                    <div style={{ fontSize: 10, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Sharpe</div>
-                    <VsLineChart series={rollingSharpeSeries} height={150} />
-                    <div style={{ fontSize: 10, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", margin: "14px 0 4px" }}>Sortino</div>
-                    <VsLineChart series={rollingSortinoSeries} height={150} />
-                  </>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                    <div style={{ flex: "1 1 260px", minWidth: 260 }}>
+                      <div style={{ fontSize: 10, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Sharpe</div>
+                      <VsLineChart series={rollingSharpeSeries} height={150} />
+                    </div>
+                    <div style={{ flex: "1 1 260px", minWidth: 260 }}>
+                      <div style={{ fontSize: 10, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Sortino</div>
+                      <VsLineChart series={rollingSortinoSeries} height={150} />
+                    </div>
+                  </div>
                 ) : (
                   <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
                     Necesitas más semanas de histórico para la ventana móvil.
@@ -8540,68 +8544,70 @@
                 )}
               </div>
 
-              {topDrawdowns.length > 0 && (
-                <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Peores caídas</div>
-                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
-                    Los {topDrawdowns.length} mayores episodios de caída desde máximo en el periodo — para distinguir si el riesgo viene de una caída grande puntual o de varias moderadas repetidas.
+              <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 20 }}>
+                {topDrawdowns.length > 0 && (
+                  <div style={{ flex: "1 1 400px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Peores caídas</div>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                      Los {topDrawdowns.length} mayores episodios de caída desde máximo en el periodo — para distinguir si el riesgo viene de una caída grande puntual o de varias moderadas repetidas.
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 480 }}>
+                        <thead>
+                          <tr>
+                            {["Profundidad", "Pico", "Valle", "Caída", "Recuperación"].map((h, i) => (
+                              <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {topDrawdowns.map((dd, i) => (
+                            <tr key={i}>
+                              <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#f87171", fontWeight: 700 }}>{dd.depth.toFixed(1)}%</td>
+                              <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{dd.peakDate}</td>
+                              <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{dd.troughDate}</td>
+                              <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{dd.fallDays}d</td>
+                              <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: dd.ongoing ? "#f59e0b" : "#5a7080" }}>
+                                {dd.ongoing ? "En curso" : `${dd.recoveryDate} (${dd.recoveryDays}d)`}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 560 }}>
+                )}
+
+                {tagVolatilityRows.length > 0 && (
+                  <div style={{ flex: "1 1 320px", minWidth: 280, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Volatilidad por etiqueta</div>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                      Cada rama raíz tratada como una sub-cartera propia (índice TTWROR recalculado solo con sus valores) — para comparar, p.ej., cuánto cayó de verdad tu RV frente a tu RF en un mismo episodio.
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                       <thead>
                         <tr>
-                          {["Profundidad", "Pico", "Valle", "Caída", "Recuperación"].map((h, i) => (
-                            <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          {["Etiqueta", "Volatilidad anualizada", "Semanas"].map((h, i) => (
+                            <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {topDrawdowns.map((dd, i) => (
-                          <tr key={i}>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#f87171", fontWeight: 700 }}>{dd.depth.toFixed(1)}%</td>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{dd.peakDate}</td>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{dd.troughDate}</td>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{dd.fallDays}d</td>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: dd.ongoing ? "#f59e0b" : "#5a7080" }}>
-                              {dd.ongoing ? "En curso" : `${dd.recoveryDate} (${dd.recoveryDays}d)`}
+                        {tagVolatilityRows.map(r => (
+                          <tr key={r.id}>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: r.color }} />
+                              {r.name}
                             </td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{r.vol != null ? `${r.vol.toFixed(1)}%` : "—"}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{r.obs}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                </div>
-              )}
-
-              {tagVolatilityRows.length > 0 && (
-                <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Volatilidad por etiqueta</div>
-                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
-                    Cada rama raíz tratada como una sub-cartera propia (índice TTWROR recalculado solo con sus valores) — para comparar, p.ej., cuánto cayó de verdad tu RV frente a tu RF en un mismo episodio.
-                  </div>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                    <thead>
-                      <tr>
-                        {["Etiqueta", "Volatilidad anualizada", "Semanas"].map((h, i) => (
-                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tagVolatilityRows.map(r => (
-                        <tr key={r.id}>
-                          <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: r.color }} />
-                            {r.name}
-                          </td>
-                          <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{r.vol != null ? `${r.vol.toFixed(1)}%` : "—"}</td>
-                          <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{r.obs}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                )}
+              </div>
 
               {positionRows.length > 0 && (
                 <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
