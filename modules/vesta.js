@@ -4208,7 +4208,24 @@
     }
 
     function vsToISODate(v) {
-      if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+      // CRÍTICO — leer los componentes en hora LOCAL, nunca vía toISOString().
+      // SheetJS con cellDates:true construye los Date en la zona horaria del
+      // navegador: el 1-ago-2026 a las 00:00 en Madrid es el 31-jul-2026 a las
+      // 22:00 UTC, así que toISOString().slice(0,10) devolvía "2026-07-31".
+      // Como los históricos mensuales de Investing.com datan cada fila con el
+      // DÍA 1 del mes, eso metía TODAS las observaciones en el mes anterior:
+      // una serie importada por el alta en bloque (xlsx) quedaba desfasada un
+      // mes entero frente a la misma serie importada por CSV (que pasa por
+      // vsParseInvestingDate → Date.UTC, inmune al problema). El desfase es
+      // consistente dentro de la serie, así que no salta a la vista: lo que
+      // se rompe es la comparación CONTRA las demás. Medido: una correlación
+      // real de −0,96 caía a ≈0 (S&P 500 vs su inverso daba +0,22).
+      // Afecta igualmente a las fechas de operaciones de los importadores de
+      // cartera (Inversis, planes de pensiones XML), donde desplazaba cada
+      // transacción un día y contaminaba TTWROR y XIRR.
+      if (v instanceof Date && !isNaN(v)) {
+        return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+      }
       if (typeof v === "string") {
         const cleaned = v.replace(/\u00a0/g, " ").trim();
         const m = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})/);
