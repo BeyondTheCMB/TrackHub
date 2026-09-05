@@ -187,6 +187,59 @@
       series.sort((a,b)=>a.date-b.date);
       return vsDedupeSeries(series);
     }
+    // ── Mismo formato que vsParseInvestingCSV (columna 1 = fecha, columna 2 =
+    // precio, sin importar la cabecera), pero leído de un .xlsx/.xls en vez
+    // de un CSV — Investing.com y fondos.com ofrecen ambos formatos de
+    // exportación y algunos índices solo se dejan descargar como Excel. Las
+    // fechas llegan ya resueltas por cellDates:true (o como serial de Excel,
+    // que vsToISODate también sabe leer vía XLSX.SSF); los precios llegan
+    // como número nativo o como texto con coma decimal, que vsNum cubre en
+    // ambos casos. Reutiliza vsReadFileAsArrayBuffer/vsToISODate/vsNum
+    // (definidas más abajo en el archivo — son function declarations, así
+    // que quedan disponibles aquí igualmente por hoisting).
+    function vsParseInvestingXLSXRows(rows) {
+      const series = [];
+      for (let i = 1; i < rows.length; i++) { // fila 0 = cabecera
+        const row = rows[i];
+        if (!row || row.length < 2) continue;
+        // vsToISODate cubre Date real (cellDates:true) y serial numérico de
+        // Excel. Si la celda de fecha se guardó como TEXTO con el formato
+        // clásico de Investing.com ("31.01.2020" o "Ene 2020" — posible si
+        // el usuario abrió y volvió a guardar el CSV en Excel), cae aquí a
+        // vsParseInvestingDate, que ya sabe leer ambos.
+        let iso = vsToISODate(row[0]);
+        if (!iso && typeof row[0] === "string") {
+          const d = vsParseInvestingDate(row[0].trim());
+          if (d) iso = d.toISOString().slice(0, 10);
+        }
+        if (!iso) continue;
+        // Si la celda de precio llega como texto (mismo caso que la fecha
+        // arriba), usa el MISMO parseo que vsParseInvestingCSV — punto de
+        // millares primero, luego coma decimal — en vez de vsNum genérico,
+        // que no quita el punto de millares y confundiría "3.100,50" con
+        // 3,1. Si ya es un número nativo (lo normal al leer un xlsx real),
+        // se usa tal cual.
+        const rawValue = row[1];
+        const value = typeof rawValue === "number"
+          ? rawValue
+          : vsNum(typeof rawValue === "string" ? rawValue.replace(/\./g, "").replace(",", ".") : rawValue);
+        if (value === null || (typeof value === "number" && isNaN(value))) continue;
+        series.push({ date: new Date(iso + "T00:00:00Z"), value });
+      }
+      series.sort((a, b) => a.date - b.date);
+      return vsDedupeSeries(series);
+    }
+    async function vsParseInvestingXLSXFile(file) {
+      const buf = await vsReadFileAsArrayBuffer(file);
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+      return vsParseInvestingXLSXRows(rows);
+    }
+    // Propuesta de nombre de índice a partir del nombre de archivo — el
+    // usuario puede corregirlo antes de confirmar el alta en bloque.
+    function vsFileNameToLabel(fileName) {
+      return fileName.replace(/\.(xlsx|xls|csv)$/i, "").replace(/[_-]+/g, " ").trim();
+    }
     function vsParseECBCSV(text){
       const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim().length);
       const rows = lines.slice(1);
@@ -1965,6 +2018,18 @@
       const [chartOpenFor, setChartOpenFor] = useState(null);
       const fileRef = useRef(null);
 
+      // ── Alta en bloque de índices vía varios Excel a la vez ────────────────
+      // Cada archivo se parsea nada más soltarlo (mismo formato que
+      // "Investing.com", pero en xlsx/xls). El nombre propuesto sale del
+      // nombre de archivo y es editable antes de confirmar; el alta real se
+      // hace secuencialmente (no en paralelo) para no arriesgar una
+      // condición de carrera contra el mismo perfil en vs_factors.
+      const [bulkMode, setBulkMode] = useState(false);
+      const [bulkDrafts, setBulkDrafts] = useState([]); // { id, fileName, name, category, description, returns, error, adding, added, addError }
+      const [bulkParsing, setBulkParsing] = useState(false);
+      const [bulkAdding, setBulkAdding] = useState(false);
+      const bulkFileRef = useRef(null);
+
       // ── Alta vía Yahoo (alternativa automática al CSV) ──────────────────
       const [yahooQuery, setYahooQuery] = useState("");
       const [yahooTicker, setYahooTicker] = useState("");
@@ -2059,6 +2124,75 @@
           setStatus("Error: " + e.message);
         }
         setBusy(false);
+      };
+
+      // Parsea cada archivo soltado nada más soltarlo (no espera a "Añadir")
+      // para que el usuario vea de inmediato qué se ha podido leer de cada
+      // uno y pueda corregir el nombre antes de confirmar el alta.
+      const handleBulkFiles = async (fileList) => {
+        const files = Array.from(fileList || []);
+        if (!files.length) return;
+        setBulkParsing(true);
+        const drafts = [];
+        for (const f of files) {
+          const draft = {
+            id: `${f.name}::${f.lastModified}::${f.size}`,
+            fileName: f.name, name: vsFileNameToLabel(f.name), category: "equity", description: "",
+            returns: null, error: null, adding: false, added: false, addError: null,
+          };
+          try {
+            const raw = await vsParseInvestingXLSXFile(f);
+            if (raw.length < 2) {
+              draft.error = "No se pudieron leer filas del Excel (¿tiene fecha en la 1ª columna y precio en la 2ª?).";
+            } else {
+              const returns = vsToMonthlyReturns(raw);
+              if (returns.length < 3) draft.error = "Muy pocas observaciones mensuales resultantes.";
+              else draft.returns = returns;
+            }
+          } catch (e) {
+            draft.error = e.message;
+          }
+          drafts.push(draft);
+        }
+        setBulkDrafts(prev => [...prev, ...drafts]);
+        setBulkParsing(false);
+      };
+
+      const updateBulkDraft = (id, patch) => setBulkDrafts(prev => prev.map(d => d.id === id ? { ...d, ...patch } : d));
+      const removeBulkDraft = (id) => setBulkDrafts(prev => prev.filter(d => d.id !== id));
+
+      // Alta secuencial (no Promise.all): cada onAdd dispara su propio
+      // guardado en vs_factors, y hacerlos en paralelo arriesgaría que dos
+      // guardados se pisaran entre sí sobre el mismo perfil. `existingLower`
+      // se va actualizando según se confirma cada alta, para detectar
+      // colisiones tanto contra el pool ya guardado como entre archivos del
+      // propio lote.
+      const handleBulkAdd = async () => {
+        const existingLower = new Set(indexNames.map(n => n.toLowerCase()));
+        const seenInBatch = new Set();
+        setBulkAdding(true);
+        for (const d of bulkDrafts) {
+          if (d.error || d.added) continue;
+          const trimmed = d.name.trim();
+          if (!trimmed) { updateBulkDraft(d.id, { addError: "Falta el nombre." }); continue; }
+          const lower = trimmed.toLowerCase();
+          if (existingLower.has(lower)) { updateBulkDraft(d.id, { addError: "Ya existe un índice con ese nombre." }); continue; }
+          if (seenInBatch.has(lower)) { updateBulkDraft(d.id, { addError: "Nombre repetido en este mismo lote." }); continue; }
+          seenInBatch.add(lower);
+          updateBulkDraft(d.id, { adding: true, addError: null });
+          try {
+            const data = {
+              category: d.category, sourceType: "investing", description: d.description,
+              returns: d.returns.map(p => ({ date: p.date.toISOString().slice(0,10), startDate: p.startDate ? p.startDate.toISOString().slice(0,10) : null, value: p.value })),
+            };
+            await onAdd(trimmed, data);
+            existingLower.add(lower);
+            updateBulkDraft(d.id, { adding: false, added: true });
+          } catch (e) {
+            updateBulkDraft(d.id, { adding: false, addError: e.message });
+          }
+        }
+        setBulkAdding(false);
       };
 
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
@@ -2173,78 +2307,148 @@
                 style={{ flex: 1, background: type==="index" ? VS_A+"18" : "none", border: `1px solid ${type==="index" ? VS_A : "#1a2535"}`, color: type==="index" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                 🗂 Índice
               </button>
-              <button onClick={()=>{setType("fund"); setSourceType("investing"); setYahooQuery(""); setYahooTicker(""); setYahooCandidates(null);}}
+              <button onClick={()=>{setType("fund"); setSourceType("investing"); setYahooQuery(""); setYahooTicker(""); setYahooCandidates(null); setBulkMode(false);}}
                 style={{ flex: 1, background: type==="fund" ? VS_A+"18" : "none", border: `1px solid ${type==="fund" ? VS_A : "#1a2535"}`, color: type==="fund" ? VS_A : "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                 💼 Fondo
               </button>
             </div>
 
-            <label style={labelStyle}>Nombre</label>
-            <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder={type==="index" ? "ej: VIX" : "ej: Gamma Global"} />
-
-            <label style={labelStyle}>Categoría</label>
-            <select style={inputStyle} value={category} onChange={e=>setCategory(e.target.value)}>
-              {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-
-            <label style={labelStyle}>Formato de fuente</label>
-            <select style={inputStyle} value={sourceType} onChange={e=>{setSourceType(e.target.value); setYahooCandidates(null); setYahooSearchError("");}}>
-              {sourceOptionsForType.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
             {type === "index" && (
-              <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
-                El tipo libre de riesgo en EUR (€STR/BCE) ya está incluido automáticamente.
-              </small>
+              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                <button onClick={()=>setBulkMode(false)} type="button"
+                  style={{ flex: 1, background: !bulkMode ? VS_A+"18" : "none", border: `1px solid ${!bulkMode ? VS_A : "#1a2535"}`, color: !bulkMode ? VS_A : "#7a90a8", borderRadius: 6, padding: "6px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                  uno a uno
+                </button>
+                <button onClick={()=>setBulkMode(true)} type="button"
+                  style={{ flex: 1, background: bulkMode ? VS_A+"18" : "none", border: `1px solid ${bulkMode ? VS_A : "#1a2535"}`, color: bulkMode ? VS_A : "#7a90a8", borderRadius: 6, padding: "6px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                  📦 varios Excel
+                </button>
+              </div>
             )}
 
-            {sourceType === "yahoo" ? (
+            {type === "index" && bulkMode ? (
               <>
-                <label style={labelStyle}>Ticker o ISIN (Yahoo)</label>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input style={{ ...inputStyle, flex: 1 }} type="text" value={yahooQuery} onChange={e=>setYahooQuery(e.target.value)} placeholder="ej: URTH, IE00B4L5Y983" />
-                  <button onClick={searchYahoo} disabled={yahooSearching || !yahooQuery.trim()} type="button"
-                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "0 10px", fontSize: 13, cursor: (yahooSearching || !yahooQuery.trim()) ? "not-allowed" : "pointer" }}>
-                    {yahooSearching ? "…" : "🔎"}
-                  </button>
-                </div>
-                {yahooCandidates && (
-                  <div style={{ marginTop: 6, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 140, overflowY: "auto", background: "#060d14" }}>
-                    {yahooCandidates.map(c => (
-                      <div key={c.symbol} onClick={() => { setYahooTicker(c.symbol); setYahooCandidates(null); }}
-                        style={{ padding: "4px 6px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
-                        onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                        <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                <label style={labelStyle}>Archivos Excel (varios a la vez)</label>
+                <input ref={bulkFileRef} style={{...inputStyle, padding: 6}} type="file" accept=".xlsx,.xls" multiple
+                  onChange={e => { handleBulkFiles(e.target.files); if (bulkFileRef.current) bulkFileRef.current.value = ""; }} />
+                <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                  Mismo formato que "Investing.com" pero en Excel (columna 1 = fecha, columna 2 = precio, cabecera en la fila 1 — como el que descarga fondos.com/Investing.com al elegir xlsx en vez de CSV). El nombre de cada índice se propone a partir del nombre del archivo; puedes cambiarlo antes de confirmar.
+                </small>
+                {bulkParsing && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>leyendo archivos…</div>}
+
+                {bulkDrafts.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    {bulkDrafts.map(d => (
+                      <div key={d.id} style={{ border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 8, background: "#060d14", opacity: d.added ? 0.6 : 1 }}>
+                        <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={d.fileName}>
+                          {d.fileName}
+                        </div>
+                        {d.error ? (
+                          <div style={{ color: "#f87171", fontSize: 11 }}>⚠ {d.error}</div>
+                        ) : (
+                          <>
+                            <input style={{ ...inputStyle, marginBottom: 6, padding: "6px 8px", fontSize: 12 }} type="text" value={d.name}
+                              disabled={d.added} onChange={e => updateBulkDraft(d.id, { name: e.target.value, addError: null })} />
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <select style={{ ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 12 }} value={d.category} disabled={d.added}
+                                onChange={e => updateBulkDraft(d.id, { category: e.target.value })}>
+                                {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                              <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap" }}>{d.returns.length} obs.</span>
+                            </div>
+                            {d.addError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>⚠ {d.addError}</div>}
+                            {d.added && <div style={{ color: "#4ade80", fontSize: 10, marginTop: 4 }}>✓ añadido</div>}
+                          </>
+                        )}
+                        {!d.added && (
+                          <button onClick={() => removeBulkDraft(d.id)} disabled={d.adding} type="button"
+                            style={{ marginTop: 6, background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: d.adding ? "not-allowed" : "pointer" }}>
+                            quitar de la lista
+                          </button>
+                        )}
                       </div>
                     ))}
+                    <button onClick={handleBulkAdd} disabled={bulkAdding || !bulkDrafts.some(d => !d.error && !d.added)} type="button"
+                      style={{ width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (bulkAdding || !bulkDrafts.some(d => !d.error && !d.added)) ? "not-allowed" : "pointer", opacity: (bulkAdding || !bulkDrafts.some(d => !d.error && !d.added)) ? 0.4 : 1 }}>
+                      {bulkAdding ? "añadiendo…" : `Añadir ${bulkDrafts.filter(d => !d.error && !d.added).length} índice${bulkDrafts.filter(d => !d.error && !d.added).length === 1 ? "" : "s"}`}
+                    </button>
+                    <button onClick={() => setBulkDrafts([])} disabled={bulkAdding} type="button"
+                      style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "7px", fontSize: 11, cursor: bulkAdding ? "not-allowed" : "pointer", fontFamily: "'DM Mono',monospace" }}>
+                      limpiar lista
+                    </button>
                   </div>
                 )}
-                {yahooSearchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{yahooSearchError}</div>}
-                {yahooTicker && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>ticker elegido: {yahooTicker}</div>
-                )}
-                <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
-                  Trae el histórico diario completo disponible en Yahoo (convertido a EUR si cotiza en otra divisa) y lo pasa a retornos mensuales automáticamente.
-                </small>
               </>
             ) : (
               <>
-                <label style={labelStyle}>Archivo CSV</label>
-                <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
-                <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
-                  style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
-                  🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
+                <label style={labelStyle}>Nombre</label>
+                <input style={inputStyle} type="text" value={name} onChange={e=>setName(e.target.value)} placeholder={type==="index" ? "ej: VIX" : "ej: Gamma Global"} />
+
+                <label style={labelStyle}>Categoría</label>
+                <select style={inputStyle} value={category} onChange={e=>setCategory(e.target.value)}>
+                  {VS_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                <label style={labelStyle}>Formato de fuente</label>
+                <select style={inputStyle} value={sourceType} onChange={e=>{setSourceType(e.target.value); setYahooCandidates(null); setYahooSearchError("");}}>
+                  {sourceOptionsForType.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                {type === "index" && (
+                  <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
+                    El tipo libre de riesgo en EUR (€STR/BCE) ya está incluido automáticamente.
+                  </small>
+                )}
+
+                {sourceType === "yahoo" ? (
+                  <>
+                    <label style={labelStyle}>Ticker o ISIN (Yahoo)</label>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input style={{ ...inputStyle, flex: 1 }} type="text" value={yahooQuery} onChange={e=>setYahooQuery(e.target.value)} placeholder="ej: URTH, IE00B4L5Y983" />
+                      <button onClick={searchYahoo} disabled={yahooSearching || !yahooQuery.trim()} type="button"
+                        style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "0 10px", fontSize: 13, cursor: (yahooSearching || !yahooQuery.trim()) ? "not-allowed" : "pointer" }}>
+                        {yahooSearching ? "…" : "🔎"}
+                      </button>
+                    </div>
+                    {yahooCandidates && (
+                      <div style={{ marginTop: 6, border: "1px solid #1a2535", borderRadius: 6, padding: 4, maxHeight: 140, overflowY: "auto", background: "#060d14" }}>
+                        {yahooCandidates.map(c => (
+                          <div key={c.symbol} onClick={() => { setYahooTicker(c.symbol); setYahooCandidates(null); }}
+                            style={{ padding: "4px 6px", fontSize: 11, cursor: "pointer", borderRadius: 4 }}
+                            onMouseEnter={e => e.currentTarget.style.background = "#1a253566"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            <span style={{ fontFamily: "'DM Mono',monospace", color: VS_A }}>{c.symbol}</span> · {c.name}{c.exchange ? ` (${c.exchange})` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {yahooSearchError && <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>{yahooSearchError}</div>}
+                    {yahooTicker && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: VS_A, fontFamily: "'DM Mono',monospace" }}>ticker elegido: {yahooTicker}</div>
+                    )}
+                    <small style={{ display: "block", fontSize: 10, color: "#3a4550", marginTop: 4, fontFamily: "'DM Mono',monospace" }}>
+                      Trae el histórico diario completo disponible en Yahoo (convertido a EUR si cotiza en otra divisa) y lo pasa a retornos mensuales automáticamente.
+                    </small>
+                  </>
+                ) : (
+                  <>
+                    <label style={labelStyle}>Archivo CSV</label>
+                    <input ref={fileRef} style={{...inputStyle, padding: 6}} type="file" accept=".csv" onChange={e=>setFile(e.target.files[0] || null)} />
+                    <button onClick={()=>vsOpenInvestingSearch(name)} disabled={!name.trim()} type="button"
+                      style={{ marginTop: 6, width: "100%", background: "none", border: "1px solid #1a2535", color: name.trim() ? "#7a90a8" : "#3a4550", borderRadius: 6, padding: "7px", fontSize: 11, cursor: name.trim() ? "pointer" : "not-allowed", fontFamily: "'DM Mono',monospace" }}>
+                      🔎 Buscar "{name.trim() || "…"}" en Investing.com ↗
+                    </button>
+                  </>
+                )}
+
+                <label style={labelStyle}>Descripción <span style={{fontWeight:400}}>(opcional)</span></label>
+                <input style={inputStyle} type="text" value={description} onChange={e=>setDescription(e.target.value)} placeholder="breve nota" />
+
+                <button onClick={handleRegister} disabled={busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)}
+                  style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)) ? "not-allowed" : "pointer", opacity: (busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)) ? 0.4 : 1 }}>
+                  Añadir {type === "index" ? "índice" : "fondo"}
                 </button>
+                {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
               </>
             )}
-
-            <label style={labelStyle}>Descripción <span style={{fontWeight:400}}>(opcional)</span></label>
-            <input style={inputStyle} type="text" value={description} onChange={e=>setDescription(e.target.value)} placeholder="breve nota" />
-
-            <button onClick={handleRegister} disabled={busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)}
-              style={{ marginTop: 16, width: "100%", background: VS_A, color: "#0f172a", border: "none", borderRadius: 6, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: (busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)) ? "not-allowed" : "pointer", opacity: (busy || !name.trim() || (sourceType === "yahoo" ? !yahooTicker : !file)) ? 0.4 : 1 }}>
-              Añadir {type === "index" ? "índice" : "fondo"}
-            </button>
-            {status && <div style={{ marginTop: 8, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", whiteSpace: "pre-line" }}>{status}</div>}
           </div>
 
           <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 20 }}>
