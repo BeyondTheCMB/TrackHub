@@ -8172,11 +8172,14 @@
       );
     }
 
+    // Mismos estilos que kpiCardStyle/kpiLabelStyle/kpiValueStyle en
+    // VsPortfolioKpiCards (pestaña "Mi cartera") — DM Sans para el valor,
+    // DM Mono en mayúsculas para la etiqueta, misma paleta y tamaños.
     function VsRiskCard({ label, value, sublabel, color }) {
       return (
-        <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "14px 16px", minWidth: 150, flex: "1 1 150px" }}>
-          <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>{label}</div>
-          <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Playfair Display',serif", color: color || "#e2e8f0" }}>{value}</div>
+        <div style={{ flex: "1 1 150px", minWidth: 150, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+          <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{label}</div>
+          <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
           {sublabel && <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>{sublabel}</div>}
         </div>
       );
