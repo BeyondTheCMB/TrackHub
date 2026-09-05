@@ -7413,7 +7413,7 @@
     // relativas, así que recortar antes o después no los altera.
     function vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, startDate) {
       const { valueSeries, growthSeries } = vsComputePortfolioEvolution(transactions, securitiesCatalog);
-      if (growthSeries.length < 2) return { returns: [], weeklyPoints: [], coverage: 1 };
+      if (growthSeries.length < 2) return { returns: [], weeklyPoints: [], dailyPoints: [], coverage: 1 };
       const filtered = startDate ? growthSeries.filter(p => p.date >= startDate) : growthSeries;
       const weeklyPoints = vsResampleWeekly(filtered);
       const returns = vsReturnsFromSeries(weeklyPoints);
@@ -7422,7 +7422,16 @@
       const filteredValues = startDate ? valueSeries.filter(p => p.date >= startDate) : valueSeries;
       const synthDays = filteredValues.filter(p => p.isSynthetic).length;
       const coverage = filteredValues.length > 0 ? 1 - synthDays / filteredValues.length : 1;
-      return { returns, weeklyPoints, coverage };
+      // `dailyPoints` se expone aparte de `weeklyPoints` porque el máximo
+      // drawdown NO debe calcularse sobre la serie resampleada: al
+      // quedarse con un solo punto por semana, un mínimo real que caiga
+      // a mitad de semana (p.ej. una caída brusca de pocos días que se
+      // recupera parcialmente antes del cierre semanal) queda enmascarado
+      // y el drawdown sale menor del real. El diario, aunque tenga
+      // arrastre en días sin precio nuevo, nunca oculta un mínimo que sí
+      // esté registrado — es un superconjunto de información, nunca
+      // menos preciso que el semanal para encontrar un extremo.
+      return { returns, weeklyPoints, dailyPoints: filtered, coverage };
     }
 
     // Serie de retornos semanales de UN valor, a partir de su propio
@@ -7513,19 +7522,23 @@
       return (annualizedReturnPct - riskFreePct) / downsideDevPct;
     }
 
-    // Máximo drawdown sobre el índice de crecimiento semanal — pico-valle
-    // clásico, con fecha de pico, fecha de valle y fecha de recuperación
-    // (null si el tramo sigue por debajo del máximo anterior al cierre).
-    function vsMaxDrawdown(weeklyPoints) {
-      if (weeklyPoints.length < 2) return null;
-      let peak = weeklyPoints[0], maxDD = 0, ddPeakDate = peak.date, ddTroughDate = peak.date, ddPeakValue = peak.value;
-      for (const p of weeklyPoints) {
+    // Máximo drawdown — pico-valle clásico. IMPORTANTE: se debe llamar con
+    // la serie de MÁS granularidad disponible (diaria), no con la
+    // semanal resampleada — a diferencia de la volatilidad, aquí interesa
+    // el punto más bajo real, y resamplear solo puede perderlo, nunca
+    // encontrarlo mejor. Con fecha de pico, fecha de valle y fecha de
+    // recuperación (null si el tramo sigue por debajo del máximo
+    // anterior al cierre). El valor devuelto ya lleva el signo negativo.
+    function vsMaxDrawdown(points) {
+      if (points.length < 2) return null;
+      let peak = points[0], maxDD = 0, ddPeakDate = peak.date, ddTroughDate = peak.date, ddPeakValue = peak.value;
+      for (const p of points) {
         if (p.value > peak.value) peak = p;
         const dd = peak.value > 0 ? (p.value - peak.value) / peak.value : 0;
         if (dd < maxDD) { maxDD = dd; ddPeakDate = peak.date; ddTroughDate = p.date; ddPeakValue = peak.value; }
       }
       let recoveryDate = null;
-      const afterTrough = weeklyPoints.filter(p => p.date > ddTroughDate);
+      const afterTrough = points.filter(p => p.date > ddTroughDate);
       const rec = afterTrough.find(p => p.value >= ddPeakValue);
       if (rec) recoveryDate = rec.date;
       return { maxDD: maxDD * 100, peakDate: ddPeakDate, troughDate: ddTroughDate, recoveryDate, ongoing: recoveryDate == null };
@@ -7934,6 +7947,23 @@
         () => periodStart ? vsComputePortfolioTtwror(transactions, securitiesCatalog, null, periodStart) : ttwror,
         [transactions, securitiesCatalog, periodStart, ttwror]
       );
+      // Volatilidad anualizada por valor, ajustada al mismo periodo que
+      // el resto de la tabla — histórico propio de cada valor (ver
+      // vsSecurityRiskReturnSeries), sin datos suficientes = "—".
+      const volatilityByIsin = useMemo(() => {
+        const map = {};
+        for (const r of rows) {
+          const { returns: secReturns } = vsSecurityRiskReturnSeries(r.isin, securitiesCatalog, periodStart);
+          map[r.isin] = secReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(secReturns) : null;
+        }
+        return map;
+      }, [rows, securitiesCatalog, periodStart]);
+      // Volatilidad de la fila de totales — cartera completa (índice
+      // TTWROR), mismo periodo.
+      const totalVolatility = useMemo(() => {
+        const { returns: portReturns } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, periodStart);
+        return portReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(portReturns) : null;
+      }, [transactions, securitiesCatalog, periodStart]);
       // Series diarias para las dos gráficas de evolución, debajo del
       // panel de asignación (ver vsComputePortfolioEvolution) — no
       // dependen del filtro de periodo de la tabla, siempre muestran la
@@ -8046,7 +8076,7 @@
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 700 }}>
                       <thead>
                         <tr>
-                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", periodStart ? "En el periodo" : "Desde inicio", "XIRR", "TTWROR", "Peso"].map((h, i) => (
+                          {["", "Valor", "ISIN / Ticker", "Títulos", "Invertido", "Valor actual", periodStart ? "En el periodo" : "Desde inicio", "XIRR", "TTWROR", "Volatilidad", "Peso"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -8078,6 +8108,9 @@
                                   </>
                                 ) : "—"}
                               </td>
+                              <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8" }} title="Volatilidad anualizada (desv. típica de retornos semanales × √52) sobre el histórico de precio propio del valor, en el periodo seleccionado. Necesita al menos 12 semanas de histórico en el tramo — si el valor cambió de ISIN en un split, solo cuenta el histórico posterior.">
+                                {volatilityByIsin[r.isin] != null ? `${volatilityByIsin[r.isin].toFixed(1)}%` : "—"}
+                              </td>
                               <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A }}>{r.pct.toFixed(1)}%</td>
                             </tr>
                           );
@@ -8106,6 +8139,10 @@
                                 {totalTtwrorDisplay.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
                               </>
                             ) : "—"}
+                          </td>
+                          <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: "#7a90a8" }}
+                            title="Volatilidad anualizada de la cartera completa (índice TTWROR), en el periodo seleccionado.">
+                            {totalVolatility != null ? `${totalVolatility.toFixed(1)}%` : "—"}
                           </td>
                           <td style={{ ...cellStyle, borderBottom: "none", borderTop: "1px solid #1a2535", paddingTop: 8, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: VS_A }}>100%</td>
                         </tr>
@@ -8199,7 +8236,7 @@
       const [customDate, setCustomDate] = useState("");
       const periodStart = useMemo(() => vsPeriodToStartDate(period, customDate), [period, customDate]);
 
-      const { returns, weeklyPoints, coverage } = useMemo(
+      const { returns, weeklyPoints, dailyPoints, coverage } = useMemo(
         () => vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, periodStart),
         [transactions, securitiesCatalog, periodStart]
       );
@@ -8213,7 +8250,9 @@
         : null;
       const sharpe = hasEnough ? vsSharpeRatio(annReturn, volatility, riskFree) : null;
       const sortino = hasEnough ? vsSortinoRatio(annReturn, downsideDev, riskFree) : null;
-      const drawdown = weeklyPoints.length >= 2 ? vsMaxDrawdown(weeklyPoints) : null;
+      // Drawdown sobre la serie DIARIA, no la semanal — ver comentario en
+      // vsMaxDrawdown/vsPortfolioRiskReturnSeries.
+      const drawdown = dailyPoints.length >= 2 ? vsMaxDrawdown(dailyPoints) : null;
       const varHist = hasEnough ? vsHistoricalVaR(returns, 0.95) : null;
       const rollingVol = hasEnough ? vsRollingVolatility(returns, 12) : [];
 
@@ -8282,7 +8321,7 @@
                 <VsRiskCard label="Volatilidad anualizada" value={volatility != null ? `${volatility.toFixed(1)}%` : "—"} sublabel="Desv. típica semanal × √52" />
                 <VsRiskCard label="Ratio de Sharpe" value={sharpe != null ? sharpe.toFixed(2) : "—"} sublabel={riskFree != null ? `tipo libre riesgo ${riskFree.toFixed(2)}%` : ""} color={sharpe != null ? vsChangeColor(sharpe) : undefined} />
                 <VsRiskCard label="Ratio de Sortino" value={sortino != null ? sortino.toFixed(2) : "—"} sublabel="Solo penaliza caídas" color={sortino != null ? vsChangeColor(sortino) : undefined} />
-                <VsRiskCard label="Máximo drawdown" value={drawdown ? `-${drawdown.maxDD.toFixed(1)}%` : "—"} sublabel={drawdown ? (drawdown.ongoing ? "Aún sin recuperar" : `Recuperado el ${drawdown.recoveryDate}`) : ""} color="#f87171" />
+                <VsRiskCard label="Máximo drawdown" value={drawdown ? `${drawdown.maxDD.toFixed(1)}%` : "—"} sublabel={drawdown ? (drawdown.ongoing ? "Aún sin recuperar" : `Recuperado el ${drawdown.recoveryDate}`) : ""} color="#f87171" />
                 <VsRiskCard label="VaR histórico 95%" value={varHist != null ? `${varHist.toFixed(1)}%` : "—"} sublabel="Pérdida semanal, peor 5% de casos" color="#f87171" />
               </div>
 
