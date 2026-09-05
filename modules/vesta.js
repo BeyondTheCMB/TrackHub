@@ -8319,6 +8319,7 @@
 
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
                 <VsRiskCard label="Volatilidad anualizada" value={volatility != null ? `${volatility.toFixed(1)}%` : "—"} sublabel="Desv. típica semanal × √52" />
+                <VsRiskCard label="Semivolatilidad" value={downsideDev != null ? `${downsideDev.toFixed(1)}%` : "—"} sublabel="Solo retornos por debajo de 0%" />
                 <VsRiskCard label="Ratio de Sharpe" value={sharpe != null ? sharpe.toFixed(2) : "—"} sublabel={riskFree != null ? `tipo libre riesgo ${riskFree.toFixed(2)}%` : ""} color={sharpe != null ? vsChangeColor(sharpe) : undefined} />
                 <VsRiskCard label="Ratio de Sortino" value={sortino != null ? sortino.toFixed(2) : "—"} sublabel="Solo penaliza caídas" color={sortino != null ? vsChangeColor(sortino) : undefined} />
                 <VsRiskCard label="Máximo drawdown" value={drawdown ? `${drawdown.maxDD.toFixed(1)}%` : "—"} sublabel={drawdown ? (drawdown.ongoing ? "Aún sin recuperar" : `Recuperado el ${drawdown.recoveryDate}`) : ""} color="#f87171" />
