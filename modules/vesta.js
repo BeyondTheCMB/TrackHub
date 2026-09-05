@@ -7568,6 +7568,127 @@
       return out;
     }
 
+    // Días naturales entre dos fechas "YYYY-MM-DD".
+    function vsDaysBetweenDates(d1, d2) {
+      return Math.round((new Date(d2 + "T00:00:00Z") - new Date(d1 + "T00:00:00Z")) / 86400000);
+    }
+
+    // Serie "underwater" — % por debajo del máximo histórico de la
+    // ventana en cada momento, reescalada a base 100 (100 = en máximo
+    // histórico, por debajo = bajo el agua). Se reescala así (en vez de
+    // devolver el % negativo tal cual) para poder reutilizar VsLineChart
+    // sin tocarlo: su cálculo interno de "máxima caída" divide por el
+    // pico corriente, y un pico en 0 (el underwater SIEMPRE toca 0 en
+    // cada máximo histórico) dispararía una división por cero. Con base
+    // 100, el pico corriente de esta serie transformada se queda fijo en
+    // 100 en cuanto se toca un máximo histórico, así que ese cálculo
+    // interno no solo deja de romperse — además coincide exactamente con
+    // el máximo drawdown ya mostrado en la tarjeta KPI.
+    function vsUnderwaterSeries(points) {
+      if (points.length < 2) return [];
+      let peak = points[0].value;
+      const out = [];
+      for (const p of points) {
+        if (p.value > peak) peak = p.value;
+        const ddPct = peak > 0 ? (p.value - peak) / peak * 100 : 0;
+        out.push({ date: p.date, value: 100 + ddPct, isSynthetic: false });
+      }
+      return out;
+    }
+
+    // Los `topN` mayores episodios de drawdown (no solapados) de la
+    // serie — a diferencia de vsMaxDrawdown (que solo da el peor), aquí
+    // se listan varios para distinguir si el riesgo viene de una única
+    // caída grande o de varias moderadas repetidas, algo que una sola
+    // cifra no puede mostrar. Se llama con la serie DIARIA por el mismo
+    // motivo que vsMaxDrawdown (ver más arriba). Se descartan episodios
+    // triviales (<0.5%) para no llenar la tabla de ruido.
+    function vsTopDrawdowns(points, topN = 5, minDepthPct = 0.5) {
+      if (points.length < 2) return [];
+      const episodes = [];
+      let peak = points[0];
+      let current = null;
+      for (let i = 1; i < points.length; i++) {
+        const p = points[i];
+        if (p.value >= peak.value) {
+          if (current) { current.recoveryDate = p.date; episodes.push(current); current = null; }
+          peak = p;
+        } else {
+          if (!current) current = { peakDate: peak.date, peakValue: peak.value, troughDate: p.date, troughValue: p.value };
+          else if (p.value < current.troughValue) { current.troughDate = p.date; current.troughValue = p.value; }
+        }
+      }
+      if (current) { current.recoveryDate = null; episodes.push(current); }
+      return episodes
+        .map(e => ({
+          peakDate: e.peakDate,
+          troughDate: e.troughDate,
+          recoveryDate: e.recoveryDate,
+          depth: (e.troughValue - e.peakValue) / e.peakValue * 100,
+          fallDays: vsDaysBetweenDates(e.peakDate, e.troughDate),
+          recoveryDays: e.recoveryDate ? vsDaysBetweenDates(e.troughDate, e.recoveryDate) : null,
+          ongoing: e.recoveryDate == null,
+        }))
+        .filter(e => e.depth <= -minDepthPct)
+        .sort((a, b) => a.depth - b.depth)
+        .slice(0, topN);
+    }
+
+    // Retorno anualizado (geométrico) de una ventana de retornos
+    // periódicos ya recortada — variante de vsAnnualizedReturnFromPoints
+    // pensada para ventanas deslizantes de tamaño fijo (en nº de
+    // periodos), donde no hace falta ir a fechas reales para anualizar.
+    function vsAnnualizedReturnFromReturns(returnsWindow) {
+      const n = returnsWindow.length;
+      if (n === 0) return null;
+      const compounded = returnsWindow.reduce((acc, r) => acc * (1 + r.value), 1);
+      return (Math.pow(compounded, VS_RISK_PERIODS_PER_YEAR / n) - 1) * 100;
+    }
+
+    // Sharpe y Sortino en ventana deslizante — mismo patrón que
+    // vsRollingVolatility, pero recalculando también el tipo libre de
+    // riesgo específico de cada ventana (compuesto sobre sus fechas
+    // exactas), en vez de usar uno fijo para todo el periodo. Se
+    // hidrata el factor de caja UNA sola vez fuera del bucle.
+    function vsRollingSharpeSortino(returns, factors, windowWeeks = 12) {
+      const cash = factors && factors[VS_BUILTIN_CASH_NAME];
+      const hydrated = (cash && cash.returns && cash.returns.length) ? vsHydrateSeriesForCorr(cash) : null;
+      const out = [];
+      for (let i = windowWeeks - 1; i < returns.length; i++) {
+        const windowReturns = returns.slice(i - windowWeeks + 1, i + 1);
+        const annReturn = vsAnnualizedReturnFromReturns(windowReturns);
+        const vol = vsAnnualizedVolatility(windowReturns);
+        const downsideDev = vsDownsideDeviation(windowReturns);
+        let riskFree = null;
+        if (hydrated) {
+          const start = new Date(windowReturns[0].startDate + "T00:00:00Z");
+          const end = new Date(windowReturns[windowReturns.length - 1].date + "T00:00:00Z");
+          const totalReturn = vsCompoundFactorInWindow(hydrated, start, end);
+          if (totalReturn != null) {
+            const years = (end - start) / (365.25 * 86400000);
+            if (years > 0) riskFree = (Math.pow(1 + totalReturn, 1 / years) - 1) * 100;
+          }
+        }
+        out.push({
+          date: returns[i].date,
+          sharpe: vsSharpeRatio(annReturn, vol, riskFree),
+          sortino: vsSortinoRatio(annReturn, downsideDev, riskFree),
+        });
+      }
+      return out;
+    }
+
+    // Todas las filas (directas + de todos los descendientes) bajo un
+    // nodo del árbol de etiquetas — para agrupar volatilidad por rama
+    // raíz hace falta el conjunto COMPLETO de valores bajo ella, no solo
+    // los tageados directamente en ese nivel (ver vsBuildTagAllocationTree:
+    // los descendientes cuelgan de sus propias ramas hijas).
+    function vsCollectRowsInBranch(node) {
+      let out = node.directRows.slice();
+      for (const child of node.children) out = out.concat(vsCollectRowsInBranch(child));
+      return out;
+    }
+
     // Traduce la opción de periodo elegida en la tabla "Por valor" a una
     // fecha de arranque "YYYY-MM-DD" (o null para "Todo" = comportamiento
     // de siempre, sin acotar). "custom" usa la fecha que haya elegido el
@@ -8231,6 +8352,7 @@
     function VsRiskTab({ portfolio, factors }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
+      const tags = portfolio.tags || [];
 
       const [period, setPeriod] = useState("all");
       const [customDate, setCustomDate] = useState("");
@@ -8256,6 +8378,21 @@
       const varHist = hasEnough ? vsHistoricalVaR(returns, 0.95) : null;
       const rollingVol = hasEnough ? vsRollingVolatility(returns, 12) : [];
 
+      // Underwater y peores caídas — misma serie DIARIA que el drawdown
+      // de la tarjeta KPI, por el mismo motivo (no perder mínimos
+      // intra-semana).
+      const underwaterSeries = dailyPoints.length >= 2 ? vsUnderwaterSeries(dailyPoints) : [];
+      const topDrawdowns = dailyPoints.length >= 2 ? vsTopDrawdowns(dailyPoints, 5) : [];
+
+      // Sharpe/Sortino móviles — necesitan al menos una ventana completa
+      // de 12 semanas dentro de las devoluciones ya calculadas.
+      const ROLLING_WINDOW_WEEKS = 12;
+      const rollingRatios = returns.length >= ROLLING_WINDOW_WEEKS
+        ? vsRollingSharpeSortino(returns, factors, ROLLING_WINDOW_WEEKS)
+        : [];
+      const rollingSharpeSeries = rollingRatios.filter(r => r.sharpe != null).map(r => ({ date: r.date, value: r.sharpe, isSynthetic: false }));
+      const rollingSortinoSeries = rollingRatios.filter(r => r.sortino != null).map(r => ({ date: r.date, value: r.sortino, isSynthetic: false }));
+
       // Volatilidad por posición — histórico propio de cada valor, sin
       // herencia por split (ver vsSecurityRiskReturnSeries).
       const positionRows = useMemo(() => {
@@ -8268,6 +8405,36 @@
         }
         return rows.sort((a, b) => (b.vol || 0) - (a.vol || 0));
       }, [securitiesCatalog, periodStart]);
+
+      // Volatilidad por etiqueta (rama raíz) — filtra las transacciones a
+      // los ISIN de cada rama y recalcula el índice TTWROR solo con
+      // esas, igual que si fuera una sub-cartera. "Sin etiquetar" entra
+      // como una rama más si tiene algo dentro.
+      const { rows: allocationRows } = useMemo(
+        () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
+        [transactions, securitiesCatalog, periodStart]
+      );
+      const tagTree = useMemo(() => vsBuildTagAllocationTree(allocationRows, tags), [allocationRows, tags]);
+      const tagVolatilityRows = useMemo(() => {
+        const branches = [...tagTree.branches];
+        if (tagTree.untagged.rows.length > 0) {
+          branches.push({ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, directRows: tagTree.untagged.rows, children: [] });
+        }
+        const out = [];
+        for (const b of branches) {
+          const branchRows = vsCollectRowsInBranch(b);
+          const isins = new Set(branchRows.map(r => r.isin));
+          if (isins.size === 0) continue;
+          const filteredTx = transactions.filter(t => isins.has(t.isin));
+          const { returns: tagReturns } = vsPortfolioRiskReturnSeries(filteredTx, securitiesCatalog, periodStart);
+          out.push({
+            id: b.tag.id, name: b.tag.name, color: b.tag.color,
+            vol: tagReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(tagReturns) : null,
+            obs: tagReturns.length,
+          });
+        }
+        return out.sort((a, b) => (b.vol || 0) - (a.vol || 0));
+      }, [tagTree, transactions, securitiesCatalog, periodStart]);
 
       const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
 
@@ -8339,6 +8506,102 @@
                   </div>
                 )}
               </div>
+
+              <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Underwater</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                  % por debajo del máximo histórico del periodo en cada momento — el complemento visual del máximo drawdown: no solo cuánto se cayó, sino cuánto tiempo se ha pasado "bajo el agua" antes de recuperar.
+                </div>
+                {underwaterSeries.length > 1 ? (
+                  <VsLineChart series={underwaterSeries} height={180} colorMain="#f87171" />
+                ) : (
+                  <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
+                    Necesitas más historial para pintar esta gráfica.
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Sharpe y Sortino móviles (12 semanas)</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                  Mismo cálculo que las tarjetas de arriba, pero recalculado ventana a ventana — muestra si la relación riesgo/retorno ha mejorado o empeorado con el tiempo, no solo su nivel actual.
+                </div>
+                {rollingSharpeSeries.length > 1 ? (
+                  <>
+                    <div style={{ fontSize: 10, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Sharpe</div>
+                    <VsLineChart series={rollingSharpeSeries} height={150} />
+                    <div style={{ fontSize: 10, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", margin: "14px 0 4px" }}>Sortino</div>
+                    <VsLineChart series={rollingSortinoSeries} height={150} />
+                  </>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
+                    Necesitas más semanas de histórico para la ventana móvil.
+                  </div>
+                )}
+              </div>
+
+              {topDrawdowns.length > 0 && (
+                <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Peores caídas</div>
+                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                    Los {topDrawdowns.length} mayores episodios de caída desde máximo en el periodo — para distinguir si el riesgo viene de una caída grande puntual o de varias moderadas repetidas.
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 560 }}>
+                      <thead>
+                        <tr>
+                          {["Profundidad", "Pico", "Valle", "Caída", "Recuperación"].map((h, i) => (
+                            <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {topDrawdowns.map((dd, i) => (
+                          <tr key={i}>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#f87171", fontWeight: 700 }}>{dd.depth.toFixed(1)}%</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{dd.peakDate}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#7a90a8" }}>{dd.troughDate}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{dd.fallDays}d</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: dd.ongoing ? "#f59e0b" : "#5a7080" }}>
+                              {dd.ongoing ? "En curso" : `${dd.recoveryDate} (${dd.recoveryDays}d)`}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {tagVolatilityRows.length > 0 && (
+                <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Volatilidad por etiqueta</div>
+                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
+                    Cada rama raíz tratada como una sub-cartera propia (índice TTWROR recalculado solo con sus valores) — para comparar, p.ej., cuánto cayó de verdad tu RV frente a tu RF en un mismo episodio.
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                    <thead>
+                      <tr>
+                        {["Etiqueta", "Volatilidad anualizada", "Semanas"].map((h, i) => (
+                          <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tagVolatilityRows.map(r => (
+                        <tr key={r.id}>
+                          <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: r.color }} />
+                            {r.name}
+                          </td>
+                          <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{r.vol != null ? `${r.vol.toFixed(1)}%` : "—"}</td>
+                          <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{r.obs}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               {positionRows.length > 0 && (
                 <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
