@@ -9118,9 +9118,9 @@
 
               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 400px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución del ratio de diversificación</div>
-                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
-                    Mismo cociente (Límite/Real) recalculado en ventanas de {ROLLING_DIV_WINDOW_WEEKS} semanas — muestra si la diversificación real de tu cartera ha ido mejorando o empeorando con el tiempo, no solo su nivel actual. Pondera cada posición por su peso ACTUAL en todas las ventanas, así que es una aproximación razonada si tu asignación ha cambiado mucho a lo largo del tiempo, no una descomposición exacta.
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
+                    Evolución del ratio de diversificación
+                    <VsInfoTip text={`Mismo cociente (Límite/Real) recalculado en ventanas de ${ROLLING_DIV_WINDOW_WEEKS} semanas — muestra si la diversificación real de tu cartera ha ido mejorando o empeorando con el tiempo, no solo su nivel actual. Pondera cada posición por su peso ACTUAL en todas las ventanas, así que es una aproximación razonada si tu asignación ha cambiado mucho a lo largo del tiempo, no una descomposición exacta.`} width={280} />
                   </div>
                   {rollingDiversification.length > 1 ? (
                     <VsLineChart series={rollingDiversification} height={200} />
@@ -9133,9 +9133,9 @@
 
                 {tagConcentration.length > 0 && (
                   <div style={{ flex: "1 1 380px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Concentración y diversificación por etiqueta</div>
-                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
-                      Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
+                      Concentración y diversificación por etiqueta
+                      <VsInfoTip text={`Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={280} align="right" />
                     </div>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                       <thead>
