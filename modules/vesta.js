@@ -7839,6 +7839,54 @@
       };
     }
 
+    // Índice Herfindahl-Hirschman de concentración de CAPITAL — Σwᵢ² con
+    // pesos normalizados a que sumen 1 dentro de las `rows` recibidas
+    // (por eso sirve tanto para la cartera completa como para una rama
+    // de etiqueta concreta: basta con pasarle solo las filas de esa
+    // rama, no hay que tocar la fórmula). 1/N si todo pesa igual, 1 si
+    // una sola posición concentra el 100%.
+    function vsHHI(rows) {
+      const total = rows.reduce((s, r) => s + r.value, 0);
+      if (total <= 0) return null;
+      return rows.reduce((s, r) => s + (r.value / total) ** 2, 0);
+    }
+
+    // Número efectivo de posiciones (1/HHI) — más intuitivo que el HHI
+    // puro: "esta cartera de 11 valores pesa, en concentración, como si
+    // tuviera 4.2 posiciones iguales".
+    function vsEffectiveN(hhi) {
+      return hhi != null && hhi > 0 ? 1 / hhi : null;
+    }
+
+    // Concentración de capital y ratio de diversificación POR ETIQUETA
+    // (rama raíz + "Sin etiquetar" si aplica) — cada rama se trata como
+    // una sub-cartera propia, igual que en computeTagMetrics de "Mi
+    // cartera": el HHI se normaliza DENTRO de la rama (no respecto al
+    // total de la cartera, para que responda a "¿cómo de concentrada
+    // está mi RV en sí misma?", no "¿cuánto pesa la RV en el total?"), y
+    // el ratio de diversificación reutiliza
+    // vsPortfolioVolatilityRealAndLimit sobre las transacciones
+    // filtradas a los ISIN de esa rama.
+    function vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog) {
+      const branches = [...tagTree.branches];
+      if (tagTree.untagged.rows.length > 0) {
+        branches.push({ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, directRows: tagTree.untagged.rows, children: [], value: tagTree.untagged.value });
+      }
+      const out = [];
+      for (const b of branches) {
+        const branchRows = vsCollectRowsInBranch(b);
+        if (branchRows.length === 0) continue;
+        const hhi = vsHHI(branchRows);
+        const effectiveN = vsEffectiveN(hhi);
+        const isins = new Set(branchRows.map(r => r.isin));
+        const filteredTx = transactions.filter(t => isins.has(t.isin));
+        const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, null);
+        const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
+        out.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, positions: branchRows.length, hhi, effectiveN, ratio });
+      }
+      return out.sort((a, b) => b.positions - a.positions);
+    }
+
     // Traduce la opción de periodo elegida en la tabla "Por valor" a una
     // fecha de arranque "YYYY-MM-DD" (o null para "Todo" = comportamiento
     // de siempre, sin acotar). "custom" usa la fecha que haya elegido el
@@ -8887,6 +8935,7 @@
     function VsDiversificacionTab({ portfolio }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
+      const tags = portfolio.tags || [];
 
       // Sin selector de periodo — la matriz de correlación siempre usa
       // todo el histórico disponible ("Todo"/máximo). Con las ventanas ya
@@ -8915,6 +8964,16 @@
       const rollingDiversification = useMemo(
         () => vsRollingDiversificationRatio(transactions, securitiesCatalog, rows, ROLLING_DIV_WINDOW_WEEKS),
         [transactions, securitiesCatalog, rows]
+      );
+
+      // Concentración de capital — cartera completa y por etiqueta.
+      const portfolioHHI = useMemo(() => vsHHI(rows), [rows]);
+      const portfolioEffectiveN = vsEffectiveN(portfolioHHI);
+      const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
+      const tagConcentration = useMemo(
+        () => vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog),
+        [tagTree, transactions, securitiesCatalog]
+
       );
 
       // Posiciones que alguna vez tuvieron compra/split_in en las
@@ -9053,18 +9112,54 @@
                 <VsRiskCard label="Volatilidad real" value={`${diversification.real.toFixed(1)}%`} sublabel="Índice TTWROR reconstruido" />
                 <VsRiskCard label="Volatilidad límite" value={diversification.limit != null ? `${diversification.limit.toFixed(1)}%` : "—"} sublabel="Media ponderada, correlación perfecta" />
                 <VsRiskCard label="Ratio de diversificación" value={diversificationRatio.toFixed(2)} sublabel="Límite / Real — 1.0 = sin beneficio" color={diversificationRatio > 1 ? "#4ade80" : undefined} />
+                <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} sublabel="Σwᵢ² — 1.0 = todo en una posición" />
+                <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} sublabel="1/HHI — más intuitivo que el HHI" />
               </div>
 
-              <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución del ratio de diversificación</div>
-                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
-                  Mismo cociente (Límite/Real) recalculado en ventanas de {ROLLING_DIV_WINDOW_WEEKS} semanas — muestra si la diversificación real de tu cartera ha ido mejorando o empeorando con el tiempo, no solo su nivel actual. Pondera cada posición por su peso ACTUAL en todas las ventanas, así que es una aproximación razonada si tu asignación ha cambiado mucho a lo largo del tiempo, no una descomposición exacta.
+              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 400px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución del ratio de diversificación</div>
+                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
+                    Mismo cociente (Límite/Real) recalculado en ventanas de {ROLLING_DIV_WINDOW_WEEKS} semanas — muestra si la diversificación real de tu cartera ha ido mejorando o empeorando con el tiempo, no solo su nivel actual. Pondera cada posición por su peso ACTUAL en todas las ventanas, así que es una aproximación razonada si tu asignación ha cambiado mucho a lo largo del tiempo, no una descomposición exacta.
+                  </div>
+                  {rollingDiversification.length > 1 ? (
+                    <VsLineChart series={rollingDiversification} height={200} />
+                  ) : (
+                    <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
+                      Necesitas más semanas de histórico para la ventana móvil.
+                    </div>
+                  )}
                 </div>
-                {rollingDiversification.length > 1 ? (
-                  <VsLineChart series={rollingDiversification} height={200} />
-                ) : (
-                  <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
-                    Necesitas más semanas de histórico para la ventana móvil.
+
+                {tagConcentration.length > 0 && (
+                  <div style={{ flex: "1 1 380px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Concentración y diversificación por etiqueta</div>
+                    <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
+                      Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                      <thead>
+                        <tr>
+                          {["Etiqueta", "Posiciones", "HHI", "Nº efectivo", "Ratio"].map((h, i) => (
+                            <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tagConcentration.map(t => (
+                          <tr key={t.id}>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color }} />
+                              {t.name}
+                            </td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{t.positions}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.hhi != null ? t.hhi.toFixed(3) : "—"}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.effectiveN != null ? t.effectiveN.toFixed(1) : "—"}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: t.ratio != null && t.ratio > 1 ? "#4ade80" : "#e2e8f0" }}>{t.ratio != null ? t.ratio.toFixed(2) : "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
