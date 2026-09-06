@@ -8720,10 +8720,13 @@
     // Mismos estilos que kpiCardStyle/kpiLabelStyle/kpiValueStyle en
     // VsPortfolioKpiCards (pestaña "Mi cartera") — DM Sans para el valor,
     // DM Mono en mayúsculas para la etiqueta, misma paleta y tamaños.
-    function VsRiskCard({ label, value, sublabel, color }) {
+    function VsRiskCard({ label, value, sublabel, color, info }) {
       return (
         <div style={{ flex: "1 1 150px", minWidth: 150, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-          <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{label}</div>
+          <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, display: "flex", alignItems: "center" }}>
+            {label}
+            {info && <VsInfoTip text={info} width={240} />}
+          </div>
           <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
           {sublabel && <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>{sublabel}</div>}
         </div>
@@ -8846,12 +8849,12 @@
               )}
 
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-                <VsRiskCard label="Volatilidad anualizada" value={volatility != null ? `${volatility.toFixed(1)}%` : "—"} sublabel="Desv. típica semanal × √52" />
-                <VsRiskCard label="Semivolatilidad" value={downsideDev != null ? `${downsideDev.toFixed(1)}%` : "—"} sublabel="Solo retornos por debajo de 0%" />
-                <VsRiskCard label="Ratio de Sharpe" value={sharpe != null ? sharpe.toFixed(2) : "—"} sublabel={riskFree != null ? `tipo libre riesgo ${riskFree.toFixed(2)}%` : ""} color={sharpe != null ? vsChangeColor(sharpe) : undefined} />
-                <VsRiskCard label="Ratio de Sortino" value={sortino != null ? sortino.toFixed(2) : "—"} sublabel="Solo penaliza caídas" color={sortino != null ? vsChangeColor(sortino) : undefined} />
-                <VsRiskCard label="Máximo drawdown" value={drawdown ? `${drawdown.maxDD.toFixed(1)}%` : "—"} sublabel={drawdown ? (drawdown.ongoing ? "Aún sin recuperar" : `Recuperado el ${drawdown.recoveryDate}`) : ""} color="#f87171" />
-                <VsRiskCard label="VaR histórico 95%" value={varHist != null ? `${varHist.toFixed(1)}%` : "—"} sublabel="Pérdida semanal, peor 5% de casos" color="#f87171" />
+                <VsRiskCard label="Volatilidad anualizada" value={volatility != null ? `${volatility.toFixed(1)}%` : "—"} info="Desviación típica de los retornos semanales, anualizada × √52." />
+                <VsRiskCard label="Semivolatilidad" value={downsideDev != null ? `${downsideDev.toFixed(1)}%` : "—"} info="Igual que la volatilidad anualizada, pero solo cuenta las semanas con retorno por debajo de 0% — ignora la dispersión al alza." />
+                <VsRiskCard label="Ratio de Sharpe" value={sharpe != null ? sharpe.toFixed(2) : "—"} sublabel={riskFree != null ? `tipo libre riesgo ${riskFree.toFixed(2)}%` : ""} color={sharpe != null ? vsChangeColor(sharpe) : undefined} info="(Retorno anualizado − tipo libre de riesgo) / volatilidad anualizada. El tipo libre de riesgo es el factor de caja EONIA+€STR, compuesto sobre la ventana exacta del periodo." />
+                <VsRiskCard label="Ratio de Sortino" value={sortino != null ? sortino.toFixed(2) : "—"} color={sortino != null ? vsChangeColor(sortino) : undefined} info="Igual que el Sharpe, pero divide por la semivolatilidad en vez de la volatilidad total — solo penaliza las caídas, no la dispersión al alza." />
+                <VsRiskCard label="Máximo drawdown" value={drawdown ? `${drawdown.maxDD.toFixed(1)}%` : "—"} sublabel={drawdown ? (drawdown.ongoing ? "Aún sin recuperar" : `Recuperado el ${drawdown.recoveryDate}`) : ""} color="#f87171" info="Mayor caída pico-valle del periodo, calculada sobre la serie DIARIA (no la semanal) para no perder mínimos que se recuperan en pocos días." />
+                <VsRiskCard label="VaR histórico 95%" value={varHist != null ? `${varHist.toFixed(1)}%` : "—"} color="#f87171" info="Percentil 5% de la distribución empírica de retornos semanales — la pérdida semanal que, históricamente, solo se ha superado en el peor 5% de los casos." />
               </div>
 
               <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", marginBottom: 20 }}>
@@ -8946,8 +8949,8 @@
                       Dos medidas ancladas en el drawdown, no en la volatilidad — Calmar compara el retorno anualizado con la peor caída sufrida; Ulcer pondera profundidad Y duración de todas las caídas del periodo, no solo la peor.
                     </div>
                     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                      <VsRiskCard label="Ratio de Calmar" value={calmar != null ? calmar.toFixed(2) : "—"} sublabel="Retorno anualizado / máximo drawdown" color={calmar != null ? vsChangeColor(calmar) : undefined} />
-                      <VsRiskCard label="Índice de Ulcer" value={ulcerIndex.toFixed(1)} sublabel="Profundidad y duración de las caídas" />
+                      <VsRiskCard label="Ratio de Calmar" value={calmar != null ? calmar.toFixed(2) : "—"} color={calmar != null ? vsChangeColor(calmar) : undefined} info="Retorno anualizado / máximo drawdown (en valor absoluto) — cuánto retorno obtienes por cada punto de la peor pérdida que has tenido que aguantar." />
+                      <VsRiskCard label="Índice de Ulcer" value={ulcerIndex.toFixed(1)} info="Raíz cuadrada de la media de los drawdowns al cuadrado en cada punto del periodo — pondera profundidad Y duración de TODAS las caídas, no solo la peor. Una caída moderada pero larga penaliza más aquí que una brusca y breve." />
                     </div>
                   </div>
                 )}
@@ -9188,16 +9191,17 @@
           {diversificationRatio != null && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                <VsRiskCard label="Volatilidad real" value={`${diversification.real.toFixed(1)}%`} sublabel="Índice TTWROR reconstruido" />
-                <VsRiskCard label="Volatilidad límite" value={diversification.limit != null ? `${diversification.limit.toFixed(1)}%` : "—"} sublabel="Media ponderada, correlación perfecta" />
-                <VsRiskCard label="Ratio de diversificación" value={diversificationRatio.toFixed(2)} sublabel="Límite / Real — 1.0 = sin beneficio" color={diversificationRatio > 1 ? "#4ade80" : undefined} />
-                <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} sublabel="Σwᵢ² — 1.0 = todo en una posición" />
-                <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} sublabel="1/HHI — más intuitivo que el HHI" />
+                <VsRiskCard label="Volatilidad real" value={`${diversification.real.toFixed(1)}%`} info="Volatilidad anualizada del índice TTWROR reconstruido de la cartera completa — captura el efecto de diversificación real entre posiciones." />
+                <VsRiskCard label="Volatilidad límite" value={diversification.limit != null ? `${diversification.limit.toFixed(1)}%` : "—"} info="Media ponderada por peso actual de la volatilidad individual de cada valor, asumiendo correlación perfecta entre todos — el peor caso posible, nunca por debajo de la volatilidad real." />
+                <VsRiskCard label="Ratio de diversificación" value={diversificationRatio.toFixed(2)} color={diversificationRatio > 1 ? "#4ade80" : undefined} info="Límite / Real — 1.0 significa sin ningún beneficio de diversificación; cuanto más alto, más te está protegiendo la combinación de tus posiciones." />
+                <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} info="Índice Herfindahl-Hirschman: Σwᵢ² sobre el peso en € de cada posición. 1.0 = todo concentrado en una sola posición; cuanto más bajo, más repartido el capital." />
+                <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="HHI (riesgo)"
                   value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
                   sublabel={portfolioRiskHHI != null
                     ? `${portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "Riesgo más concentrado que el capital" : "Riesgo repartido de forma similar al capital"}${portfolioRiskHHI.assumedZeroPairs > 0 ? ` · ⚠ ${portfolioRiskHHI.assumedZeroPairs}/${portfolioRiskHHI.totalPairs} pares sin correlación fiable (asumida 0)` : ""}`
-                    : "Ponderado por contribución a la varianza"} />
+                    : ""}
+                  info="Mismo HHI, pero ponderado por contribución real a la VARIANZA de la cartera (volatilidad + correlación de cada posición), no por capital en €. Una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en euros." />
               </div>
 
               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
