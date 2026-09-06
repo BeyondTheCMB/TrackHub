@@ -7689,6 +7689,64 @@
       return out;
     }
 
+    // Volatilidad "resumen" para la pastilla de "Mi cartera", al lado del
+    // TTWROR — muestra DOS números, no uno, precisamente para no fingir
+    // que la media ponderada es "la" volatilidad de la cartera:
+    //
+    //  · REAL: anualizada sobre el índice TTWROR reconstruido (mismo
+    //    motor que la pestaña "Riesgo") — captura el efecto de
+    //    diversificación real entre posiciones.
+    //  · LÍMITE: media ponderada por peso ACTUAL de la volatilidad
+    //    individual de cada valor, en la MISMA ventana de fechas que la
+    //    real (imprescindible: si cada activo usara su propia ventana,
+    //    la comparación dejaría de ser una manzana con manzana). Es el
+    //    límite teórico bajo correlación perfecta (ρ=1 entre todos los
+    //    pares) — matemáticamente, σₚ = Σwᵢ²σᵢ² + ΣΣwᵢwⱼσᵢσⱼρᵢⱼ y como
+    //    ρᵢⱼ≤1 siempre, σₚ ≤ Σwᵢσᵢ con igualdad solo si todo está
+    //    perfectamente correlacionado. La diferencia entre ambos números
+    //    es una medida indirecta de cuánto te protege la diversificación.
+    //
+    // Aviso honesto (no es un límite matemático perfecto en este caso
+    // concreto): el LÍMITE aplica los pesos de HOY de forma constante a
+    // toda la ventana, mientras que la REAL sigue los pesos que tuvo la
+    // cartera de verdad en cada momento (que fueron cambiando con
+    // compras/ventas/movimientos de precio). Si la asignación ha
+    // cambiado mucho, la comparación es una aproximación razonada, no
+    // una cota exacta contra el número real de este caso concreto.
+    //
+    // Ventana: hasta `startDateCap` años atrás (se pasa ya calculado
+    // como fecha), o desde el inicio de la cartera si es más joven que
+    // eso — igual que el resto de tarjetas KPI ("desde siempre" con un
+    // límite razonable). Valores sin al menos VS_RISK_MIN_OBS semanas de
+    // histórico DENTRO de esa ventana se excluyen del límite (numerador
+    // Y denominador), no cuentan como 0% de volatilidad.
+    function vsPortfolioVolatilityRealAndLimit(transactions, securitiesCatalog, rows, startDateCap) {
+      const { returns: portReturns, weeklyPoints } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, startDateCap);
+      if (portReturns.length < VS_RISK_MIN_OBS || weeklyPoints.length < 2) return null;
+      const windowStartDate = weeklyPoints[0].date;
+      const windowEndDate = weeklyPoints[weeklyPoints.length - 1].date;
+      const real = vsAnnualizedVolatility(portReturns);
+
+      let weightedSum = 0, weightCovered = 0, weightTotal = 0, excludedCount = 0, includedCount = 0;
+      for (const row of rows) {
+        weightTotal += row.value;
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, windowStartDate);
+        if (returns.length >= VS_RISK_MIN_OBS) {
+          weightedSum += row.value * vsAnnualizedVolatility(returns);
+          weightCovered += row.value;
+          includedCount++;
+        } else {
+          excludedCount++;
+        }
+      }
+      const limit = weightCovered > 0 ? weightedSum / weightCovered : null;
+      return {
+        real, limit, windowStartDate, windowEndDate,
+        coverage: weightTotal > 0 ? weightCovered / weightTotal : 0,
+        excludedCount, includedCount,
+      };
+    }
+
     // Traduce la opción de periodo elegida en la tabla "Por valor" a una
     // fecha de arranque "YYYY-MM-DD" (o null para "Todo" = comportamiento
     // de siempre, sin acotar). "custom" usa la fecha que haya elegido el
@@ -7712,7 +7770,7 @@
     // estilo. El detalle de cobertura de precio (antes un aviso siempre
     // visible bajo el valor) vive ahora en el botón ⓘ, reutilizando
     // VsInfoTip — solo se ve si lo pides, no ocupa sitio permanente.
-    function VsPortfolioKpiCards({ kpis, showXirr = true, ttwror = null, censored = false, onToggleCensored }) {
+    function VsPortfolioKpiCards({ kpis, showXirr = true, ttwror = null, volatility = null, censored = false, onToggleCensored }) {
       const kpiCardStyle = { flex: 1, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px", position: "relative" };
       const kpiLabelStyle = { fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 };
       const kpiValueStyle = { fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, color: "#e2e8f0", letterSpacing: "-0.01em" };
@@ -7725,6 +7783,7 @@
           : `${kpis.heldCount} valores con precio de mercado.`;
       const xirrInfoText = "Rentabilidad anualizada ponderada por dinero (XIRR): tiene en cuenta CUÁNDO metiste cada euro, a diferencia del % de \"Valor actual\" (que solo compara importes, no fechas). Se calcula sobre compras, ventas y dividendos de cada valor — no sobre aportaciones/retiradas de cuenta, que no todos los importadores traen. Necesita al menos una compra y no se puede calcular si nunca hubo dinero invertido.";
       const ttwrorInfoText = "Rentabilidad ponderada por tiempo (TTWROR): mide cómo lo han hecho tus valores, sin que influya cuándo aportaste o retiraste dinero — el complemento del XIRR. Arranca donde arranca el histórico de precios disponible más antiguo, así que el período mostrado debajo es parte del dato, no un detalle menor. Necesita histórico de precios descargado (botón \"histórico\" en el catálogo de valores).";
+      const volatilityInfoText = "Dos números: REAL es la volatilidad anualizada del índice TTWROR reconstruido de la cartera completa (mismo motor que la pestaña \"Riesgo\"), en la ventana de fechas de abajo — captura el efecto de diversificación real entre tus posiciones. LÍMITE es la media ponderada por peso actual de la volatilidad individual de cada valor, en esa MISMA ventana, asumiendo correlación perfecta entre todos ellos: matemáticamente, la volatilidad de una cartera nunca puede superar esa media salvo que todo se mueva exactamente igual, así que es el peor caso razonado, no un número arbitrario. La diferencia entre ambos es una medida indirecta de cuánto te protege la diversificación. Aviso: el límite aplica los pesos de HOY de forma constante a toda la ventana, mientras que la real siguió los pesos que tuvo la cartera de verdad en cada momento — si tu asignación ha cambiado mucho, la comparación es una aproximación razonada, no una cota exacta. Valores sin al menos 12 semanas de histórico en la ventana se excluyen del límite (no cuentan como 0%).";
       // Solo enmascara importes absolutos (€) — los porcentajes (XIRR,
       // TTWROR, "Desde inicio") no revelan cuánto dinero hay de por medio,
       // así que se quedan visibles incluso en modo censurado.
@@ -7774,6 +7833,29 @@
               </div>
               <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
                 {ttwror.firstDate} → {ttwror.lastDate}
+              </div>
+            </div>
+          )}
+          {volatility && (
+            <div style={kpiCardStyle}>
+              <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={volatilityInfoText} width={280} align="right" /></div>
+              <div style={kpiLabelStyle}>Volatilidad</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
+                <div>
+                  <div style={{ ...kpiValueStyle, fontSize: 22 }}>{volatility.real.toFixed(1)}%</div>
+                  <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>Real</div>
+                </div>
+                <div style={{ color: "#3a4550", fontSize: 18, fontWeight: 300 }}>/</div>
+                <div>
+                  <div style={{ ...kpiValueStyle, fontSize: 22, color: "#7a90a8" }}>{volatility.limit != null ? `${volatility.limit.toFixed(1)}%` : "—"}</div>
+                  <div style={{ fontSize: 9, color: "#5a7080", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>Límite</div>
+                </div>
+                {volatility.excludedCount > 0 && (
+                  <span style={{ fontSize: 13, color: "#f59e0b" }} title={`${volatility.excludedCount} valor${volatility.excludedCount === 1 ? "" : "es"} sin histórico suficiente en esta ventana — excluido${volatility.excludedCount === 1 ? "" : "s"} del "Límite" (no cuenta${volatility.excludedCount === 1 ? "" : "n"} como 0% de volatilidad).`}>⚠</span>
+                )}
+              </div>
+              <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
+                {volatility.windowStartDate} → {volatility.windowEndDate}
               </div>
             </div>
           )}
@@ -8068,6 +8150,21 @@
         () => periodStart ? vsComputePortfolioTtwror(transactions, securitiesCatalog, null, periodStart) : ttwror,
         [transactions, securitiesCatalog, periodStart, ttwror]
       );
+      // Volatilidad "resumen" de la pastilla de arriba (real + límite,
+      // misma ventana de hasta 5 años) — ver
+      // vsPortfolioVolatilityRealAndLimit. `rows` sirve tal cual aunque
+      // venga calculado con el periodStart de la tabla: `.value`/`.isin`
+      // no dependen del periodo elegido (solo lo hacen
+      // investedPeriodDelta/valueAtStart), así que no hace falta
+      // recalcular la asignación aparte sin filtro.
+      const fiveYearsAgo = useMemo(() => {
+        const today = new Date();
+        return new Date(Date.UTC(today.getUTCFullYear() - 5, today.getUTCMonth(), today.getUTCDate())).toISOString().slice(0, 10);
+      }, []);
+      const volatility5y = useMemo(
+        () => vsPortfolioVolatilityRealAndLimit(transactions, securitiesCatalog, rows, fiveYearsAgo),
+        [transactions, securitiesCatalog, rows, fiveYearsAgo]
+      );
       // Volatilidad anualizada por valor, ajustada al mismo periodo que
       // el resto de la tabla — histórico propio de cada valor (ver
       // vsSecurityRiskReturnSeries), sin datos suficientes = "—".
@@ -8142,7 +8239,7 @@
       const cellStyle = { padding: "5px 7px", borderBottom: "1px solid #16202c" };
       return (
         <div style={{ padding: 20 }}>
-          <VsPortfolioKpiCards kpis={kpis} ttwror={ttwror} censored={censored} onToggleCensored={onToggleCensored} />
+          <VsPortfolioKpiCards kpis={kpis} ttwror={ttwror} volatility={volatility5y} censored={censored} onToggleCensored={onToggleCensored} />
 
           {anomalies.length > 0 && (
             <div style={{ background: "#f8717118", border: "1px solid #f8717155", borderRadius: 10, padding: 16, marginBottom: 20 }}>
