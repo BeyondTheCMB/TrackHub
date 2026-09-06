@@ -7796,11 +7796,11 @@
               <VsIcon name={censored ? "eyeOff" : "eye"} size={16} />
             </button>
           )}
-          <div style={kpiCardStyle}>
+          <div style={{ ...kpiCardStyle, flex: 1.25 }}>
             <div style={kpiLabelStyle}>Total invertido</div>
             <div style={kpiValueStyle}>{maskEUR(vsPortfolioFmtEUR(kpis.invested))}</div>
           </div>
-          <div style={kpiCardStyle}>
+          <div style={{ ...kpiCardStyle, flex: 1.25 }}>
             <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={infoText} width={210} align="right" /></div>
             <div style={kpiLabelStyle}>Valor actual</div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -7813,7 +7813,7 @@
             </div>
           </div>
           {showXirr && (
-            <div style={kpiCardStyle}>
+            <div style={{ ...kpiCardStyle, flex: 0.85 }}>
               <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={xirrInfoText} width={230} align="right" /></div>
               <div style={kpiLabelStyle}>Rentabilidad anualizada (XIRR)</div>
               <div style={{ ...kpiValueStyle, color: vsChangeColor(kpis.xirr != null ? kpis.xirr * 100 : null) }}>
@@ -7822,7 +7822,7 @@
             </div>
           )}
           {ttwror && (
-            <div style={kpiCardStyle}>
+            <div style={{ ...kpiCardStyle, flex: 0.85 }}>
               <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={ttwrorInfoText} width={240} align="right" /></div>
               <div style={kpiLabelStyle}>TTWROR</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -7837,7 +7837,7 @@
             </div>
           )}
           {volatility && (
-            <div style={kpiCardStyle}>
+            <div style={{ ...kpiCardStyle, flex: 0.85 }}>
               <div style={{ position: "absolute", top: 14, right: 14 }}><VsInfoTip text={volatilityInfoText} width={280} align="right" /></div>
               <div style={kpiLabelStyle}>Volatilidad</div>
               <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
