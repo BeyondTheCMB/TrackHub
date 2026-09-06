@@ -9200,7 +9200,10 @@
                 <VsRiskCard label="HHI (riesgo)"
                   value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
                   sublabel={portfolioRiskHHI != null
-                    ? `${portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "Riesgo más concentrado que el capital" : "Riesgo repartido de forma similar al capital"}${portfolioRiskHHI.assumedZeroPairs > 0 ? ` · ⚠ ${portfolioRiskHHI.assumedZeroPairs}/${portfolioRiskHHI.totalPairs} pares sin correlación fiable (asumida 0)` : ""}`
+                    ? [
+                        portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "Riesgo más concentrado que el capital" : null,
+                        portfolioRiskHHI.assumedZeroPairs > 0 ? `⚠ ${portfolioRiskHHI.assumedZeroPairs}/${portfolioRiskHHI.totalPairs} pares sin correlación fiable (asumida 0)` : null,
+                      ].filter(Boolean).join(" · ")
                     : ""}
                   info="Mismo HHI, pero ponderado por contribución real a la VARIANZA de la cartera (volatilidad + correlación de cada posición), no por capital en €. Una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en euros." />
               </div>
