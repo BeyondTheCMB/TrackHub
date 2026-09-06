@@ -7936,6 +7936,65 @@
       };
     }
 
+    // Número efectivo de APUESTAS independientes — descomposición en
+    // autovalores (PCA) de la matriz de correlación entre posiciones,
+    // vía entropía de Shannon (Meucci, "Effective Number of Bets"): con
+    // λᵢ los autovalores de la matriz de correlación (Σλᵢ = N siempre,
+    // porque la diagonal de una matriz de correlación es todo 1s) y
+    // pᵢ = λᵢ/Σλⱼ el peso de varianza que explica cada componente
+    // principal,
+    //   ENB = exp(-Σ pᵢ·ln(pᵢ))
+    // Da un número CONTINUO — a propósito, en vez de "nº de componentes
+    // para explicar el 90% de la varianza" (un conteo entero sensible a
+    // un umbral arbitrario) — que dice cuántos "grados de libertad" de
+    // riesgo realmente independientes hay en la cartera: si dos
+    // posiciones se mueven casi siempre juntas por el mismo factor
+    // subyacente, cuentan casi como una sola aquí, aunque sean dos
+    // valores distintos.
+    //
+    // Reutiliza vsJacobiEigen (el mismo motor que ya usa el chequeo de
+    // matriz no-PSD de vsFactorCorrelationMatrix) y el mismo criterio
+    // de vsRiskHHI para construir la matriz: umbral laxo
+    // (VS_RISK_HHI_MIN_OBS, no el estricto de la matriz visible) y
+    // correlación 0 asumida para los pares sin solape suficiente — por
+    // el mismo motivo: exigir el umbral estricto dejaría este cálculo
+    // incompleto para casi cualquier cartera real. Los autovalores
+    // negativos (posibles si la matriz con ceros asumidos deja de ser
+    // estrictamente semidefinida positiva) se recortan a 0 antes de
+    // normalizar, para que las pᵢ sigan siendo probabilidades válidas.
+    function vsEffectiveBets(rows, securitiesCatalog) {
+      const withEnoughHistory = [];
+      for (const row of rows) {
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, null);
+        if (returns.length >= VS_RISK_HHI_MIN_OBS) withEnoughHistory.push({ row, returns });
+      }
+      if (withEnoughHistory.length === 0) return null;
+      if (withEnoughHistory.length === 1) return { enb: 1, assumedZeroPairs: 0, totalPairs: 0, coveredCount: 1, totalCount: rows.length };
+
+      const dataMap = {};
+      const isins = [];
+      for (const { row, returns } of withEnoughHistory) { dataMap[row.isin] = { returns }; isins.push(row.isin); }
+      const { matrix } = vsFactorCorrelationMatrix(dataMap, isins, VS_RISK_HHI_MIN_OBS);
+
+      let assumedZeroPairs = 0, totalPairs = 0;
+      const M = isins.map((a, i) => isins.map((b, j) => {
+        if (i === j) return 1;
+        totalPairs++;
+        const rho = matrix[a][b];
+        if (rho == null) { assumedZeroPairs++; return 0; }
+        return rho;
+      }));
+      assumedZeroPairs /= 2; totalPairs /= 2; // cada par se cuenta dos veces (i,j) y (j,i)
+
+      const { eigenvalues } = vsJacobiEigen(M);
+      const clipped = eigenvalues.map(e => Math.max(e, 0));
+      const sumEig = clipped.reduce((s, e) => s + e, 0);
+      if (sumEig <= 0) return null;
+      const probs = clipped.map(e => e / sumEig).filter(p => p > 1e-12);
+      const entropy = -probs.reduce((s, p) => s + p * Math.log(p), 0);
+      return { enb: Math.exp(entropy), assumedZeroPairs, totalPairs, coveredCount: isins.length, totalCount: rows.length };
+    }
+
     // Concentración de capital y ratio de diversificación POR ETIQUETA
     // (rama raíz + "Sin etiquetar" si aplica) — cada rama se trata como
     // una sub-cartera propia, igual que en computeTagMetrics de "Mi
@@ -7961,7 +8020,8 @@
         const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, null);
         const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
         const riskHHI = vsRiskHHI(branchRows, securitiesCatalog);
-        out.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, positions: branchRows.length, hhi, effectiveN, ratio, riskHHI: riskHHI ? riskHHI.hhi : null });
+        const effectiveBets = vsEffectiveBets(branchRows, securitiesCatalog);
+        out.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, positions: branchRows.length, hhi, effectiveN, ratio, riskHHI: riskHHI ? riskHHI.hhi : null, effectiveBets: effectiveBets ? effectiveBets.enb : null });
       }
       return out.sort((a, b) => b.positions - a.positions);
     }
@@ -9052,6 +9112,7 @@
       const portfolioHHI = useMemo(() => vsHHI(rows), [rows]);
       const portfolioEffectiveN = vsEffectiveN(portfolioHHI);
       const portfolioRiskHHI = useMemo(() => vsRiskHHI(rows, securitiesCatalog), [rows, securitiesCatalog]);
+      const portfolioEffectiveBets = useMemo(() => vsEffectiveBets(rows, securitiesCatalog), [rows, securitiesCatalog]);
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
       const tagConcentration = useMemo(
         () => vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog),
@@ -9206,6 +9267,12 @@
                       ].filter(Boolean).join(" · ")
                     : ""}
                   info="Mismo HHI, pero ponderado por contribución real a la VARIANZA de la cartera (volatilidad + correlación de cada posición), no por capital en €. Una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en euros." />
+                <VsRiskCard label="Apuestas independientes"
+                  value={portfolioEffectiveBets != null ? portfolioEffectiveBets.enb.toFixed(1) : "—"}
+                  sublabel={portfolioEffectiveBets != null && portfolioEffectiveBets.assumedZeroPairs > 0
+                    ? `⚠ ${portfolioEffectiveBets.assumedZeroPairs}/${portfolioEffectiveBets.totalPairs} pares sin correlación fiable (asumida 0)`
+                    : ""}
+                  info="Descomposición en autovalores (PCA) de la matriz de correlación entre posiciones — número efectivo de fuentes de riesgo REALMENTE independientes, vía entropía de Shannon (no un simple conteo de componentes). Si varias posiciones se mueven casi siempre juntas por el mismo factor subyacente, cuentan casi como una sola aquí, aunque sean valores distintos." />
               </div>
 
               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
@@ -9227,12 +9294,12 @@
                   <div style={{ flex: "1 1 380px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
                     <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
                       Concentración y diversificación por etiqueta
-                      <VsInfoTip text={`Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El HHI de riesgo pesa por contribución a la varianza en vez de por capital: una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en €. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={300} align="right" />
+                      <VsInfoTip text={`Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El HHI de riesgo pesa por contribución a la varianza en vez de por capital: una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en €. Las apuestas independientes son el número efectivo de fuentes de riesgo REALMENTE distintas (PCA sobre la correlación entre los valores de la etiqueta) — si varios se mueven casi siempre juntos, cuentan casi como uno solo. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={300} align="right" />
                     </div>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                       <thead>
                         <tr>
-                          {["Etiqueta", "Posiciones", "HHI", "Nº efectivo", "HHI riesgo", "Ratio"].map((h, i) => (
+                          {["Etiqueta", "Posiciones", "HHI", "Nº efectivo", "HHI riesgo", "Apuestas indep.", "Ratio"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -9248,6 +9315,7 @@
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.hhi != null ? t.hhi.toFixed(3) : "—"}</td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.effectiveN != null ? t.effectiveN.toFixed(1) : "—"}</td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: (t.riskHHI != null && t.hhi != null && t.riskHHI > t.hhi) ? "#f59e0b" : "#e2e8f0" }}>{t.riskHHI != null ? t.riskHHI.toFixed(3) : "—"}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.effectiveBets != null ? t.effectiveBets.toFixed(1) : "—"}</td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: t.ratio != null && t.ratio > 1 ? "#4ade80" : "#e2e8f0" }}>{t.ratio != null ? t.ratio.toFixed(2) : "—"}</td>
                           </tr>
                         ))}
