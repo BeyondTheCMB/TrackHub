@@ -7996,34 +7996,46 @@
     }
 
     // Concentración de capital y ratio de diversificación POR ETIQUETA
-    // (rama raíz + "Sin etiquetar" si aplica) — cada rama se trata como
-    // una sub-cartera propia, igual que en computeTagMetrics de "Mi
-    // cartera": el HHI se normaliza DENTRO de la rama (no respecto al
+    // (rama raíz + subetiquetas de CUALQUIER profundidad + "Sin
+    // etiquetar" si aplica) — cada nodo del árbol se trata como una
+    // sub-cartera propia, igual que en computeTagMetrics de "Mi
+    // cartera": el HHI se normaliza DENTRO del nodo (no respecto al
     // total de la cartera, para que responda a "¿cómo de concentrada
     // está mi RV en sí misma?", no "¿cuánto pesa la RV en el total?"), y
     // el ratio de diversificación reutiliza
     // vsPortfolioVolatilityRealAndLimit sobre las transacciones
-    // filtradas a los ISIN de esa rama.
+    // filtradas a los ISIN de ese nodo. Recorrido en profundidad (DFS)
+    // para que cada subetiqueta salga inmediatamente debajo de su
+    // padre — se expone `depth` para que la UI pueda indentar y
+    // reflejar la jerarquía, en vez de un listado plano ordenado por
+    // tamaño que mezclaría raíces y subetiquetas sin criterio visual.
     function vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog) {
-      const branches = [...tagTree.branches];
-      if (tagTree.untagged.rows.length > 0) {
-        branches.push({ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, directRows: tagTree.untagged.rows, children: [], value: tagTree.untagged.value });
-      }
       const out = [];
-      for (const b of branches) {
-        const branchRows = vsCollectRowsInBranch(b);
-        if (branchRows.length === 0) continue;
-        const hhi = vsHHI(branchRows);
-        const effectiveN = vsEffectiveN(hhi);
-        const isins = new Set(branchRows.map(r => r.isin));
-        const filteredTx = transactions.filter(t => isins.has(t.isin));
-        const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, null);
-        const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
-        const riskHHI = vsRiskHHI(branchRows, securitiesCatalog);
-        const effectiveBets = vsEffectiveBets(branchRows, securitiesCatalog);
-        out.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, positions: branchRows.length, hhi, effectiveN, ratio, riskHHI: riskHHI ? riskHHI.hhi : null, effectiveBets: effectiveBets ? effectiveBets.enb : null });
+      const walk = (node, depth) => {
+        const branchRows = vsCollectRowsInBranch(node);
+        if (branchRows.length > 0) {
+          const hhi = vsHHI(branchRows);
+          const effectiveN = vsEffectiveN(hhi);
+          const isins = new Set(branchRows.map(r => r.isin));
+          const filteredTx = transactions.filter(t => isins.has(t.isin));
+          const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, null);
+          const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
+          const riskHHI = vsRiskHHI(branchRows, securitiesCatalog);
+          const effectiveBets = vsEffectiveBets(branchRows, securitiesCatalog);
+          out.push({
+            id: node.tag.id, name: node.tag.name, color: node.tag.color, depth,
+            positions: branchRows.length, hhi, effectiveN, ratio,
+            riskHHI: riskHHI ? riskHHI.hhi : null,
+            effectiveBets: effectiveBets ? effectiveBets.enb : null,
+          });
+        }
+        for (const child of node.children || []) walk(child, depth + 1);
+      };
+      for (const b of tagTree.branches) walk(b, 0);
+      if (tagTree.untagged.rows.length > 0) {
+        walk({ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, directRows: tagTree.untagged.rows, children: [], value: tagTree.untagged.value }, 0);
       }
-      return out.sort((a, b) => b.positions - a.positions);
+      return out;
     }
 
     // Traduce la opción de periodo elegida en la tabla "Por valor" a una
@@ -9294,7 +9306,7 @@
                   <div style={{ flex: "1 1 380px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
                     <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
                       Concentración y diversificación por etiqueta
-                      <VsInfoTip text={`Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El HHI de riesgo pesa por contribución a la varianza en vez de por capital: una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en €. Las apuestas independientes son el número efectivo de fuentes de riesgo REALMENTE distintas (PCA sobre la correlación entre los valores de la etiqueta) — si varios se mueven casi siempre juntos, cuentan casi como uno solo. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={300} align="right" />
+                      <VsInfoTip text={`Cada rama y subetiqueta tratada como una sub-cartera propia (indentadas según su profundidad en el árbol). El HHI y el nº efectivo se normalizan DENTRO de cada una (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El HHI de riesgo pesa por contribución a la varianza en vez de por capital: una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en €. Las apuestas independientes son el número efectivo de fuentes de riesgo REALMENTE distintas (PCA sobre la correlación entre los valores de esa categoría) — si varios se mueven casi siempre juntos, cuentan casi como uno solo. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa categoría — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={300} align="right" />
                     </div>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                       <thead>
@@ -9307,8 +9319,9 @@
                       <tbody>
                         {tagConcentration.map(t => (
                           <tr key={t.id}>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6 }}>
-                              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color }} />
+                            <td style={{ padding: "5px 7px", paddingLeft: 7 + t.depth * 16, borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6, fontWeight: t.depth === 0 ? 600 : 400, color: t.depth === 0 ? "#e2e8f0" : "#b8c4d0" }}>
+                              {t.depth > 0 && <span style={{ color: "#5a7080" }}>–</span>}
+                              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: t.color, flexShrink: 0 }} />
                               {t.name}
                             </td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{t.positions}</td>
