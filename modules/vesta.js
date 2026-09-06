@@ -2068,6 +2068,7 @@
               background: "#12181f", border: "1px solid #1a2535", borderRadius: 8,
               padding: "9px 11px", fontSize: 10, color: "#9aaabb", lineHeight: 1.55,
               boxShadow: "0 4px 14px rgba(0,0,0,0.45)", fontFamily: "'DM Mono',monospace",
+              textTransform: "none", letterSpacing: "normal", fontWeight: 400,
             }}>
               {text}
             </div>
