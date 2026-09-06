@@ -1180,7 +1180,7 @@
       // Umbral de "solape estrecho" (intervalo de confianza ancho) escalado
       // en la misma proporción que el original (36/24 = 1.5×minObs) — así
       // sigue teniendo sentido si minObs cambia (p.ej. semanal en vez de
-      // mensual, ver vsPositionReturnSeriesForCorrelation).
+      // mensual, ver vsExternalReturnSeries y VsDiversificacionTab).
       const narrowCiThreshold = Math.round(minObs * 1.5);
       if (isFinite(minCommon) && minCommon < narrowCiThreshold) {
         warnings.push(`La pareja con menos solape tiene solo ${minCommon} observaciones. Con menos de ${narrowCiThreshold}, el intervalo de confianza de una correlación es muy ancho — trata esos valores como orientativos.`);
@@ -7731,29 +7731,6 @@
       return out;
     }
 
-    // Mapa de retornos semanales por posición, en el formato genérico que
-    // espera vsFactorCorrelationMatrix/VsCorrHeatmap ({ nombre: { returns:
-    // [...] } }) — reutiliza vsSecurityRiskReturnSeries (histórico propio
-    // del valor, sin herencia por split, mismo criterio que el resto de
-    // la sección Riesgo). Solo incluye posiciones con al menos una
-    // observación; el umbral de fiabilidad real (VS_POSITION_CORR_MIN_OBS)
-    // se aplica dentro de vsFactorCorrelationMatrix por PAREJA, no aquí.
-    // Desambigua nombres duplicados con el ISIN entre paréntesis — muy
-    // improbable con carteras reales, pero dos ISIN con el mismo nombre
-    // de valor romperían las claves del mapa en silencio si no se cubre.
-    function vsPositionReturnSeriesForCorrelation(rows, securitiesCatalog, periodStart) {
-      const nameCounts = {};
-      for (const row of rows) nameCounts[row.name] = (nameCounts[row.name] || 0) + 1;
-      const dataMap = {};
-      for (const row of rows) {
-        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, periodStart);
-        if (returns.length === 0) continue;
-        const label = nameCounts[row.name] > 1 ? `${row.name} (${row.isin})` : row.name;
-        dataMap[label] = { returns };
-      }
-      return dataMap;
-    }
-
     // Volatilidad "resumen" para la pastilla de "Mi cartera", al lado del
     // TTWROR — muestra DOS números, no uno, precisamente para no fingir
     // que la media ponderada es "la" volatilidad de la cartera:
@@ -8832,11 +8809,31 @@
       );
     }
 
+    // Convierte el histórico de precio de un valor EXTERNO (traído de
+    // Yahoo, no de tu catálogo) al mismo formato de retornos semanales
+    // que el resto de la app — mismo criterio de resampleo semanal por
+    // el mismo motivo (evitar el forward-fill de fin de semana/festivos,
+    // ver vsResampleWeekly). Recorta por `periodStart` en el momento de
+    // llamarla, no al guardar el histórico — así un cambio de periodo en
+    // la UI no obliga a volver a pedir el precio a Yahoo.
+    function vsExternalReturnSeries(points, periodStart) {
+      const filtered = periodStart ? points.filter(p => p.date >= periodStart) : points;
+      const weeklyPoints = vsResampleWeekly(filtered);
+      return vsReturnsFromSeries(weeklyPoints);
+    }
+
     // ── Pestaña "Diversificación" — arranca con la matriz de correlación
-    // entre las posiciones actualmente en cartera. Es la pieza base sobre
-    // la que se apoyarán el resto de métricas de esta sección (ratio de
-    // diversificación, concentración de riesgo, autovalores...), que se
-    // añadirán en próximas iteraciones.
+    // entre posiciones. Empieza VACÍA y de opt-in (checkboxes), no
+    // renderiza directamente todo lo que haya en cartera: con 14+
+    // posiciones, calcular y pintar la matriz completa sin que el
+    // usuario lo pida es caro de golpe y probablemente ni falta hace
+    // (rara vez interesan TODAS las parejas a la vez). Tres orígenes
+    // posibles para añadir a la comparativa: posiciones actuales,
+    // posiciones que estuvieron en cartera en el pasado (venta total,
+    // pero con histórico de precio aún en el catálogo si se llegó a
+    // descargar), y valores externos buscados en Yahoo Finance al vuelo
+    // (no se guardan en la cartera, solo viven en el estado de esta
+    // pestaña mientras esté abierta).
     function VsDiversificacionTab({ portfolio }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
@@ -8849,13 +8846,124 @@
         () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
         [transactions, securitiesCatalog, periodStart]
       );
-      const corrDataMap = useMemo(
-        () => vsPositionReturnSeriesForCorrelation(rows, securitiesCatalog, periodStart),
-        [rows, securitiesCatalog, periodStart]
-      );
-      const names = useMemo(() => Object.keys(corrDataMap).sort(), [corrDataMap]);
+      // Posiciones que alguna vez tuvieron compra/split_in en las
+      // transacciones pero ya no están en `rows` (vendidas del todo) —
+      // vsComputePositions no filtra por nº de títulos, a diferencia de
+      // vsComputeAllocation.
+      const historicalItems = useMemo(() => {
+        const positions = vsComputePositions(transactions);
+        const currentIsins = new Set(rows.map(r => r.isin));
+        const out = [];
+        for (const isin of Object.keys(positions)) {
+          if (currentIsins.has(isin)) continue;
+          const sec = securitiesCatalog[isin];
+          const name = (sec && sec.name) || (transactions.find(t => t.isin === isin) || {}).name || isin;
+          out.push({ isin, name });
+        }
+        return out.sort((a, b) => a.name.localeCompare(b.name));
+      }, [transactions, rows, securitiesCatalog]);
+
+      const currentItems = useMemo(() => rows.map(r => ({ isin: r.isin, name: r.name })), [rows]);
+
+      // Nombres desambiguados (isin entre paréntesis si dos valores
+      // comparten nombre exacto) para las posiciones de cartera —
+      // externos se desambiguan aparte, por ticker, al añadirlos.
+      const itemsByLabel = useMemo(() => {
+        const all = [...currentItems, ...historicalItems];
+        const nameCounts = {};
+        for (const it of all) nameCounts[it.name] = (nameCounts[it.name] || 0) + 1;
+        const map = {};
+        for (const it of all) {
+          const label = nameCounts[it.name] > 1 ? `${it.name} (${it.isin})` : it.name;
+          map[label] = it;
+        }
+        return map;
+      }, [currentItems, historicalItems]);
+      const currentLabels = currentItems.map(it => (itemsByLabel[it.name] === it ? it.name : `${it.name} (${it.isin})`));
+      const historicalLabels = historicalItems.map(it => (itemsByLabel[it.name] === it ? it.name : `${it.name} (${it.isin})`));
+
+      // Comparación externa vía Yahoo — búsqueda de símbolo y, al
+      // elegir uno, descarga de su histórico completo (misma función que
+      // usa Análisis de fondos para añadir índices/fondos al pool). Solo
+      // vive en memoria de esta pestaña, nunca se guarda en la cartera.
+      const [searchQuery, setSearchQuery] = useState("");
+      const [searchResults, setSearchResults] = useState(null);
+      const [searching, setSearching] = useState(false);
+      const [searchError, setSearchError] = useState(null);
+      const [addingSymbol, setAddingSymbol] = useState(null);
+      const [addError, setAddError] = useState(null);
+      const [externalPoints, setExternalPoints] = useState({}); // { label: { points:[{date,value}], ticker } }
+
+      // Selección — arranca vacía a propósito (ver comentario de arriba).
+      const [selected, setSelected] = useState(() => new Set());
+
+      const runSearch = async () => {
+        const q = searchQuery.trim();
+        if (!q) return;
+        setSearching(true); setSearchError(null); setSearchResults(null);
+        try {
+          const results = await vsSearchYahooSymbols(q);
+          setSearchResults(results);
+        } catch (e) {
+          setSearchError(e.message);
+        } finally {
+          setSearching(false);
+        }
+      };
+
+      const addExternal = async (result) => {
+        const label = `${result.name} (${result.symbol})`;
+        if (externalPoints[label]) { setSelected(prev => new Set(prev).add(label)); return; }
+        setAddingSymbol(result.symbol); setAddError(null);
+        try {
+          const { points } = await vsFetchYahooMonthlySeries(result.symbol);
+          const dailyPoints = points.map(p => ({ date: p.date.toISOString().slice(0, 10), value: p.value }));
+          if (dailyPoints.length === 0) throw new Error("Sin histórico de precio disponible para este símbolo.");
+          setExternalPoints(prev => ({ ...prev, [label]: { points: dailyPoints, ticker: result.symbol } }));
+          setSelected(prev => new Set(prev).add(label));
+        } catch (e) {
+          setAddError(`${result.symbol}: ${e.message}`);
+        } finally {
+          setAddingSymbol(null);
+        }
+      };
+      const removeExternal = (label) => {
+        setExternalPoints(prev => { const next = { ...prev }; delete next[label]; return next; });
+        setSelected(prev => { const next = new Set(prev); next.delete(label); return next; });
+      };
+
+      const toggle = (label) => {
+        setSelected(prev => {
+          const next = new Set(prev);
+          if (next.has(label)) next.delete(label); else next.add(label);
+          return next;
+        });
+      };
+      const allSelectableLabels = [...currentLabels, ...historicalLabels, ...Object.keys(externalPoints)];
+      const selectAll = () => setSelected(new Set(allSelectableLabels));
+      const selectNone = () => setSelected(new Set());
+
+      const selectedNames = allSelectableLabels.filter(l => selected.has(l));
+      const corrDataMap = useMemo(() => {
+        const map = {};
+        for (const label of selectedNames) {
+          if (externalPoints[label]) {
+            const returns = vsExternalReturnSeries(externalPoints[label].points, periodStart);
+            if (returns.length > 0) map[label] = { returns };
+            continue;
+          }
+          const item = itemsByLabel[label];
+          if (!item) continue;
+          const { returns } = vsSecurityRiskReturnSeries(item.isin, securitiesCatalog, periodStart);
+          if (returns.length > 0) map[label] = { returns };
+        }
+        return map;
+      }, [selectedNames, externalPoints, itemsByLabel, securitiesCatalog, periodStart]);
+      const names = Object.keys(corrDataMap).sort();
 
       const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
+      const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 9px", fontSize: 12 };
+      const checkboxRow = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12, cursor: "pointer" };
 
       if (transactions.length === 0) {
         return (
@@ -8880,21 +8988,115 @@
             )}
           </div>
 
-          {names.length < 2 ? (
-            <div style={{ background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 10, padding: 16 }}>
-              <div style={{ fontSize: 12, color: "#f59e0b", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
-                ⚠ Hacen falta al menos 2 posiciones con histórico de precios en el periodo elegido para calcular correlaciones — de momento hay {names.length}.
+          <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 18 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15 }}>Comparar</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={selectAll} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>todos</button>
+                  <button onClick={selectNone} style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'DM Mono',monospace" }}>ninguno</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 12 }}>
+                Marca qué incluir en la matriz — empieza vacía a propósito.
+              </div>
+
+              {currentLabels.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>en cartera</div>
+                  {currentLabels.map(label => (
+                    <label key={label} style={checkboxRow}>
+                      <input type="checkbox" checked={selected.has(label)} onChange={() => toggle(label)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label}>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {historicalLabels.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>anteriormente en cartera</div>
+                  {historicalLabels.map(label => (
+                    <label key={label} style={checkboxRow}>
+                      <input type="checkbox" checked={selected.has(label)} onChange={() => toggle(label)} style={{ accentColor: VS_A }} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label}>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              <div>
+                <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>buscar en yahoo finance</div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <input style={inputStyle} placeholder="nombre, ticker o ISIN" value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") runSearch(); }} />
+                  <button onClick={runSearch} disabled={searching}
+                    style={{ background: "none", border: `1px solid ${VS_A}`, color: VS_A, borderRadius: 6, padding: "0 12px", fontSize: 12, cursor: searching ? "default" : "pointer", opacity: searching ? 0.6 : 1 }}>
+                    {searching ? "…" : "Buscar"}
+                  </button>
+                </div>
+                {searchError && <div style={{ fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>{searchError}</div>}
+                {addError && <div style={{ fontSize: 11, color: "#f87171", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>{addError}</div>}
+                {searchResults && searchResults.length === 0 && (
+                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>Sin resultados.</div>
+                )}
+                {searchResults && searchResults.length > 0 && (
+                  <div style={{ marginBottom: 8, maxHeight: 200, overflowY: "auto" }}>
+                    {searchResults.map(r => {
+                      const label = `${r.name} (${r.symbol})`;
+                      const already = !!externalPoints[label];
+                      return (
+                        <div key={r.symbol} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", fontSize: 11.5 }}>
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#b8c4d0" }} title={`${r.name} · ${r.symbol} · ${r.exchange || ""}`}>
+                            {r.name} <span style={{ color: "#5a7080" }}>({r.symbol})</span>
+                          </span>
+                          <button onClick={() => addExternal(r)} disabled={addingSymbol === r.symbol}
+                            style={{ background: "none", border: `1px solid ${already ? VS_A : "#1a2535"}`, color: already ? VS_A : "#7a90a8", borderRadius: 6, padding: "2px 8px", fontSize: 10, cursor: "pointer", flexShrink: 0 }}>
+                            {addingSymbol === r.symbol ? "…" : already ? "✓" : "+"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {Object.keys(externalPoints).length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, color: "#3a4550", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", marginBottom: 4 }}>añadidos</div>
+                    {Object.keys(externalPoints).map(label => (
+                      <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12 }}>
+                        <input type="checkbox" checked={selected.has(label)} onChange={() => toggle(label)} style={{ accentColor: VS_A }} />
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label}>{label}</span>
+                        <button onClick={() => removeExternal(label)} style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 13, flexShrink: 0 }} title="Quitar">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
-          ) : (
-            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Correlación entre posiciones</div>
-              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
-                Correlación de Pearson sobre retornos semanales (histórico propio de cada valor, sin herencia por split), en el periodo seleccionado. Umbral mínimo de {VS_POSITION_CORR_MIN_OBS} observaciones en común por pareja (~2 años reales) antes de mostrar un número — por debajo, la celda queda vacía en vez de enseñar una correlación poco fiable.
-              </div>
-              <VsCorrHeatmap dataMap={corrDataMap} names={names} minObs={VS_POSITION_CORR_MIN_OBS} />
+
+            <div style={{ minWidth: 0 }}>
+              {names.length < 2 ? (
+                <div style={{ background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 10, padding: 16 }}>
+                  <div style={{ fontSize: 12, color: "#f59e0b", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                    {allSelectableLabels.length === 0
+                      ? "Aún no hay nada que comparar — vende algo primero o busca en Yahoo Finance."
+                      : selectedNames.length < 2
+                        ? "Marca al menos 2 elementos en la lista de la izquierda para ver la matriz."
+                        : `Ninguno de los elementos marcados tiene histórico de precio suficiente en este periodo (de ${selectedNames.length} marcados, ${names.length} tienen datos).`}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Correlación entre posiciones</div>
+                  <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
+                    Correlación de Pearson sobre retornos semanales, en el periodo seleccionado. Umbral mínimo de {VS_POSITION_CORR_MIN_OBS} observaciones en común por pareja (~2 años reales) antes de mostrar un número.
+                  </div>
+                  <VsCorrHeatmap dataMap={corrDataMap} names={names} minObs={VS_POSITION_CORR_MIN_OBS} />
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </div>
       );
     }
