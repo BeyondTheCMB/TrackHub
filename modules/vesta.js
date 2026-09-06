@@ -7720,6 +7720,56 @@
       return out;
     }
 
+    // Ratio de diversificación en ventana deslizante — mismo cociente
+    // Límite/Real que la pastilla estática (ver
+    // vsPortfolioVolatilityRealAndLimit), recalculado ventana a ventana
+    // para ver si la diversificación real de la cartera ha ido
+    // mejorando o empeorando con el tiempo, no solo su nivel actual.
+    //
+    // Precalcula UNA vez el histórico semanal completo de cada posición
+    // (en vez de volver a llamar a vsSecurityRiskReturnSeries en cada
+    // ventana) y luego solo recorta por fechas — mucho más barato con
+    // muchas ventanas.
+    //
+    // Mismo aviso que la versión estática: pondera por el peso ACTUAL de
+    // cada posición (no el que tuvo en cada momento histórico), así que
+    // es una aproximación razonada, no una descomposición exacta de cómo
+    // cambió la diversificación real de la cartera con sus pesos de
+    // entonces. Cada ventana exige el histórico COMPLETO de esa posición
+    // dentro de esa ventana concreta (no solo el mínimo genérico) — si
+    // una posición se compró a mitad de una ventana, esa ventana
+    // simplemente no la incluye, en vez de calcular su volatilidad con
+    // menos datos de los que corresponden a esas semanas.
+    function vsRollingDiversificationRatio(transactions, securitiesCatalog, rows, windowWeeks = 12) {
+      const { returns: portReturns } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, null);
+      if (portReturns.length < windowWeeks) return [];
+
+      const perPosition = rows
+        .map(row => ({ value: row.value, returns: vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, null).returns }))
+        .filter(p => p.returns.length > 0);
+
+      const out = [];
+      for (let i = windowWeeks - 1; i < portReturns.length; i++) {
+        const windowStart = portReturns[i - windowWeeks + 1].startDate;
+        const windowEnd = portReturns[i].date;
+        const portWindow = portReturns.slice(i - windowWeeks + 1, i + 1);
+        const portVol = vsAnnualizedVolatility(portWindow);
+        if (!portVol) continue;
+
+        let weightedSum = 0, weightCovered = 0;
+        for (const pos of perPosition) {
+          const windowReturns = pos.returns.filter(r => r.date >= windowStart && r.date <= windowEnd);
+          if (windowReturns.length >= windowWeeks) {
+            weightedSum += pos.value * vsAnnualizedVolatility(windowReturns);
+            weightCovered += pos.value;
+          }
+        }
+        if (weightCovered <= 0) continue;
+        out.push({ date: portReturns[i].date, value: (weightedSum / weightCovered) / portVol, isSynthetic: false });
+      }
+      return out;
+    }
+
     // Todas las filas (directas + de todos los descendientes) bajo un
     // nodo del árbol de etiquetas — para agrupar volatilidad por rama
     // raíz hace falta el conjunto COMPLETO de valores bajo ella, no solo
@@ -8850,6 +8900,23 @@
         () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
         [transactions, securitiesCatalog, periodStart]
       );
+
+      // Ratio de diversificación (Límite/Real, mismo cociente que la
+      // pastilla de "Mi cartera") y su evolución móvil — ver
+      // vsPortfolioVolatilityRealAndLimit/vsRollingDiversificationRatio.
+      const diversification = useMemo(
+        () => vsPortfolioVolatilityRealAndLimit(transactions, securitiesCatalog, rows, null),
+        [transactions, securitiesCatalog, rows]
+      );
+      const diversificationRatio = (diversification && diversification.real > 0 && diversification.limit != null)
+        ? diversification.limit / diversification.real
+        : null;
+      const ROLLING_DIV_WINDOW_WEEKS = 12;
+      const rollingDiversification = useMemo(
+        () => vsRollingDiversificationRatio(transactions, securitiesCatalog, rows, ROLLING_DIV_WINDOW_WEEKS),
+        [transactions, securitiesCatalog, rows]
+      );
+
       // Posiciones que alguna vez tuvieron compra/split_in en las
       // transacciones pero ya no están en `rows` (vendidas del todo) —
       // vsComputePositions no filtra por nº de títulos, a diferencia de
@@ -8980,6 +9047,30 @@
 
       return (
         <div style={{ padding: 20 }}>
+          {diversificationRatio != null && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                <VsRiskCard label="Volatilidad real" value={`${diversification.real.toFixed(1)}%`} sublabel="Índice TTWROR reconstruido" />
+                <VsRiskCard label="Volatilidad límite" value={diversification.limit != null ? `${diversification.limit.toFixed(1)}%` : "—"} sublabel="Media ponderada, correlación perfecta" />
+                <VsRiskCard label="Ratio de diversificación" value={diversificationRatio.toFixed(2)} sublabel="Límite / Real — 1.0 = sin beneficio" color={diversificationRatio > 1 ? "#4ade80" : undefined} />
+              </div>
+
+              <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+                <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución del ratio de diversificación</div>
+                <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
+                  Mismo cociente (Límite/Real) recalculado en ventanas de {ROLLING_DIV_WINDOW_WEEKS} semanas — muestra si la diversificación real de tu cartera ha ido mejorando o empeorando con el tiempo, no solo su nivel actual. Pondera cada posición por su peso ACTUAL en todas las ventanas, así que es una aproximación razonada si tu asignación ha cambiado mucho a lo largo del tiempo, no una descomposición exacta.
+                </div>
+                {rollingDiversification.length > 1 ? (
+                  <VsLineChart series={rollingDiversification} height={200} />
+                ) : (
+                  <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
+                    Necesitas más semanas de histórico para la ventana móvil.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 18 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
