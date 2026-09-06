@@ -8024,7 +8024,7 @@
     // tag es una cabecera con banda de color propia y los valores que
     // lleva esa etiqueta van justo debajo con viñeta "–", antes de bajar a
     // la siguiente subetiqueta anidada un nivel más. Recursiva.
-    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR, isFirst, hoveredTagId, onHoverTag }) {
+    function VsTagAllocGroupRows({ node, depth, expanded, onToggle, totalValue, fmtEUR, isFirst, hoveredTagId, onHoverTag, tagMetrics, volatilityByIsin }) {
       const hasChildren = node.children && node.children.length > 0;
       const hasDirect = node.directRows && node.directRows.length > 0;
       const expandable = hasChildren || hasDirect;
@@ -8042,6 +8042,13 @@
       const changePct = (node.valueAtStart + investedForPct) > 0
         ? ((node.value - node.valueAtStart - investedForPct) / (node.valueAtStart + investedForPct)) * 100
         : null;
+      // XIRR/TTWROR/Volatilidad de esta rama (raíz + todos sus
+      // descendientes) — calculados aparte en VsMiCarteraTab tratando la
+      // rama como una sub-cartera propia (ver computeTagMetrics). "—" si
+      // la rama no tiene entrada (no debería pasar si tiene value>0, pero
+      // por seguridad ante árboles construidos a mano como "Sin
+      // etiquetar").
+      const metrics = (tagMetrics && tagMetrics[node.tag.id]) || null;
       const cellStyle = { padding: depth === 0 ? "8px 7px" : "5px 7px", borderBottom: "1px solid #16202c" };
       // El resaltado por hover cubre tanto las raíces (anillo interior)
       // como las subetiquetas (anillo exterior) — ambas existen ahora como
@@ -8065,10 +8072,28 @@
             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: depth === 0 ? 700 : 500 }}>{fmtEUR(node.invested)}</td>
             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{fmtEUR(node.value)}</td>
             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(changePct), fontWeight: depth === 0 ? 700 : 500 }}>{vsFmtPct(changePct)}</td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(metrics && metrics.xirr != null ? metrics.xirr * 100 : null), fontWeight: depth === 0 ? 700 : 500 }}
+              title="XIRR de esta rama tratada como sub-cartera propia (compras/ventas/dividendos de sus valores).">
+              {metrics && metrics.xirr != null ? vsFmtPct(metrics.xirr * 100) : "—"}
+            </td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: vsChangeColor(metrics && metrics.ttwror ? metrics.ttwror.ttwror : null), fontWeight: depth === 0 ? 700 : 500 }}
+              title="TTWROR de esta rama — índice de crecimiento reconstruido solo con sus valores, igual que la cartera completa pero acotado a esta etiqueta.">
+              {metrics && metrics.ttwror ? (
+                <>
+                  {vsFmtPct(metrics.ttwror.ttwror)}
+                  {metrics.ttwror.incomplete && <span style={{ marginLeft: 4, fontSize: 9, color: "#f59e0b" }} title="Histórico incompleto en alguna fecha de corte">⚠</span>}
+                </>
+              ) : "—"}
+            </td>
+            <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: "#7a90a8", fontWeight: depth === 0 ? 700 : 500 }}
+              title="Volatilidad anualizada del índice TTWROR de esta rama tratada como sub-cartera propia — captura el efecto de diversificación entre sus valores, no una media ponderada.">
+              {metrics && metrics.volatility != null ? `${metrics.volatility.toFixed(1)}%` : "—"}
+            </td>
             <td style={{ ...cellStyle, fontFamily: "'DM Mono',monospace", color: VS_A, fontWeight: depth === 0 ? 700 : 500 }}>{weightPct.toFixed(1)}%</td>
           </tr>
           {isOpen && hasDirect && node.directRows.map(r => {
             const rWeight = totalValue > 0 ? (r.value / totalValue) * 100 : 0;
+            const rVol = volatilityByIsin ? volatilityByIsin[r.isin] : null;
             return (
               <tr key={node.tag.id + "_" + r.isin}>
                 <td style={{ ...cellStyle, padding: "4px 7px", borderLeft: `2px solid ${node.tag.color}55` }}></td>
@@ -8079,12 +8104,26 @@
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#9aaabb" }}>{fmtEUR(r.invested)}</td>
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#cbd5e1" }}>{fmtEUR(r.value)}</td>
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: vsChangeColor(r.changePct) }}>{vsFmtPct(r.changePct)}</td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: vsChangeColor(r.xirr != null ? r.xirr * 100 : null) }}>
+                  {r.xirr != null ? vsFmtPct(r.xirr * 100) : "—"}
+                </td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: vsChangeColor(r.ttwror ? r.ttwror.ttwror : null) }}>
+                  {r.ttwror ? (
+                    <>
+                      {vsFmtPct(r.ttwror.ttwror)}
+                      {r.ttwror.incomplete && <span style={{ marginLeft: 3, fontSize: 9, color: "#f59e0b" }}>⚠</span>}
+                    </>
+                  ) : "—"}
+                </td>
+                <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#7a90a8" }}>
+                  {rVol != null ? `${rVol.toFixed(1)}%` : "—"}
+                </td>
                 <td style={{ ...cellStyle, padding: "4px 7px", fontFamily: "'DM Mono',monospace", fontSize: 11, color: "#5a7080" }}>{rWeight.toFixed(1)}%</td>
               </tr>
             );
           })}
           {isOpen && hasChildren && node.children.map(child => (
-            <VsTagAllocGroupRows key={child.tag.id} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={false} />
+            <VsTagAllocGroupRows key={child.tag.id} node={child} depth={depth + 1} expanded={expanded} onToggle={onToggle} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={false} hoveredTagId={hoveredTagId} onHoverTag={onHoverTag} tagMetrics={tagMetrics} volatilityByIsin={volatilityByIsin} />
           ))}
         </React.Fragment>
       );
@@ -8182,6 +8221,38 @@
         const { returns: portReturns } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, periodStart);
         return portReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(portReturns) : null;
       }, [transactions, securitiesCatalog, periodStart]);
+      // XIRR/TTWROR/Volatilidad por RAMA de etiqueta (raíz y todas sus
+      // subetiquetas, no solo las raíces) — mismo criterio que la fila de
+      // totales: filtra las transacciones a los ISIN de todo lo que
+      // cuelgue de esa rama (vsCollectRowsInBranch) y trata ese
+      // subconjunto como si fuera una sub-cartera propia. Necesita el
+      // tagTree ya construido, así que se calcula después de él (más
+      // abajo se reordena si hace falta declararlo antes).
+      const computeTagMetrics = (tree) => {
+        const map = {};
+        const walk = (node) => {
+          const branchRows = vsCollectRowsInBranch(node);
+          const isins = new Set(branchRows.map(r => r.isin));
+          if (isins.size > 0) {
+            const filteredTx = transactions.filter(t => isins.has(t.isin));
+            const xirr = periodStart
+              ? vsComputePortfolioXirrWindowed(filteredTx, securitiesCatalog, node.value, periodStart)
+              : vsComputePortfolioXirr(filteredTx, node.value);
+            const ttwror = periodStart
+              ? vsComputePortfolioTtwror(filteredTx, securitiesCatalog, null, periodStart)
+              : vsComputePortfolioTtwror(filteredTx, securitiesCatalog);
+            const { returns: branchReturns } = vsPortfolioRiskReturnSeries(filteredTx, securitiesCatalog, periodStart);
+            const volatility = branchReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(branchReturns) : null;
+            map[node.tag.id] = { xirr, ttwror, volatility };
+          }
+          for (const child of node.children || []) walk(child);
+        };
+        for (const b of tree.branches) walk(b);
+        if (tree.untagged.rows.length > 0) {
+          walk({ tag: { id: "__untagged" }, directRows: tree.untagged.rows, children: [], value: tree.untagged.value });
+        }
+        return map;
+      };
       // Series diarias para las dos gráficas de evolución, debajo del
       // panel de asignación (ver vsComputePortfolioEvolution) — no
       // dependen del filtro de periodo de la tabla, siempre muestran la
@@ -8192,6 +8263,7 @@
       const [viewMode, setViewMode] = useState("valor"); // "valor" | "tag"
       const fmtEUR = censored ? (() => "••••••") : vsPortfolioFmtEUR;
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
+      const tagMetrics = useMemo(() => computeTagMetrics(tagTree), [tagTree, transactions, securitiesCatalog, periodStart]);
       // Anillo interior del donut "por etiqueta": una por rama raíz +
       // "Sin etiquetar" si aplica.
       // Anillo exterior: dentro de cada raíz, primero lo que esté tageado
@@ -8378,19 +8450,19 @@
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: 440 }}>
                           <thead>
                             <tr>
-                              {["", "Etiqueta / Valor", "Títulos", "Invertido", "Valor actual", "Desde inicio", "Peso"].map((h, i) => (
+                              {["", "Etiqueta / Valor", "Títulos", "Invertido", "Valor actual", "Desde inicio", "XIRR", "TTWROR", "Volatilidad", "Peso"].map((h, i) => (
                                 <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
                             {tagTree.branches.map((b, i) => (
-                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={i === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} />
+                              <VsTagAllocGroupRows key={b.tag.id} node={b} depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={i === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} tagMetrics={tagMetrics} volatilityByIsin={volatilityByIsin} />
                             ))}
                             {tagTree.untagged.rows.length > 0 && (
                               <VsTagAllocGroupRows
                                 node={{ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, value: tagTree.untagged.value, invested: tagTree.untagged.invested, investedPeriodDelta: tagTree.untagged.investedPeriodDelta, valueAtStart: tagTree.untagged.valueAtStart, directRows: tagTree.untagged.rows, children: [] }}
-                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={tagTree.branches.length === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} />
+                                depth={0} expanded={expandedTags} onToggle={toggleTag} totalValue={totalValue} fmtEUR={fmtEUR} isFirst={tagTree.branches.length === 0} hoveredTagId={hoveredTagId} onHoverTag={setHoveredTagId} tagMetrics={tagMetrics} volatilityByIsin={volatilityByIsin} />
                             )}
                           </tbody>
                         </table>
