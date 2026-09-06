@@ -7858,6 +7858,83 @@
       return hhi != null && hhi > 0 ? 1 / hhi : null;
     }
 
+    // Umbral interno para construir la matriz de correlación que
+    // alimenta el HHI de RIESGO — deliberadamente más laxo que
+    // VS_POSITION_CORR_MIN_OBS (el de la matriz visible más abajo): aquí
+    // cada correlación es un ingrediente más de una descomposición que
+    // combina TODOS los pares a la vez, así que el impacto de una celda
+    // individual poco precisa es pequeño. Exigirle el mismo listón que a
+    // una celda mostrada sola dejaría este cálculo incompleto para casi
+    // cualquier cartera con algún valor reciente.
+    const VS_RISK_HHI_MIN_OBS = VS_RISK_MIN_OBS; // 12 semanas
+
+    // Índice Herfindahl-Hirschman de concentración de RIESGO — a
+    // diferencia de vsHHI (que pesa por € invertido), aquí se pesa por
+    // la contribución real de cada posición a la VARIANZA total de la
+    // cartera, que depende también de su volatilidad propia y de cómo
+    // se correlaciona con el resto. Descomposición de Euler clásica: con
+    // Σ la matriz de covarianzas y w los pesos de capital,
+    //   (Σw)ᵢ = Σⱼ ρᵢⱼ σᵢ σⱼ wⱼ        (fila i de Σw)
+    //   PCRᵢ  = wᵢ·(Σw)ᵢ / σₚ²         (contribución porcentual, Σ PCRᵢ = 1)
+    // y el HHI de riesgo es Σ PCRᵢ². Reutiliza vsFactorCorrelationMatrix
+    // (el mismo motor que la matriz visible) para las correlaciones, con
+    // el umbral más laxo de arriba — los pares que ni siquiera llegan a
+    // ESE mínimo se asumen con correlación 0 (supuesto neutro) en vez de
+    // excluirse: excluir un par rompería la propiedad de Euler (las
+    // contribuciones deben sumar exactamente el 100%).
+    //
+    // Devuelve null si hay menos de 2 posiciones con histórico
+    // suficiente en las `rows` recibidas — con una sola posición, o si
+    // falta demasiado, no hay descomposición fiable que hacer.
+    function vsRiskHHI(rows, securitiesCatalog) {
+      const withEnoughHistory = [];
+      for (const row of rows) {
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, null);
+        if (returns.length >= VS_RISK_HHI_MIN_OBS) withEnoughHistory.push({ row, returns });
+      }
+      if (withEnoughHistory.length === 0) return null;
+      if (withEnoughHistory.length === 1) return { hhi: 1, effectiveN: 1, assumedZeroPairs: 0, totalPairs: 0, coveredCount: 1, totalCount: rows.length };
+
+      const totalValue = withEnoughHistory.reduce((s, x) => s + x.row.value, 0);
+      if (totalValue <= 0) return null;
+
+      const dataMap = {};
+      const meta = [];
+      for (const { row, returns } of withEnoughHistory) {
+        dataMap[row.isin] = { returns };
+        meta.push({ isin: row.isin, weight: row.value / totalValue, vol: vsAnnualizedVolatility(returns) / 100 });
+      }
+      const isins = meta.map(m => m.isin);
+      const { matrix } = vsFactorCorrelationMatrix(dataMap, isins, VS_RISK_HHI_MIN_OBS);
+
+      let assumedZeroPairs = 0, totalPairs = 0;
+      const n = meta.length;
+      const sigmaW = new Array(n).fill(0);
+      for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let j = 0; j < n; j++) {
+          let rho;
+          if (i === j) rho = 1;
+          else {
+            totalPairs++;
+            rho = matrix[meta[i].isin][meta[j].isin];
+            if (rho == null) { rho = 0; assumedZeroPairs++; }
+          }
+          s += rho * meta[i].vol * meta[j].vol * meta[j].weight;
+        }
+        sigmaW[i] = s;
+      }
+      const portVarianceFraction = meta.reduce((s, m, i) => s + m.weight * sigmaW[i], 0);
+      if (portVarianceFraction <= 0) return null;
+      const pcr = meta.map((m, i) => (m.weight * sigmaW[i]) / portVarianceFraction);
+      const hhi = pcr.reduce((s, x) => s + x * x, 0);
+      return {
+        hhi, effectiveN: vsEffectiveN(hhi),
+        assumedZeroPairs: assumedZeroPairs / 2, totalPairs: totalPairs / 2, // cada par se cuenta dos veces (i,j) y (j,i)
+        coveredCount: n, totalCount: rows.length,
+      };
+    }
+
     // Concentración de capital y ratio de diversificación POR ETIQUETA
     // (rama raíz + "Sin etiquetar" si aplica) — cada rama se trata como
     // una sub-cartera propia, igual que en computeTagMetrics de "Mi
@@ -7882,7 +7959,8 @@
         const filteredTx = transactions.filter(t => isins.has(t.isin));
         const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, null);
         const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
-        out.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, positions: branchRows.length, hhi, effectiveN, ratio });
+        const riskHHI = vsRiskHHI(branchRows, securitiesCatalog);
+        out.push({ id: b.tag.id, name: b.tag.name, color: b.tag.color, positions: branchRows.length, hhi, effectiveN, ratio, riskHHI: riskHHI ? riskHHI.hhi : null });
       }
       return out.sort((a, b) => b.positions - a.positions);
     }
@@ -8969,6 +9047,7 @@
       // Concentración de capital — cartera completa y por etiqueta.
       const portfolioHHI = useMemo(() => vsHHI(rows), [rows]);
       const portfolioEffectiveN = vsEffectiveN(portfolioHHI);
+      const portfolioRiskHHI = useMemo(() => vsRiskHHI(rows, securitiesCatalog), [rows, securitiesCatalog]);
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
       const tagConcentration = useMemo(
         () => vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog),
@@ -9114,6 +9193,11 @@
                 <VsRiskCard label="Ratio de diversificación" value={diversificationRatio.toFixed(2)} sublabel="Límite / Real — 1.0 = sin beneficio" color={diversificationRatio > 1 ? "#4ade80" : undefined} />
                 <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} sublabel="Σwᵢ² — 1.0 = todo en una posición" />
                 <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} sublabel="1/HHI — más intuitivo que el HHI" />
+                <VsRiskCard label="HHI (riesgo)"
+                  value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
+                  sublabel={portfolioRiskHHI != null
+                    ? `${portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "Riesgo más concentrado que el capital" : "Riesgo repartido de forma similar al capital"}${portfolioRiskHHI.assumedZeroPairs > 0 ? ` · ⚠ ${portfolioRiskHHI.assumedZeroPairs}/${portfolioRiskHHI.totalPairs} pares sin correlación fiable (asumida 0)` : ""}`
+                    : "Ponderado por contribución a la varianza"} />
               </div>
 
               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
@@ -9135,12 +9219,12 @@
                   <div style={{ flex: "1 1 380px", minWidth: 320, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
                     <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>
                       Concentración y diversificación por etiqueta
-                      <VsInfoTip text={`Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={280} align="right" />
+                      <VsInfoTip text={`Cada rama tratada como una sub-cartera propia. El HHI y el nº efectivo se normalizan DENTRO de la etiqueta (no respecto al total de la cartera) — responden a "¿cómo de concentrada está esta categoría en sí misma?", no a cuánto pesa en el conjunto. El HHI de riesgo pesa por contribución a la varianza en vez de por capital: una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en €. El ratio de diversificación es el mismo cociente Límite/Real de arriba, pero calculado solo con los valores de esa etiqueta — p.ej., cuánta diversificación real hay dentro de tu RV o dentro de tu RF.`} width={300} align="right" />
                     </div>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                       <thead>
                         <tr>
-                          {["Etiqueta", "Posiciones", "HHI", "Nº efectivo", "Ratio"].map((h, i) => (
+                          {["Etiqueta", "Posiciones", "HHI", "Nº efectivo", "HHI riesgo", "Ratio"].map((h, i) => (
                             <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
                           ))}
                         </tr>
@@ -9155,6 +9239,7 @@
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{t.positions}</td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.hhi != null ? t.hhi.toFixed(3) : "—"}</td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{t.effectiveN != null ? t.effectiveN.toFixed(1) : "—"}</td>
+                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: (t.riskHHI != null && t.hhi != null && t.riskHHI > t.hhi) ? "#f59e0b" : "#e2e8f0" }}>{t.riskHHI != null ? t.riskHHI.toFixed(3) : "—"}</td>
                             <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: t.ratio != null && t.ratio > 1 ? "#4ade80" : "#e2e8f0" }}>{t.ratio != null ? t.ratio.toFixed(2) : "—"}</td>
                           </tr>
                         ))}
