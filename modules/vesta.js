@@ -1124,7 +1124,7 @@
       return pts;
     }
 
-    function vsFactorCorrelationMatrix(factorsObj, names) {
+    function vsFactorCorrelationMatrix(factorsObj, names, minObs = VS_CORR_MIN_OBS) {
       const series = {};
       for (const nm of names) series[nm] = vsHydrateSeriesForCorr(factorsObj[nm]);
 
@@ -1148,7 +1148,7 @@
           }
           const n = va.length;
           counts[a][b] = counts[b][a] = n;
-          const val = n >= VS_CORR_MIN_OBS ? vsPearsonCorr(va, vb) : null;
+          const val = n >= minObs ? vsPearsonCorr(va, vb) : null;
           matrix[a][b] = matrix[b][a] = val;
           if (val !== null && n < minCommon) minCommon = n;
         }
@@ -1166,7 +1166,7 @@
           const { eigenvalues } = vsJacobiEigen(M);
           const minEig = Math.min(...eigenvalues);
           if (minEig < -1e-8) {
-            warnings.push(`La matriz no es semidefinida positiva (autovalor mínimo ${minEig.toFixed(3)}). Cada celda se ha calculado con los meses en común de esa pareja concreta, y con historiales muy dispares eso puede producir una combinación de correlaciones que ningún conjunto de datos real podría generar. Fíate de cada celda por separado, no de la matriz como bloque, y no la uses para PCA ni optimización.`);
+            warnings.push(`La matriz no es semidefinida positiva (autovalor mínimo ${minEig.toFixed(3)}). Cada celda se ha calculado con las observaciones en común de esa pareja concreta, y con historiales muy dispares eso puede producir una combinación de correlaciones que ningún conjunto de datos real podría generar. Fíate de cada celda por separado, no de la matriz como bloque, y no la uses para PCA ni optimización.`);
           }
         } catch (e) { /* si el Jacobi falla, no bloquear el render */ }
       }
@@ -1175,10 +1175,15 @@
         for (let j = i + 1; j < names.length; j++)
           if (matrix[names[i]][names[j]] === null) nulls.push(`${names[i]}↔${names[j]}`);
       if (nulls.length) {
-        warnings.push(`${nulls.length} pareja${nulls.length === 1 ? "" : "s"} sin suficiente historial en común (mínimo ${VS_CORR_MIN_OBS} observaciones): ${nulls.slice(0, 4).join(", ")}${nulls.length > 4 ? "…" : ""}.`);
+        warnings.push(`${nulls.length} pareja${nulls.length === 1 ? "" : "s"} sin suficiente historial en común (mínimo ${minObs} observaciones): ${nulls.slice(0, 4).join(", ")}${nulls.length > 4 ? "…" : ""}.`);
       }
-      if (isFinite(minCommon) && minCommon < 36) {
-        warnings.push(`La pareja con menos solape tiene solo ${minCommon} observaciones. Con menos de 36, el intervalo de confianza de una correlación es muy ancho — trata esos valores como orientativos.`);
+      // Umbral de "solape estrecho" (intervalo de confianza ancho) escalado
+      // en la misma proporción que el original (36/24 = 1.5×minObs) — así
+      // sigue teniendo sentido si minObs cambia (p.ej. semanal en vez de
+      // mensual, ver vsPositionReturnSeriesForCorrelation).
+      const narrowCiThreshold = Math.round(minObs * 1.5);
+      if (isFinite(minCommon) && minCommon < narrowCiThreshold) {
+        warnings.push(`La pareja con menos solape tiene solo ${minCommon} observaciones. Con menos de ${narrowCiThreshold}, el intervalo de confianza de una correlación es muy ancho — trata esos valores como orientativos.`);
       }
       return { matrix, counts, minCommon: isFinite(minCommon) ? minCommon : null, warnings };
     }
@@ -1195,8 +1200,8 @@
     const VS_CORR_HEADER_H = 118;
     const VS_CORR_LABEL_MAX = 20;
 
-    function VsCorrHeatmap({ dataMap, names }) {
-      const { matrix, counts, warnings } = vsFactorCorrelationMatrix(dataMap, names);
+    function VsCorrHeatmap({ dataMap, names, minObs }) {
+      const { matrix, counts, warnings } = vsFactorCorrelationMatrix(dataMap, names, minObs);
       const [hoverRow, setHoverRow] = useState(null);
       const [hoverCol, setHoverCol] = useState(null);
 
@@ -7404,6 +7409,13 @@
 
     const VS_RISK_PERIODS_PER_YEAR = 52; // semanal
     const VS_RISK_MIN_OBS = 12; // ~3 meses de datos semanales antes de mostrar métricas
+    // Umbral mínimo para la matriz de correlación entre POSICIONES de la
+    // cartera (a diferencia de VS_CORR_MIN_OBS=24, calibrado para
+    // retornos MENSUALES de fondos/índices en Análisis de fondos — 24
+    // meses = 2 años). Aquí los retornos son SEMANALES, así que para
+    // representar el mismo listón real de "2 años de solape" hacen falta
+    // ~104 observaciones, no 24 (que equivaldrían a apenas ~6 meses).
+    const VS_POSITION_CORR_MIN_OBS = 104;
 
     // Serie de retornos semanales de la cartera completa — arranca del
     // mismo índice de crecimiento TTWROR que la gráfica de evolución
@@ -7717,6 +7729,29 @@
       let out = node.directRows.slice();
       for (const child of node.children) out = out.concat(vsCollectRowsInBranch(child));
       return out;
+    }
+
+    // Mapa de retornos semanales por posición, en el formato genérico que
+    // espera vsFactorCorrelationMatrix/VsCorrHeatmap ({ nombre: { returns:
+    // [...] } }) — reutiliza vsSecurityRiskReturnSeries (histórico propio
+    // del valor, sin herencia por split, mismo criterio que el resto de
+    // la sección Riesgo). Solo incluye posiciones con al menos una
+    // observación; el umbral de fiabilidad real (VS_POSITION_CORR_MIN_OBS)
+    // se aplica dentro de vsFactorCorrelationMatrix por PAREJA, no aquí.
+    // Desambigua nombres duplicados con el ISIN entre paréntesis — muy
+    // improbable con carteras reales, pero dos ISIN con el mismo nombre
+    // de valor romperían las claves del mapa en silencio si no se cubre.
+    function vsPositionReturnSeriesForCorrelation(rows, securitiesCatalog, periodStart) {
+      const nameCounts = {};
+      for (const row of rows) nameCounts[row.name] = (nameCounts[row.name] || 0) + 1;
+      const dataMap = {};
+      for (const row of rows) {
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, periodStart);
+        if (returns.length === 0) continue;
+        const label = nameCounts[row.name] > 1 ? `${row.name} (${row.isin})` : row.name;
+        dataMap[label] = { returns };
+      }
+      return dataMap;
     }
 
     // Volatilidad "resumen" para la pastilla de "Mi cartera", al lado del
@@ -8797,6 +8832,73 @@
       );
     }
 
+    // ── Pestaña "Diversificación" — arranca con la matriz de correlación
+    // entre las posiciones actualmente en cartera. Es la pieza base sobre
+    // la que se apoyarán el resto de métricas de esta sección (ratio de
+    // diversificación, concentración de riesgo, autovalores...), que se
+    // añadirán en próximas iteraciones.
+    function VsDiversificacionTab({ portfolio }) {
+      const transactions = portfolio.transactions || [];
+      const securitiesCatalog = portfolio.securities || {};
+
+      const [period, setPeriod] = useState("all");
+      const [customDate, setCustomDate] = useState("");
+      const periodStart = useMemo(() => vsPeriodToStartDate(period, customDate), [period, customDate]);
+
+      const { rows } = useMemo(
+        () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
+        [transactions, securitiesCatalog, periodStart]
+      );
+      const corrDataMap = useMemo(
+        () => vsPositionReturnSeriesForCorrelation(rows, securitiesCatalog, periodStart),
+        [rows, securitiesCatalog, periodStart]
+      );
+      const names = useMemo(() => Object.keys(corrDataMap).sort(), [corrDataMap]);
+
+      const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
+
+      if (transactions.length === 0) {
+        return (
+          <div style={{ padding: 20 }}>
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#5a7080", fontSize: 13, fontFamily: "'DM Mono',monospace", border: "1px dashed #1a2535", borderRadius: 8 }}>
+              Aún no hay transacciones — importa o añade movimientos en la pestaña "Configuración".
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div style={{ padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginRight: 2 }}>Periodo:</span>
+            {[["all", "Todo"], ["ytd", "YTD"], ["1y", "1A"], ["2y", "2A"], ["3y", "3A"], ["custom", "Personalizado"]].map(([key, label]) => (
+              <button key={key} onClick={() => setPeriod(key)} style={segBtnStyle(period === key)}>{label}</button>
+            ))}
+            {period === "custom" && (
+              <input type="date" value={customDate} onChange={e => setCustomDate(e.target.value)} max={new Date().toISOString().slice(0, 10)}
+                style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11, fontFamily: "'DM Mono',monospace" }} />
+            )}
+          </div>
+
+          {names.length < 2 ? (
+            <div style={{ background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 10, padding: 16 }}>
+              <div style={{ fontSize: 12, color: "#f59e0b", fontFamily: "'DM Mono',monospace", lineHeight: 1.5 }}>
+                ⚠ Hacen falta al menos 2 posiciones con histórico de precios en el periodo elegido para calcular correlaciones — de momento hay {names.length}.
+              </div>
+            </div>
+          ) : (
+            <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Correlación entre posiciones</div>
+              <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
+                Correlación de Pearson sobre retornos semanales (histórico propio de cada valor, sin herencia por split), en el periodo seleccionado. Umbral mínimo de {VS_POSITION_CORR_MIN_OBS} observaciones en común por pareja (~2 años reales) antes de mostrar un número — por debajo, la celda queda vacía en vez de enseñar una correlación poco fiable.
+              </div>
+              <VsCorrHeatmap dataMap={corrDataMap} names={names} minObs={VS_POSITION_CORR_MIN_OBS} />
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function VestaApp({ logoSlot, profileId, profileChip }) {
       const VS_SECTIONS = [
         { id: "fondos", label: "Análisis de fondos", tabs: [
@@ -8810,6 +8912,7 @@
         { id: "cartera", label: "Seguimiento de cartera", tabs: [
           { id: "resumen", label: "Mi cartera", icon: "📊" },
           { id: "riesgo", label: "Riesgo", icon: "📉" },
+          { id: "diversificacion", label: "Diversificación", icon: "🧩" },
           { id: "cartera", label: "Configuración", icon: "💼" },
         ]},
       ];
@@ -9077,6 +9180,7 @@
                 {tab === "saved" && <VsSavedAnalyses analyses={savedAnalyses} onDelete={handleDeleteAnalysis} />}
                 {tab === "resumen" && <VsMiCarteraTab portfolio={portfolio} censored={censored} onToggleCensored={toggleCensored} />}
                 {tab === "riesgo" && <VsRiskTab portfolio={portfolio} factors={factors} />}
+                {tab === "diversificacion" && <VsDiversificacionTab portfolio={portfolio} />}
                 {tab === "cartera" && <VsCarteraTab portfolio={portfolio} onSave={handleSavePortfolio} censored={censored} onToggleCensored={toggleCensored} />}
               </>
             )}
