@@ -7522,6 +7522,36 @@
       return (annualizedReturnPct - riskFreePct) / downsideDevPct;
     }
 
+    // Ratio de Calmar — retorno anualizado / máximo drawdown (en valor
+    // absoluto). A diferencia de Sharpe/Sortino, no usa volatilidad como
+    // denominador sino la peor caída sufrida: mide cuánto retorno
+    // obtienes por cada punto de la peor pérdida que has tenido que
+    // aguantar, un ángulo distinto y más "visceral" del riesgo.
+    function vsCalmarRatio(annualizedReturnPct, maxDrawdownPct) {
+      if (annualizedReturnPct == null || maxDrawdownPct == null || maxDrawdownPct === 0) return null;
+      return annualizedReturnPct / Math.abs(maxDrawdownPct);
+    }
+
+    // Índice de Ulcer — a diferencia del máximo drawdown (que solo mira
+    // el peor pico-valle puntual), pondera profundidad Y DURACIÓN de
+    // TODAS las caídas del periodo: raíz cuadrada de la media de los
+    // drawdowns al cuadrado, en cada punto de la serie. Una caída
+    // moderada pero muy larga penaliza más aquí que una caída brusca y
+    // breve — el tipo de "dolor" que un máximo drawdown puntual no
+    // refleja. Se llama con la serie DIARIA, mismo motivo que
+    // vsMaxDrawdown/vsTopDrawdowns (no perder mínimos intra-semana).
+    function vsUlcerIndex(points) {
+      if (points.length < 2) return null;
+      let peak = points[0].value;
+      let sumSq = 0;
+      for (const p of points) {
+        if (p.value > peak) peak = p.value;
+        const ddPct = peak > 0 ? (p.value - peak) / peak * 100 : 0;
+        sumSq += ddPct * ddPct;
+      }
+      return Math.sqrt(sumSq / points.length);
+    }
+
     // Máximo drawdown — pico-valle clásico. IMPORTANTE: se debe llamar con
     // la serie de MÁS granularidad disponible (diaria), no con la
     // semanal resampleada — a diferencia de la volatilidad, aquí interesa
@@ -8521,7 +8551,6 @@
     function VsRiskTab({ portfolio, factors }) {
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
-      const tags = portfolio.tags || [];
 
       const [period, setPeriod] = useState("all");
       const [customDate, setCustomDate] = useState("");
@@ -8553,6 +8582,11 @@
       const underwaterSeries = dailyPoints.length >= 2 ? vsUnderwaterSeries(dailyPoints) : [];
       const topDrawdowns = dailyPoints.length >= 2 ? vsTopDrawdowns(dailyPoints, 5) : [];
 
+      // Calmar y Ulcer — ambos anclados en el drawdown en vez de en la
+      // volatilidad, mismo motivo por el que usan la serie DIARIA.
+      const calmar = (annReturn != null && drawdown) ? vsCalmarRatio(annReturn, drawdown.maxDD) : null;
+      const ulcerIndex = dailyPoints.length >= 2 ? vsUlcerIndex(dailyPoints) : null;
+
       // Sharpe/Sortino móviles — necesitan al menos una ventana completa
       // de 12 semanas dentro de las devoluciones ya calculadas.
       const ROLLING_WINDOW_WEEKS = 12;
@@ -8574,36 +8608,6 @@
         }
         return rows.sort((a, b) => (b.vol || 0) - (a.vol || 0));
       }, [securitiesCatalog, periodStart]);
-
-      // Volatilidad por etiqueta (rama raíz) — filtra las transacciones a
-      // los ISIN de cada rama y recalcula el índice TTWROR solo con
-      // esas, igual que si fuera una sub-cartera. "Sin etiquetar" entra
-      // como una rama más si tiene algo dentro.
-      const { rows: allocationRows } = useMemo(
-        () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
-        [transactions, securitiesCatalog, periodStart]
-      );
-      const tagTree = useMemo(() => vsBuildTagAllocationTree(allocationRows, tags), [allocationRows, tags]);
-      const tagVolatilityRows = useMemo(() => {
-        const branches = [...tagTree.branches];
-        if (tagTree.untagged.rows.length > 0) {
-          branches.push({ tag: { id: "__untagged", name: "Sin etiquetar", color: "#3a4550" }, directRows: tagTree.untagged.rows, children: [] });
-        }
-        const out = [];
-        for (const b of branches) {
-          const branchRows = vsCollectRowsInBranch(b);
-          const isins = new Set(branchRows.map(r => r.isin));
-          if (isins.size === 0) continue;
-          const filteredTx = transactions.filter(t => isins.has(t.isin));
-          const { returns: tagReturns } = vsPortfolioRiskReturnSeries(filteredTx, securitiesCatalog, periodStart);
-          out.push({
-            id: b.tag.id, name: b.tag.name, color: b.tag.color,
-            vol: tagReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(tagReturns) : null,
-            obs: tagReturns.length,
-          });
-        }
-        return out.sort((a, b) => (b.vol || 0) - (a.vol || 0));
-      }, [tagTree, transactions, securitiesCatalog, periodStart]);
 
       const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
 
@@ -8747,33 +8751,16 @@
                   </div>
                 )}
 
-                {tagVolatilityRows.length > 0 && (
+                {ulcerIndex != null && (
                   <div style={{ flex: "1 1 320px", minWidth: 280, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
-                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Volatilidad por etiqueta</div>
+                    <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Calmar y Ulcer</div>
                     <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
-                      Cada rama raíz tratada como una sub-cartera propia (índice TTWROR recalculado solo con sus valores) — para comparar, p.ej., cuánto cayó de verdad tu RV frente a tu RF en un mismo episodio.
+                      Dos medidas ancladas en el drawdown, no en la volatilidad — Calmar compara el retorno anualizado con la peor caída sufrida; Ulcer pondera profundidad Y duración de todas las caídas del periodo, no solo la peor.
                     </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                      <thead>
-                        <tr>
-                          {["Etiqueta", "Volatilidad anualizada", "Semanas"].map((h, i) => (
-                            <th key={i} style={{ textAlign: "left", color: "#5a7080", fontWeight: 500, fontFamily: "'DM Mono',monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 7px", borderBottom: "1px solid #1a2535" }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tagVolatilityRows.map(r => (
-                          <tr key={r.id}>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", display: "flex", alignItems: "center", gap: 6 }}>
-                              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: r.color }} />
-                              {r.name}
-                            </td>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace" }}>{r.vol != null ? `${r.vol.toFixed(1)}%` : "—"}</td>
-                            <td style={{ padding: "5px 7px", borderBottom: "1px solid #16202c", fontFamily: "'DM Mono',monospace", color: "#5a7080" }}>{r.obs}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      <VsRiskCard label="Ratio de Calmar" value={calmar != null ? calmar.toFixed(2) : "—"} sublabel="Retorno anualizado / máximo drawdown" color={calmar != null ? vsChangeColor(calmar) : undefined} />
+                      <VsRiskCard label="Índice de Ulcer" value={ulcerIndex.toFixed(1)} sublabel="Profundidad y duración de las caídas" />
+                    </div>
                   </div>
                 )}
               </div>
