@@ -8838,9 +8838,13 @@
       const transactions = portfolio.transactions || [];
       const securitiesCatalog = portfolio.securities || {};
 
-      const [period, setPeriod] = useState("all");
-      const [customDate, setCustomDate] = useState("");
-      const periodStart = useMemo(() => vsPeriodToStartDate(period, customDate), [period, customDate]);
+      // Sin selector de periodo — la matriz de correlación siempre usa
+      // todo el histórico disponible ("Todo"/máximo). Con las ventanas ya
+      // tan acotadas por el propio umbral de observaciones mínimas
+      // (VS_POSITION_CORR_MIN_OBS), acotar además por periodo solo
+      // recortaba aún más una muestra que ya es el recurso más escaso de
+      // esta pestaña.
+      const periodStart = null;
 
       const { rows } = useMemo(
         () => vsComputeAllocation(transactions, securitiesCatalog, periodStart),
@@ -8961,7 +8965,6 @@
       }, [selectedNames, externalPoints, itemsByLabel, securitiesCatalog, periodStart]);
       const names = Object.keys(corrDataMap).sort();
 
-      const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "7px 9px", fontSize: 12 };
       const checkboxRow = { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12, cursor: "pointer" };
 
@@ -8977,17 +8980,6 @@
 
       return (
         <div style={{ padding: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginRight: 2 }}>Periodo:</span>
-            {[["all", "Todo"], ["ytd", "YTD"], ["1y", "1A"], ["2y", "2A"], ["3y", "3A"], ["custom", "Personalizado"]].map(([key, label]) => (
-              <button key={key} onClick={() => setPeriod(key)} style={segBtnStyle(period === key)}>{label}</button>
-            ))}
-            {period === "custom" && (
-              <input type="date" value={customDate} onChange={e => setCustomDate(e.target.value)} max={new Date().toISOString().slice(0, 10)}
-                style={{ background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "5px 8px", fontSize: 11, fontFamily: "'DM Mono',monospace" }} />
-            )}
-          </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20, alignItems: "start" }}>
             <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: 18 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -9090,7 +9082,7 @@
                 <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
                   <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Correlación entre posiciones</div>
                   <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
-                    Correlación de Pearson sobre retornos semanales, en el periodo seleccionado. Umbral mínimo de {VS_POSITION_CORR_MIN_OBS} observaciones en común por pareja (~2 años reales) antes de mostrar un número.
+                    Correlación de Pearson sobre retornos semanales, con todo el histórico disponible de cada valor. Umbral mínimo de {VS_POSITION_CORR_MIN_OBS} observaciones en común por pareja (~2 años reales) antes de mostrar un número.
                   </div>
                   <VsCorrHeatmap dataMap={corrDataMap} names={names} minObs={VS_POSITION_CORR_MIN_OBS} />
                 </div>
