@@ -1188,6 +1188,66 @@
       return { matrix, counts, minCommon: isFinite(minCommon) ? minCommon : null, warnings };
     }
 
+    // Matriz de correlación para series SEMANALES. No usa la composición en
+    // ventana de vsFactorCorrelationMatrix (diseñada para retornos mensuales
+    // con huecos): con datos semanales, dos valores que cierran en días
+    // distintos de la semana producen rejillas desplazadas y esa composición
+    // empareja la semana k de uno con la k-1 del otro. Como vsResampleWeekly
+    // ya ha asignado cada punto a su semana ISO, alinear por esa clave es
+    // exacto y no puede desfasarse.
+    function vsWeeklyCorrelationMatrix(dataMap, names, minObs) {
+      const keyed = {};
+      for (const nm of names) {
+        const m = new Map();
+        for (const r of dataMap[nm].returns) m.set(vsIsoWeekKey(r.date), r.value);
+        keyed[nm] = m;
+      }
+      const matrix = {}, counts = {};
+      let minCommon = Infinity;
+      for (const a of names) { matrix[a] = {}; counts[a] = {}; }
+      for (let i = 0; i < names.length; i++) {
+        const a = names[i];
+        matrix[a][a] = 1; counts[a][a] = keyed[a].size;
+        for (let j = i + 1; j < names.length; j++) {
+          const b = names[j];
+          const va = [], vb = [];
+          for (const [k, v] of keyed[a]) if (keyed[b].has(k)) { va.push(v); vb.push(keyed[b].get(k)); }
+          counts[a][b] = counts[b][a] = va.length;
+          const val = va.length >= minObs ? vsPearsonCorr(va, vb) : null;
+          matrix[a][b] = matrix[b][a] = val;
+          if (val !== null && va.length < minCommon) minCommon = va.length;
+        }
+      }
+
+      // Mismo bloque de avisos que vsFactorCorrelationMatrix (no-PSD,
+      // parejas sin solape, solape estrecho) — la UI de Diversificación
+      // los consume igual que con la matriz mensual.
+      const warnings = [];
+      const complete = names.every(a => names.every(b => matrix[a][b] !== null));
+      if (complete && names.length >= 2) {
+        const M = names.map(a => names.map(b => matrix[a][b]));
+        try {
+          const { eigenvalues } = vsJacobiEigen(M);
+          const minEig = Math.min(...eigenvalues);
+          if (minEig < -1e-8) {
+            warnings.push(`La matriz no es semidefinida positiva (autovalor mínimo ${minEig.toFixed(3)}). Cada celda se ha calculado con las observaciones en común de esa pareja concreta, y con historiales muy dispares eso puede producir una combinación de correlaciones que ningún conjunto de datos real podría generar. Fíate de cada celda por separado, no de la matriz como bloque, y no la uses para PCA ni optimización.`);
+          }
+        } catch (e) { /* si el Jacobi falla, no bloquear el render */ }
+      }
+      const nulls = [];
+      for (let i = 0; i < names.length; i++)
+        for (let j = i + 1; j < names.length; j++)
+          if (matrix[names[i]][names[j]] === null) nulls.push(`${names[i]}↔${names[j]}`);
+      if (nulls.length) {
+        warnings.push(`${nulls.length} pareja${nulls.length === 1 ? "" : "s"} sin suficiente historial en común (mínimo ${minObs} observaciones): ${nulls.slice(0, 4).join(", ")}${nulls.length > 4 ? "…" : ""}.`);
+      }
+      const narrowCiThreshold = Math.round(minObs * 1.5);
+      if (isFinite(minCommon) && minCommon < narrowCiThreshold) {
+        warnings.push(`La pareja con menos solape tiene solo ${minCommon} observaciones. Con menos de ${narrowCiThreshold}, el intervalo de confianza de una correlación es muy ancho — trata esos valores como orientativos.`);
+      }
+      return { matrix, counts, minCommon: isFinite(minCommon) ? minCommon : null, warnings };
+    }
+
     // Trunca etiquetas largas para las cabeceras verticales (el nombre
     // completo sigue disponible en el title del <th> y de cada celda).
     // Esto es lo que evita el solape: sin truncar, un writing-mode vertical
@@ -1200,8 +1260,9 @@
     const VS_CORR_HEADER_H = 118;
     const VS_CORR_LABEL_MAX = 20;
 
-    function VsCorrHeatmap({ dataMap, names, minObs }) {
-      const { matrix, counts, warnings } = vsFactorCorrelationMatrix(dataMap, names, minObs);
+    function VsCorrHeatmap({ dataMap, names, minObs, matrixFn }) {
+      const computeMatrix = matrixFn || vsFactorCorrelationMatrix;
+      const { matrix, counts, warnings } = computeMatrix(dataMap, names, minObs);
       const [hoverRow, setHoverRow] = useState(null);
       const [hoverCol, setHoverCol] = useState(null);
 
@@ -7348,14 +7409,20 @@
       let factor = 1, prev = null;
       for (const date of dates) {
         const cur = vsPortfolioValueAsOf(txs, securitiesCatalog, date, lookups);
-        valueSeries.push({ date, value: cur.value, isSynthetic: cur.missing > 0 });
+        const curMissing = cur.missing > 0;
+        valueSeries.push({ date, value: cur.value, isSynthetic: curMissing });
         if (prev && prev.value > 1e-9) {
-          const F = vsExternalFlowOn(txs, date);
-          const r = (cur.value - F) / prev.value - 1;
-          if (isFinite(r)) factor *= (1 + r);
+          // Solo se compone si ni el día anterior ni el actual tienen posiciones
+          // sin precio: si el conjunto valorado cambia, el salto de valor no es
+          // un movimiento de mercado y no debe entrar en el índice.
+          if (!curMissing && !prev.missing) {
+            const F = vsExternalFlowOn(txs, date);
+            const r = (cur.value - F) / prev.value - 1;
+            if (isFinite(r)) factor *= (1 + r);
+          }
         }
-        growthSeries.push({ date, value: 100 * factor, isSynthetic: false });
-        prev = { date, value: cur.value };
+        growthSeries.push({ date, value: 100 * factor, isSynthetic: curMissing });
+        prev = { date, value: cur.value, missing: curMissing };
       }
       return { valueSeries, growthSeries };
     }
@@ -7387,10 +7454,18 @@
     }
 
     // Resamplea una serie diaria a un punto por semana ISO, quedándose con
-    // el ÚLTIMO punto disponible de cada semana.
+    // el ÚLTIMO punto disponible de cada semana. B1: se ordena SIEMPRE
+    // ascendente por fecha antes de resamplear — con la serie invertida,
+    // el Map se quedaría con el PRIMER punto de cada semana (en vez del
+    // último) y en orden inverso, lo que haría que vsReturnsFromSeries
+    // calculase retornos con el signo cambiado en silencio. Hoy todos
+    // los llamantes pasan series ascendentes, así que no hay bug activo
+    // — esto blinda la función frente a un futuro llamante que no lo
+    // garantice.
     function vsResampleWeekly(series) {
+      const sorted = series.slice().sort((a, b) => a.date.localeCompare(b.date));
       const byWeek = new Map();
-      for (const p of series) byWeek.set(vsIsoWeekKey(p.date), p);
+      for (const p of sorted) byWeek.set(vsIsoWeekKey(p.date), p);
       return Array.from(byWeek.values());
     }
 
@@ -7401,9 +7476,30 @@
       for (let i = 1; i < points.length; i++) {
         const prev = points[i - 1].value, cur = points[i].value;
         if (prev > 1e-9) {
+          // Un salto de mas de ~1 semana significa semanas ausentes en el
+          // historico: ese retorno acumula varias semanas y no puede
+          // anualizarse con sqrt(52) junto a los demas. Se descarta. El
+          // umbral de 10 dias admite el desplazamiento normal por
+          // festivos (jueves <-> martes siguiente) y rechaza huecos de
+          // dos semanas o mas.
+          const span = vsDaysBetweenDates(points[i - 1].date, points[i].date);
+          if (span > 10) continue;
           const r = cur / prev - 1;
           if (isFinite(r)) out.push({ date: points[i].date, startDate: points[i - 1].date, value: r });
         }
+      }
+      // La última semana ISO casi nunca está completa (si hoy es martes,
+      // el último tramo abarca 2 días pero se anualizaría como si fueran
+      // 7): mismo criterio que los "meses truncados descartados" del
+      // RBSA. Se descarta solo si el ÚLTIMO punto cae en la semana ISO
+      // en curso — un tramo intermedio corto ya lo habría descartado la
+      // guarda de arriba si superase el hueco, pero uno corto por
+      // truncamiento final no dispara esa guarda (span < 10) y hay que
+      // quitarlo aparte.
+      if (out.length > 0) {
+        const lastKey = vsIsoWeekKey(out[out.length - 1].date);
+        const todayKey = vsIsoWeekKey(new Date().toISOString().slice(0, 10));
+        if (lastKey === todayKey) out.pop();
       }
       return out;
     }
@@ -7590,12 +7686,22 @@
     // VaR histórico (no paramétrico) — percentil de la cola izquierda de
     // la distribución empírica de retornos semanales. Se devuelve como
     // número positivo (pérdida esperada) para leerse "VaR 95% = 3.2%".
+    // Umbral de observaciones propio, más exigente que VS_RISK_MIN_OBS:
+    // con pocas observaciones, el índice de cuantil cae en 0 y el "VaR"
+    // resultante es simplemente la peor semana registrada, no un
+    // percentil real — VS_RISK_MIN_OBS (12) es demasiado laxo para esto.
+    const VS_VAR_MIN_OBS = 40;
     function vsHistoricalVaR(returns, confidence = 0.95) {
       const vals = returns.map(r => r.value).sort((a, b) => a - b);
       const n = vals.length;
-      if (n < VS_RISK_MIN_OBS) return null;
-      const idx = Math.floor((1 - confidence) * n);
-      return -vals[Math.max(0, idx)] * 100;
+      if (n < VS_VAR_MIN_OBS) return null;
+      // Cuantil empírico: el índice ceil((1-confianza)*n) - 1 es el más
+      // cercano al percentil pedido (floor sistemáticamente elegía una
+      // observación más laxa que la solicitada — con n=180 y 95%,
+      // floor daba la 10ª peor en vez de la 9ª, un cuantil real de
+      // 5,56% en vez de 5,0%).
+      const idx = Math.max(0, Math.ceil((1 - confidence) * n) - 1);
+      return -vals[idx] * 100;
     }
 
     // Volatilidad móvil — ventana deslizante de `windowWeeks`
@@ -7701,7 +7807,6 @@
         const windowReturns = returns.slice(i - windowWeeks + 1, i + 1);
         const annReturn = vsAnnualizedReturnFromReturns(windowReturns);
         const vol = vsAnnualizedVolatility(windowReturns);
-        const downsideDev = vsDownsideDeviation(windowReturns);
         let riskFree = null;
         if (hydrated) {
           const start = new Date(windowReturns[0].startDate + "T00:00:00Z");
@@ -7712,6 +7817,10 @@
             if (years > 0) riskFree = (Math.pow(1 + totalReturn, 1 / years) - 1) * 100;
           }
         }
+        // MAR periodico coherente con el numerador: mismo umbral en ambos
+        // lados del Sortino (ver vsDownsideDeviation más abajo).
+        const marWeekly = riskFree != null ? Math.pow(1 + riskFree / 100, 1 / VS_RISK_PERIODS_PER_YEAR) - 1 : 0;
+        const downsideDev = vsDownsideDeviation(windowReturns, marWeekly);
         out.push({
           date: returns[i].date,
           sharpe: vsSharpeRatio(annReturn, vol, riskFree),
@@ -7814,7 +7923,7 @@
     // histórico DENTRO de esa ventana se excluyen del límite (numerador
     // Y denominador), no cuentan como 0% de volatilidad.
     function vsPortfolioVolatilityRealAndLimit(transactions, securitiesCatalog, rows, startDateCap) {
-      const { returns: portReturns, weeklyPoints } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, startDateCap);
+      const { returns: portReturns, weeklyPoints, coverage: seriesCoverage } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, startDateCap);
       if (portReturns.length < VS_RISK_MIN_OBS || weeklyPoints.length < 2) return null;
       const windowStartDate = weeklyPoints[0].date;
       const windowEndDate = weeklyPoints[weeklyPoints.length - 1].date;
@@ -7836,6 +7945,12 @@
       return {
         real, limit, windowStartDate, windowEndDate,
         coverage: weightTotal > 0 ? weightCovered / weightTotal : 0,
+        // Cobertura de precio real de la SERIE de crecimiento de la cartera
+        // (vsPortfolioRiskReturnSeries) — distinta de `coverage` de arriba,
+        // que mide peso cubierto por histórico suficiente en la pata
+        // "Límite". Esta otra es la que hay que enseñar como aviso de
+        // "faltan precios en el periodo" en Diversificación y en Mi cartera.
+        seriesCoverage,
         excludedCount, includedCount,
       };
     }
@@ -7887,6 +8002,17 @@
     // Devuelve null si hay menos de 2 posiciones con histórico
     // suficiente en las `rows` recibidas — con una sola posición, o si
     // falta demasiado, no hay descomposición fiable que hacer.
+    //
+    // M4: las volatilidades σᵢ y las correlaciones ρᵢⱼ deben salir de la
+    // MISMA ventana temporal — mezclar volatilidad de histórico completo
+    // con correlación de la ventana de solape de cada pareja produce una
+    // matriz de covarianzas que no corresponde a ningún conjunto de
+    // datos real, y puede dejar de ser semidefinida positiva (ver M3).
+    // Por eso aquí se calcula primero qué posiciones tienen histórico
+    // suficiente en solitario, se determina la ventana COMÚN a todas
+    // ellas (el arranque más tardío de entre sus historiales), y luego
+    // se recalculan tanto volatilidades como correlaciones sobre esa
+    // misma ventana común — un único conjunto de datos coherente.
     function vsRiskHHI(rows, securitiesCatalog) {
       const withEnoughHistory = [];
       for (const row of rows) {
@@ -7896,17 +8022,37 @@
       if (withEnoughHistory.length === 0) return null;
       if (withEnoughHistory.length === 1) return { hhi: 1, effectiveN: 1, assumedZeroPairs: 0, totalPairs: 0, coveredCount: 1, totalCount: rows.length };
 
-      const totalValue = withEnoughHistory.reduce((s, x) => s + x.row.value, 0);
+      // Ventana común: el arranque de histórico más tardío entre las
+      // posiciones candidatas — antes de esa fecha, no todas tienen
+      // datos, así que no puede formar parte de un cálculo conjunto.
+      const commonStart = withEnoughHistory.reduce((latest, x) => {
+        const first = x.returns[0] && x.returns[0].startDate;
+        return (first && (!latest || first > latest)) ? first : latest;
+      }, null);
+
+      // Recalcular sobre la ventana común — algunas posiciones pueden
+      // quedar por debajo del umbral mínimo al recortar a la ventana
+      // más corta compartida; se excluyen igual que si nunca hubieran
+      // tenido histórico suficiente.
+      const windowed = [];
+      for (const { row } of withEnoughHistory) {
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, commonStart);
+        if (returns.length >= VS_RISK_HHI_MIN_OBS) windowed.push({ row, returns });
+      }
+      if (windowed.length === 0) return null;
+      if (windowed.length === 1) return { hhi: 1, effectiveN: 1, assumedZeroPairs: 0, totalPairs: 0, coveredCount: 1, totalCount: rows.length };
+
+      const totalValue = windowed.reduce((s, x) => s + x.row.value, 0);
       if (totalValue <= 0) return null;
 
       const dataMap = {};
       const meta = [];
-      for (const { row, returns } of withEnoughHistory) {
+      for (const { row, returns } of windowed) {
         dataMap[row.isin] = { returns };
         meta.push({ isin: row.isin, weight: row.value / totalValue, vol: vsAnnualizedVolatility(returns) / 100 });
       }
       const isins = meta.map(m => m.isin);
-      const { matrix } = vsFactorCorrelationMatrix(dataMap, isins, VS_RISK_HHI_MIN_OBS);
+      const { matrix } = vsWeeklyCorrelationMatrix(dataMap, isins, VS_RISK_HHI_MIN_OBS);
 
       let assumedZeroPairs = 0, totalPairs = 0;
       const n = meta.length;
@@ -7929,32 +8075,40 @@
       if (portVarianceFraction <= 0) return null;
       const pcr = meta.map((m, i) => (m.weight * sigmaW[i]) / portVarianceFraction);
       const hhi = pcr.reduce((s, x) => s + x * x, 0);
+      // M3: con eliminación por parejas y correlaciones asumidas a 0, la
+      // matriz puede dejar de ser semidefinida positiva y algún PCR
+      // salir negativo — la suma sigue siendo 1 (Euler se cumple), pero
+      // el HHI deja de estar acotado en [1/n,1] y 1/HHI pierde sentido.
+      // Se marca con `nonPsd` para que la UI lo muestre como advertencia
+      // y suprima el número efectivo, en vez de enseñar un dato que
+      // matemáticamente no puede interpretarse como concentración.
+      const nonPsd = pcr.some(x => x < 0);
       return {
-        hhi, effectiveN: vsEffectiveN(hhi),
+        hhi, effectiveN: nonPsd ? null : vsEffectiveN(hhi), nonPsd,
         assumedZeroPairs: assumedZeroPairs / 2, totalPairs: totalPairs / 2, // cada par se cuenta dos veces (i,j) y (j,i)
         coveredCount: n, totalCount: rows.length,
       };
     }
 
-    // Número efectivo de APUESTAS independientes — descomposición en
-    // autovalores (PCA) de la matriz de correlación entre posiciones,
-    // vía entropía de Shannon (Meucci, "Effective Number of Bets"): con
-    // λᵢ los autovalores de la matriz de correlación (Σλᵢ = N siempre,
-    // porque la diagonal de una matriz de correlación es todo 1s) y
-    // pᵢ = λᵢ/Σλⱼ el peso de varianza que explica cada componente
-    // principal,
+    // Número efectivo de APUESTAS independientes — Meucci, "Managing
+    // Diversification" (2010): a diferencia de una entropía de Shannon
+    // ciega a los pesos (lo que había antes, que medía la
+    // dimensionalidad del UNIVERSO de activos, no de la cartera), aquí
+    // los pesos reales de la cartera se rotan a la base de autovectores
+    // de la matriz de correlación, y cada componente principal recibe
+    // una contribución a la varianza total en función de CUÁNTO pesa
+    // esa cartera en esa dirección:
+    //   w̃ = Eᵀ(w⊙σ)            (pesos·vol rotados a la base de PCs)
+    //   pᵢ = λᵢ·w̃ᵢ² / Σⱼ λⱼ·w̃ⱼ²  (contribución de cada PC a la varianza)
     //   ENB = exp(-Σ pᵢ·ln(pᵢ))
-    // Da un número CONTINUO — a propósito, en vez de "nº de componentes
-    // para explicar el 90% de la varianza" (un conteo entero sensible a
-    // un umbral arbitrario) — que dice cuántos "grados de libertad" de
-    // riesgo realmente independientes hay en la cartera: si dos
-    // posiciones se mueven casi siempre juntas por el mismo factor
-    // subyacente, cuentan casi como una sola aquí, aunque sean dos
-    // valores distintos.
+    // Con esto, una cartera equiponderada de activos muy correlacionados
+    // da ENB ≈ 1 (es, en la práctica, una única apuesta al factor
+    // común) — contraintuitivo pero es el comportamiento correcto:
+    // antes, ese mismo caso daba un ENB alto porque el cálculo no leía
+    // los pesos en absoluto.
     //
-    // Reutiliza vsJacobiEigen (el mismo motor que ya usa el chequeo de
-    // matriz no-PSD de vsFactorCorrelationMatrix) y el mismo criterio
-    // de vsRiskHHI para construir la matriz: umbral laxo
+    // Reutiliza vsJacobiEigen (autovectores, no solo autovalores) y el
+    // mismo criterio de vsRiskHHI para construir la matriz: umbral laxo
     // (VS_RISK_HHI_MIN_OBS, no el estricto de la matriz visible) y
     // correlación 0 asumida para los pares sin solape suficiente — por
     // el mismo motivo: exigir el umbral estricto dejaría este cálculo
@@ -7971,10 +8125,17 @@
       if (withEnoughHistory.length === 0) return null;
       if (withEnoughHistory.length === 1) return { enb: 1, assumedZeroPairs: 0, totalPairs: 0, coveredCount: 1, totalCount: rows.length };
 
+      const totalValue = withEnoughHistory.reduce((s, x) => s + x.row.value, 0);
+      if (totalValue <= 0) return null;
+
       const dataMap = {};
-      const isins = [];
-      for (const { row, returns } of withEnoughHistory) { dataMap[row.isin] = { returns }; isins.push(row.isin); }
-      const { matrix } = vsFactorCorrelationMatrix(dataMap, isins, VS_RISK_HHI_MIN_OBS);
+      const meta = [];
+      for (const { row, returns } of withEnoughHistory) {
+        dataMap[row.isin] = { returns };
+        meta.push({ isin: row.isin, weight: row.value / totalValue, vol: vsAnnualizedVolatility(returns) / 100 });
+      }
+      const isins = meta.map(m => m.isin);
+      const { matrix } = vsWeeklyCorrelationMatrix(dataMap, isins, VS_RISK_HHI_MIN_OBS);
 
       let assumedZeroPairs = 0, totalPairs = 0;
       const M = isins.map((a, i) => isins.map((b, j) => {
@@ -7986,13 +8147,16 @@
       }));
       assumedZeroPairs /= 2; totalPairs /= 2; // cada par se cuenta dos veces (i,j) y (j,i)
 
-      const { eigenvalues } = vsJacobiEigen(M);
-      const clipped = eigenvalues.map(e => Math.max(e, 0));
-      const sumEig = clipped.reduce((s, e) => s + e, 0);
-      if (sumEig <= 0) return null;
-      const probs = clipped.map(e => e / sumEig).filter(p => p > 1e-12);
-      const entropy = -probs.reduce((s, p) => s + p * Math.log(p), 0);
-      return { enb: Math.exp(entropy), assumedZeroPairs, totalPairs, coveredCount: isins.length, totalCount: rows.length };
+      const { eigenvalues, eigenvectors } = vsJacobiEigen(M);
+      // Pesos escalados por riesgo, rotados a la base de autovectores.
+      const wv = meta.map(m => m.weight * m.vol);
+      const wt = eigenvalues.map((_, k) => wv.reduce((s, x, i) => s + eigenvectors[k][i] * x, 0));
+      const contrib = eigenvalues.map((l, k) => Math.max(l, 0) * wt[k] * wt[k]);
+      const tot = contrib.reduce((s, c) => s + c, 0);
+      if (tot <= 0) return null;
+      const probs = contrib.map(c => c / tot).filter(p => p > 1e-12);
+      const enb = Math.exp(-probs.reduce((s, p) => s + p * Math.log(p), 0));
+      return { enb, assumedZeroPairs, totalPairs, coveredCount: isins.length, totalCount: rows.length };
     }
 
     // Concentración de capital y ratio de diversificación POR ETIQUETA
@@ -8009,7 +8173,13 @@
     // padre — se expone `depth` para que la UI pueda indentar y
     // reflejar la jerarquía, en vez de un listado plano ordenado por
     // tamaño que mezclaría raíces y subetiquetas sin criterio visual.
-    function vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog) {
+    // B6: usa el MISMO startDateCap que el ratio global de la pestaña
+    // (VsDiversificacionTab pasa null en ambos) para que los ratios de
+    // esta tabla y el de la tarjeta principal sean comparables entre sí
+    // — antes cada uno tenía su propio criterio hardcodeado y un cambio
+    // futuro en uno sin tocar el otro los habría desincronizado en
+    // silencio.
+    function vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog, startDateCap) {
       const out = [];
       const walk = (node, depth) => {
         const branchRows = vsCollectRowsInBranch(node);
@@ -8018,7 +8188,7 @@
           const effectiveN = vsEffectiveN(hhi);
           const isins = new Set(branchRows.map(r => r.isin));
           const filteredTx = transactions.filter(t => isins.has(t.isin));
-          const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, null);
+          const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, startDateCap);
           const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
           const riskHHI = vsRiskHHI(branchRows, securitiesCatalog);
           const effectiveBets = vsEffectiveBets(branchRows, securitiesCatalog);
@@ -8143,6 +8313,9 @@
                 </div>
                 {volatility.excludedCount > 0 && (
                   <span style={{ fontSize: 13, color: "#f59e0b" }} title={`${volatility.excludedCount} valor${volatility.excludedCount === 1 ? "" : "es"} sin histórico suficiente en esta ventana — excluido${volatility.excludedCount === 1 ? "" : "s"} del "Límite" (no cuenta${volatility.excludedCount === 1 ? "" : "n"} como 0% de volatilidad).`}>⚠</span>
+                )}
+                {volatility.seriesCoverage != null && volatility.seriesCoverage < 0.9 && (
+                  <span style={{ fontSize: 13, color: "#f59e0b" }} title={`Solo el ${(volatility.seriesCoverage * 100).toFixed(0)}% de los días de la ventana tienen precio real en todas las posiciones. En los días sin precio hay posiciones que no se han podido valorar, así que esos tramos quedan excluidos del índice de crecimiento: el "Real" mostrado no cubre toda la ventana.`}>⚠</span>
                 )}
               </div>
               <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>
@@ -8827,11 +9000,14 @@
       const hasEnough = returns.length >= VS_RISK_MIN_OBS;
 
       const volatility = hasEnough ? vsAnnualizedVolatility(returns) : null;
-      const downsideDev = hasEnough ? vsDownsideDeviation(returns) : null;
       const annReturn = weeklyPoints.length >= 2 ? vsAnnualizedReturnFromPoints(weeklyPoints) : null;
       const riskFree = weeklyPoints.length >= 2
         ? vsRiskFreeReturnForWindow(factors, weeklyPoints[0].date, weeklyPoints[weeklyPoints.length - 1].date)
         : null;
+      // MAR periodico coherente con el numerador: mismo umbral en ambos
+      // lados del Sortino.
+      const marWeekly = riskFree != null ? Math.pow(1 + riskFree / 100, 1 / VS_RISK_PERIODS_PER_YEAR) - 1 : 0;
+      const downsideDev = hasEnough ? vsDownsideDeviation(returns, marWeekly) : null;
       const sharpe = hasEnough ? vsSharpeRatio(annReturn, volatility, riskFree) : null;
       const sortino = hasEnough ? vsSortinoRatio(annReturn, downsideDev, riskFree) : null;
       // Drawdown sobre la serie DIARIA, no la semanal — ver comentario en
@@ -8861,17 +9037,26 @@
       const rollingSortinoSeries = rollingRatios.filter(r => r.sortino != null).map(r => ({ date: r.date, value: r.sortino, isSynthetic: false }));
 
       // Volatilidad por posición — histórico propio de cada valor, sin
-      // herencia por split (ver vsSecurityRiskReturnSeries).
+      // herencia por split (ver vsSecurityRiskReturnSeries). B4: se
+      // filtra contra las posiciones VIVAS (vsComputePositions sobre
+      // TODAS las transacciones, no acotadas por `periodStart` — un
+      // periodo filtra la ventana de precio, no si la posición sigue
+      // abierta hoy) — sin esto, la tabla incluía valores ya vendidos
+      // del todo, cuyo histórico de precio ya no representa nada que
+      // esté en cartera.
       const positionRows = useMemo(() => {
+        const livePositions = vsComputePositions(transactions);
         const rows = [];
         for (const [isin, sec] of Object.entries(securitiesCatalog)) {
+          const shares = livePositions[isin] || 0;
+          if (shares <= 1e-9) continue;
           const { returns: secReturns } = vsSecurityRiskReturnSeries(isin, securitiesCatalog, periodStart);
           if (secReturns.length >= VS_RISK_MIN_OBS) {
             rows.push({ isin, name: sec.name || isin, vol: vsAnnualizedVolatility(secReturns), obs: secReturns.length });
           }
         }
         return rows.sort((a, b) => (b.vol || 0) - (a.vol || 0));
-      }, [securitiesCatalog, periodStart]);
+      }, [transactions, securitiesCatalog, periodStart]);
 
       const segBtnStyle = (active) => ({ background: active ? VS_A + "18" : "none", border: `1px solid ${active ? VS_A : "#1a2535"}`, color: active ? VS_A : "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 });
 
@@ -8909,7 +9094,7 @@
               {coverage < 0.9 && (
                 <div style={{ background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 10, padding: 12, marginBottom: 16 }}>
                   <div style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>
-                    ⚠ Solo el {(coverage * 100).toFixed(0)}% de los días del periodo tienen precio real en todas las posiciones — el resto usa el último precio conocido. Al resamplear a semanal el efecto se atenúa mucho, pero trata los números como orientativos si este porcentaje es bajo.
+                    ⚠ Solo el {(coverage * 100).toFixed(0)}% de los días del periodo tienen precio real en todas las posiciones. En los días sin precio hay posiciones que no se han podido valorar, así que esos tramos quedan excluidos del índice de crecimiento: el periodo mostrado no cubre la cartera completa y estos números son orientativos si este porcentaje es bajo.
                   </div>
                 </div>
               )}
@@ -9127,7 +9312,7 @@
       const portfolioEffectiveBets = useMemo(() => vsEffectiveBets(rows, securitiesCatalog), [rows, securitiesCatalog]);
       const tagTree = useMemo(() => vsBuildTagAllocationTree(rows, tags), [rows, tags]);
       const tagConcentration = useMemo(
-        () => vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog),
+        () => vsTagConcentrationAndDiversification(tagTree, transactions, securitiesCatalog, null),
         [tagTree, transactions, securitiesCatalog]
 
       );
@@ -9262,29 +9447,44 @@
 
       return (
         <div style={{ padding: 20 }}>
+          {diversification && diversification.seriesCoverage != null && diversification.seriesCoverage < 0.9 && (
+            <div style={{ background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>
+                ⚠ Solo el {(diversification.seriesCoverage * 100).toFixed(0)}% de los días del periodo tienen precio real en todas las posiciones. En los días sin precio hay posiciones que no se han podido valorar, así que esos tramos quedan excluidos del índice de crecimiento: la "Volatilidad real" y el ratio de diversificación no cubren la cartera completa y son orientativos.
+              </div>
+            </div>
+          )}
           {diversificationRatio != null && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
                 <VsRiskCard label="Volatilidad real" value={`${diversification.real.toFixed(1)}%`} info="Volatilidad anualizada del índice TTWROR reconstruido de la cartera completa — captura el efecto de diversificación real entre posiciones." />
                 <VsRiskCard label="Volatilidad límite" value={diversification.limit != null ? `${diversification.limit.toFixed(1)}%` : "—"} info="Media ponderada por peso actual de la volatilidad individual de cada valor, asumiendo correlación perfecta entre todos — el peor caso posible, nunca por debajo de la volatilidad real." />
-                <VsRiskCard label="Ratio de diversificación" value={diversificationRatio.toFixed(2)} color={diversificationRatio > 1 ? "#4ade80" : undefined} info="Límite / Real — 1.0 significa sin ningún beneficio de diversificación; cuanto más alto, más te está protegiendo la combinación de tus posiciones." />
+                <VsRiskCard label="Ratio de diversificación"
+                  value={diversificationRatio.toFixed(2)}
+                  color={diversificationRatio < 1 ? "#f59e0b" : (diversificationRatio > 1 ? "#4ade80" : undefined)}
+                  sublabel={[
+                    diversificationRatio < 1 ? "⚠ Por debajo de 1.0 — matemáticamente imposible para un ratio real, señal de que el \"Límite\" no es una cota fiable aquí" : null,
+                    diversification.coverage != null && diversification.coverage < 0.95 ? `⚠ Parcial — solo ${(diversification.coverage * 100).toFixed(0)}% del peso tiene histórico suficiente para el "Límite"` : null,
+                  ].filter(Boolean).join(" · ")}
+                  info="Límite / Real — 1.0 significa sin ningún beneficio de diversificación; cuanto más alto, más te está protegiendo la combinación de tus posiciones. El 'Límite' se renormaliza sobre el peso con histórico suficiente: si quedan posiciones excluidas, deja de ser una cota superior real y el ratio puede salir engañoso." />
                 <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} info="Índice Herfindahl-Hirschman: Σwᵢ² sobre el peso en € de cada posición. 1.0 = todo concentrado en una sola posición; cuanto más bajo, más repartido el capital." />
                 <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="HHI (riesgo)"
                   value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
                   sublabel={portfolioRiskHHI != null
                     ? [
+                        portfolioRiskHHI.nonPsd ? "⚠ Matriz no semidefinida positiva — algún PCR salió negativo, número efectivo suprimido" : null,
                         portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "Riesgo más concentrado que el capital" : null,
                         portfolioRiskHHI.assumedZeroPairs > 0 ? `⚠ ${portfolioRiskHHI.assumedZeroPairs}/${portfolioRiskHHI.totalPairs} pares sin correlación fiable (asumida 0)` : null,
                       ].filter(Boolean).join(" · ")
                     : ""}
-                  info="Mismo HHI, pero ponderado por contribución real a la VARIANZA de la cartera (volatilidad + correlación de cada posición), no por capital en €. Una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en euros." />
+                  info="Mismo HHI, pero ponderado por contribución real a la VARIANZA de la cartera (volatilidad + correlación de cada posición), no por capital en €. Una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en euros. Volatilidades y correlaciones se calculan sobre la misma ventana común a todas las posiciones incluidas." />
                 <VsRiskCard label="Apuestas independientes"
                   value={portfolioEffectiveBets != null ? portfolioEffectiveBets.enb.toFixed(1) : "—"}
                   sublabel={portfolioEffectiveBets != null && portfolioEffectiveBets.assumedZeroPairs > 0
                     ? `⚠ ${portfolioEffectiveBets.assumedZeroPairs}/${portfolioEffectiveBets.totalPairs} pares sin correlación fiable (asumida 0)`
                     : ""}
-                  info="Descomposición en autovalores (PCA) de la matriz de correlación entre posiciones — número efectivo de fuentes de riesgo REALMENTE independientes, vía entropía de Shannon (no un simple conteo de componentes). Si varias posiciones se mueven casi siempre juntas por el mismo factor subyacente, cuentan casi como una sola aquí, aunque sean valores distintos." />
+                  info="Número efectivo de apuestas independientes (Meucci): los pesos REALES de tu cartera se rotan a la base de componentes principales de la matriz de correlación, y cada componente cuenta según cuánto varianza le aporta esa cartera concreta — no es una propiedad del universo de activos, sino de tu combinación de pesos. Aviso: una cartera equiponderada de posiciones muy correlacionadas puede dar un número cercano a 1 — es correcto, refleja que en la práctica es una única apuesta al factor común, aunque sean varios valores distintos." />
               </div>
 
               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
@@ -9444,7 +9644,7 @@
                   <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10, lineHeight: 1.5 }}>
                     Correlación de Pearson sobre retornos semanales, con todo el histórico disponible de cada valor. Umbral mínimo de {VS_POSITION_CORR_MIN_OBS} observaciones en común por pareja (~2 años reales) antes de mostrar un número.
                   </div>
-                  <VsCorrHeatmap dataMap={corrDataMap} names={names} minObs={VS_POSITION_CORR_MIN_OBS} />
+                  <VsCorrHeatmap dataMap={corrDataMap} names={names} minObs={VS_POSITION_CORR_MIN_OBS} matrixFn={vsWeeklyCorrelationMatrix} />
                 </div>
               )}
             </div>
