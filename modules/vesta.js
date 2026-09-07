@@ -9033,12 +9033,12 @@
     // Mismos estilos que kpiCardStyle/kpiLabelStyle/kpiValueStyle en
     // VsPortfolioKpiCards (pestaña "Mi cartera") — DM Sans para el valor,
     // DM Mono en mayúsculas para la etiqueta, misma paleta y tamaños.
-    function VsRiskCard({ label, value, sublabel, valueBadge, color, info }) {
+    function VsRiskCard({ label, value, sublabel, valueBadge, color, info, infoAlign = "left" }) {
       return (
         <div style={{ flex: "1 1 150px", minWidth: 150, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
           <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, display: "flex", alignItems: "center" }}>
             {label}
-            {info && <VsInfoTip text={info} width={240} />}
+            {info && <VsInfoTip text={info} width={240} align={infoAlign} />}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", minWidth: 0 }}>
             <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
@@ -9538,7 +9538,6 @@
                   ].filter(Boolean).join(" · ")}
                   info="Límite / Real — 1.0 significa sin ningún beneficio de diversificación; cuanto más alto, más te está protegiendo la combinación de tus posiciones. Ambas patas se calculan sobre la misma rejilla de semanas comunes a todas las posiciones, con los pesos de HOY." />
                 <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} info="Índice Herfindahl-Hirschman: Σwᵢ² sobre el peso en € de cada posición. 1.0 = todo concentrado en una sola posición; cuanto más bajo, más repartido el capital." />
-                <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="HHI (riesgo)"
                   value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
                   valueBadge={portfolioRiskHHI != null && portfolioRiskHHI.hhi > (portfolioHHI ?? 0)
@@ -9551,12 +9550,13 @@
                       ].filter(Boolean).join(" · ")
                     : ""}
                   info="Mismo HHI, pero ponderado por contribución real a la VARIANZA de la cartera (volatilidad + correlación de cada posición), no por capital en €. Una posición pequeña pero muy volátil puede concentrar más riesgo del que sugiere su peso en euros. Volatilidades y correlaciones se calculan sobre la misma ventana común a todas las posiciones incluidas." />
+                <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="Apuestas independientes"
                   value={portfolioEffectiveBets != null ? portfolioEffectiveBets.enb.toFixed(1) : "—"}
                   sublabel={portfolioEffectiveBets != null && portfolioEffectiveBets.assumedZeroPairs > 0
                     ? `⚠ ${portfolioEffectiveBets.assumedZeroPairs}/${portfolioEffectiveBets.totalPairs} pares sin correlación fiable (asumida 0)`
                     : ""}
-                  info="Número efectivo de apuestas independientes (Meucci): los pesos REALES de tu cartera se rotan a la base de componentes principales de la matriz de correlación, y cada componente cuenta según cuánto varianza le aporta esa cartera concreta — no es una propiedad del universo de activos, sino de tu combinación de pesos. Aviso: una cartera equiponderada de posiciones muy correlacionadas puede dar un número cercano a 1 — es correcto, refleja que en la práctica es una única apuesta al factor común, aunque sean varios valores distintos." />
+                  info="Número efectivo de apuestas independientes (Meucci): los pesos REALES de tu cartera se rotan a la base de componentes principales de la matriz de correlación, y cada componente cuenta según cuánto varianza le aporta esa cartera concreta — no es una propiedad del universo de activos, sino de tu combinación de pesos. Aviso: una cartera equiponderada de posiciones muy correlacionadas puede dar un número cercano a 1 — es correcto, refleja que en la práctica es una única apuesta al factor común, aunque sean varios valores distintos." infoAlign="right" />
               </div>
 
               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
