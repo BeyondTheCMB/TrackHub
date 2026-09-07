@@ -9040,7 +9040,7 @@
             {label}
             {info && <VsInfoTip text={info} width={240} />}
           </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "nowrap", minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", minWidth: 0 }}>
             <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
             {valueBadge && (
               <div title={valueBadge.title || (typeof valueBadge === "string" ? valueBadge : undefined)}
