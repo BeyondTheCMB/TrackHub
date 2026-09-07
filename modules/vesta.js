@@ -9040,9 +9040,14 @@
             {label}
             {info && <VsInfoTip text={info} width={240} />}
           </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "nowrap", minWidth: 0 }}>
             <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
-            {valueBadge && <div style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>{valueBadge}</div>}
+            {valueBadge && (
+              <div title={valueBadge.title || (typeof valueBadge === "string" ? valueBadge : undefined)}
+                style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: valueBadge.title ? "help" : undefined }}>
+                {valueBadge.short || valueBadge}
+              </div>
+            )}
           </div>
           {sublabel && <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>{sublabel}</div>}
         </div>
@@ -9536,7 +9541,9 @@
                 <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="HHI (riesgo)"
                   value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
-                  valueBadge={portfolioRiskHHI != null && portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "⚠ Riesgo más concentrado que el capital" : null}
+                  valueBadge={portfolioRiskHHI != null && portfolioRiskHHI.hhi > (portfolioHHI ?? 0)
+                    ? { short: "⚠ Concentrado", title: "Riesgo más concentrado que el capital" }
+                    : null}
                   sublabel={portfolioRiskHHI != null
                     ? [
                         portfolioRiskHHI.nonPsd ? "⚠ Matriz no semidefinida positiva — algún PCR salió negativo, número efectivo suprimido" : null,
