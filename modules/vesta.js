@@ -1379,7 +1379,7 @@
       return (yb - ya) * 12 + (mb - ma);
     }
 
-    function VsLineChart({ series, splitIndex, height = 260, colorMain = VS_A, colorSynthetic = "#5a7080" }) {
+    function VsLineChart({ series, splitIndex, height = 260, colorMain = VS_A, colorSynthetic = "#5a7080", showDrawdown = true }) {
       const [hoverIdx, setHoverIdx] = useState(null);
       const [width, setWidth] = useState(0);
       const [measureA, setMeasureA] = useState(null); // primer punto marcado (clic)
@@ -1643,7 +1643,7 @@
             </div>
           )}
 
-          {!hp && maxDD < -0.001 && (
+          {showDrawdown && !hp && maxDD < -0.001 && (
             <div style={{ fontSize: 11, fontFamily: "'DM Mono',monospace", color: "#5a7080", padding: "4px 4px 0" }}>
               Máxima caída (pico a valle): <span style={{ color: "#f87171", fontWeight: 600 }}>{(maxDD*100).toFixed(2)}%</span>
               <span style={{ marginLeft: 8, color: "#3a4550" }}>· clic en dos puntos para medir una subida/caída concreta</span>
@@ -7830,52 +7830,48 @@
       return out;
     }
 
-    // Ratio de diversificación en ventana deslizante — mismo cociente
-    // Límite/Real que la pastilla estática (ver
-    // vsPortfolioVolatilityRealAndLimit), recalculado ventana a ventana
-    // para ver si la diversificación real de la cartera ha ido
-    // mejorando o empeorando con el tiempo, no solo su nivel actual.
-    //
-    // Precalcula UNA vez el histórico semanal completo de cada posición
-    // (en vez de volver a llamar a vsSecurityRiskReturnSeries en cada
-    // ventana) y luego solo recorta por fechas — mucho más barato con
-    // muchas ventanas.
-    //
-    // Mismo aviso que la versión estática: pondera por el peso ACTUAL de
-    // cada posición (no el que tuvo en cada momento histórico), así que
-    // es una aproximación razonada, no una descomposición exacta de cómo
-    // cambió la diversificación real de la cartera con sus pesos de
-    // entonces. Cada ventana exige el histórico COMPLETO de esa posición
-    // dentro de esa ventana concreta (no solo el mínimo genérico) — si
-    // una posición se compró a mitad de una ventana, esa ventana
-    // simplemente no la incluye, en vez de calcular su volatilidad con
-    // menos datos de los que corresponden a esas semanas.
     function vsRollingDiversificationRatio(transactions, securitiesCatalog, rows, windowWeeks = 12) {
-      const { returns: portReturns } = vsPortfolioRiskReturnSeries(transactions, securitiesCatalog, null);
-      if (portReturns.length < windowWeeks) return [];
+      // Mismo criterio que vsDiversificationRatio (ambas patas sobre la
+      // misma rejilla común), recalculado en ventanas deslizantes. La
+      // versión anterior comparaba contra el TTWROR de la cartera y
+      // arrastraba el mismo desajuste que hacía posible un ratio < 1.
+      const included = [];
+      for (const row of rows) {
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, null);
+        if (returns.length < VS_RISK_MIN_OBS) continue;
+        const byWeek = new Map();
+        for (const r of returns) byWeek.set(vsIsoWeekKey(r.date), r.value);
+        included.push({ value: row.value, byWeek, lastDateByWeek: new Map(returns.map(r => [vsIsoWeekKey(r.date), r.date])) });
+      }
+      if (included.length === 0) return [];
 
-      const perPosition = rows
-        .map(row => ({ value: row.value, returns: vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, null).returns }))
-        .filter(p => p.returns.length > 0);
+      let commonWeeks = [...included[0].byWeek.keys()];
+      for (const p of included.slice(1)) commonWeeks = commonWeeks.filter(k => p.byWeek.has(k));
+      commonWeeks.sort();
+      if (commonWeeks.length < windowWeeks) return [];
+
+      const totalValue = included.reduce((s, p) => s + p.value, 0);
+      if (totalValue <= 0) return [];
+      const weights = included.map(p => p.value / totalValue);
 
       const out = [];
-      for (let i = windowWeeks - 1; i < portReturns.length; i++) {
-        const windowStart = portReturns[i - windowWeeks + 1].startDate;
-        const windowEnd = portReturns[i].date;
-        const portWindow = portReturns.slice(i - windowWeeks + 1, i + 1);
-        const portVol = vsAnnualizedVolatility(portWindow);
-        if (!portVol) continue;
-
-        let weightedSum = 0, weightCovered = 0;
-        for (const pos of perPosition) {
-          const windowReturns = pos.returns.filter(r => r.date >= windowStart && r.date <= windowEnd);
-          if (windowReturns.length >= windowWeeks) {
-            weightedSum += pos.value * vsAnnualizedVolatility(windowReturns);
-            weightCovered += pos.value;
-          }
+      for (let i = windowWeeks - 1; i < commonWeeks.length; i++) {
+        const win = commonWeeks.slice(i - windowWeeks + 1, i + 1);
+        const portReturns = win.map(k => included.reduce((s, p, j) => s + weights[j] * p.byWeek.get(k), 0));
+        const sdPort = vsStdDev(portReturns);
+        if (sdPort == null || sdPort <= 0) continue;
+        let limit = 0; let ok = true;
+        for (let j = 0; j < included.length; j++) {
+          const sd = vsStdDev(win.map(k => included[j].byWeek.get(k)));
+          if (sd == null) { ok = false; break; }
+          limit += weights[j] * sd;
         }
-        if (weightCovered <= 0) continue;
-        out.push({ date: portReturns[i].date, value: (weightedSum / weightCovered) / portVol, isSynthetic: false });
+        if (!ok) continue;
+        out.push({
+          date: included[0].lastDateByWeek.get(commonWeeks[i]),
+          value: limit / sdPort,
+          isSynthetic: false,
+        });
       }
       return out;
     }
@@ -7952,6 +7948,79 @@
         // "faltan precios en el periodo" en Diversificación y en Mi cartera.
         seriesCoverage,
         excludedCount, includedCount,
+      };
+    }
+
+    // Ratio de diversificación — AMBAS patas sobre la MISMA serie semanal de
+    // los propios valores, con pesos actuales fijos y sobre la MISMA rejilla
+    // de semanas comunes.
+    //
+    // Por qué así y no comparando contra el TTWROR reconstruido de la
+    // cartera: esas son dos series distintas del mismo activo (el TTWROR va
+    // sobre calendario diario con forward-fill y ancla en domingo; el
+    // histórico de precio ancla en viernes), y además el TTWROR inyecta
+    // retornos espurios los días de compra, porque compara el importe
+    // pagado contra una valoración a NAV antiguo. Mezclarlas hacía que el
+    // cociente perdiera su garantía matemática: ramas de UNA sola posición
+    // salían con ratio 0,74 cuando por construcción tienen que dar 1,000.
+    //
+    // Con las dos patas sobre la misma serie, σₚ = √(wᵀΣw) ≤ Σwᵢσᵢ por
+    // Cauchy-Schwarz, así que el ratio es ≥ 1 SIEMPRE, vale exactamente 1
+    // con una sola posición y exactamente 1 con posiciones perfectamente
+    // correlacionadas (la cota superior).
+    //
+    // Contrapartida honesta: usa los pesos de HOY constantes en toda la
+    // ventana, no los que la cartera tuvo en cada momento. Es una
+    // descomposición de la cartera ACTUAL, no una crónica de cómo cambió su
+    // diversificación. La volatilidad realizada de verdad, con los pesos
+    // reales de cada momento, sigue estando en la pestaña "Riesgo".
+    function vsDiversificationRatio(rows, securitiesCatalog, startDate) {
+      const included = [];
+      let weightTotal = 0, excludedCount = 0;
+      for (const row of rows) {
+        weightTotal += row.value;
+        const { returns } = vsSecurityRiskReturnSeries(row.isin, securitiesCatalog, startDate);
+        if (returns.length < VS_RISK_MIN_OBS) { excludedCount++; continue; }
+        const byWeek = new Map();
+        for (const r of returns) byWeek.set(vsIsoWeekKey(r.date), r.value);
+        included.push({ isin: row.isin, value: row.value, byWeek });
+      }
+      if (included.length === 0) return null;
+
+      // Rejilla común: solo las semanas presentes en TODAS las posiciones
+      // incluidas. Imprescindible para que la cota se cumpla.
+      let commonWeeks = [...included[0].byWeek.keys()];
+      for (const p of included.slice(1)) commonWeeks = commonWeeks.filter(k => p.byWeek.has(k));
+      commonWeeks.sort();
+      if (commonWeeks.length < VS_RISK_MIN_OBS) return null;
+
+      const weightCovered = included.reduce((s, p) => s + p.value, 0);
+      if (weightCovered <= 0) return null;
+      const weights = included.map(p => p.value / weightCovered);
+
+      // Retorno semanal de la cartera con pesos fijos.
+      const portReturns = commonWeeks.map(k =>
+        included.reduce((s, p, i) => s + weights[i] * p.byWeek.get(k), 0)
+      );
+      const sdPort = vsStdDev(portReturns);
+      if (sdPort == null || sdPort <= 0) return null;
+      const real = sdPort * Math.sqrt(VS_RISK_PERIODS_PER_YEAR) * 100;
+
+      // Límite: media ponderada de las volatilidades individuales, cada una
+      // sobre ESTA MISMA rejilla común.
+      let limit = 0;
+      for (let i = 0; i < included.length; i++) {
+        const sd = vsStdDev(commonWeeks.map(k => included[i].byWeek.get(k)));
+        if (sd == null) return null;
+        limit += weights[i] * sd * Math.sqrt(VS_RISK_PERIODS_PER_YEAR) * 100;
+      }
+
+      return {
+        real, limit, ratio: limit / real,
+        commonWeeks: commonWeeks.length,
+        includedCount: included.length,
+        excludedCount,
+        coverage: weightTotal > 0 ? weightCovered / weightTotal : 0,
       };
     }
 
@@ -8186,10 +8255,8 @@
         if (branchRows.length > 0) {
           const hhi = vsHHI(branchRows);
           const effectiveN = vsEffectiveN(hhi);
-          const isins = new Set(branchRows.map(r => r.isin));
-          const filteredTx = transactions.filter(t => isins.has(t.isin));
-          const vol = vsPortfolioVolatilityRealAndLimit(filteredTx, securitiesCatalog, branchRows, startDateCap);
-          const ratio = (vol && vol.real > 0 && vol.limit != null) ? vol.limit / vol.real : null;
+          const divr = vsDiversificationRatio(branchRows, securitiesCatalog, startDateCap);
+          const ratio = divr ? divr.ratio : null;
           const riskHHI = vsRiskHHI(branchRows, securitiesCatalog);
           const effectiveBets = vsEffectiveBets(branchRows, securitiesCatalog);
           out.push({
@@ -9289,16 +9356,18 @@
         [transactions, securitiesCatalog, periodStart]
       );
 
-      // Ratio de diversificación (Límite/Real, mismo cociente que la
-      // pastilla de "Mi cartera") y su evolución móvil — ver
-      // vsPortfolioVolatilityRealAndLimit/vsRollingDiversificationRatio.
+      // Ratio de diversificación — ambas patas sobre la misma serie
+      // semanal de los propios valores (ver vsDiversificationRatio) y su
+      // evolución móvil (vsRollingDiversificationRatio). No usa
+      // vsPortfolioVolatilityRealAndLimit: esa mezcla el TTWROR
+      // reconstruido de la cartera (pata "real") con el histórico crudo
+      // de cada valor (pata "límite"), dos series distintas del mismo
+      // activo que rompían la garantía matemática del cociente.
       const diversification = useMemo(
-        () => vsPortfolioVolatilityRealAndLimit(transactions, securitiesCatalog, rows, null),
+        () => vsDiversificationRatio(rows, securitiesCatalog, null),
         [transactions, securitiesCatalog, rows]
       );
-      const diversificationRatio = (diversification && diversification.real > 0 && diversification.limit != null)
-        ? diversification.limit / diversification.real
-        : null;
+      const diversificationRatio = diversification ? diversification.ratio : null;
       const ROLLING_DIV_WINDOW_WEEKS = 12;
       const rollingDiversification = useMemo(
         () => vsRollingDiversificationRatio(transactions, securitiesCatalog, rows, ROLLING_DIV_WINDOW_WEEKS),
@@ -9447,26 +9516,19 @@
 
       return (
         <div style={{ padding: 20 }}>
-          {diversification && diversification.seriesCoverage != null && diversification.seriesCoverage < 0.9 && (
-            <div style={{ background: "#1a1410", border: "1px solid #3a2a15", borderRadius: 10, padding: 12, marginBottom: 16 }}>
-              <div style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>
-                ⚠ Solo el {(diversification.seriesCoverage * 100).toFixed(0)}% de los días del periodo tienen precio real en todas las posiciones. En los días sin precio hay posiciones que no se han podido valorar, así que esos tramos quedan excluidos del índice de crecimiento: la "Volatilidad real" y el ratio de diversificación no cubren la cartera completa y son orientativos.
-              </div>
-            </div>
-          )}
           {diversificationRatio != null && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                <VsRiskCard label="Volatilidad real" value={`${diversification.real.toFixed(1)}%`} info="Volatilidad anualizada del índice TTWROR reconstruido de la cartera completa — captura el efecto de diversificación real entre posiciones." />
+                <VsRiskCard label="Volatilidad combinada" value={`${diversification.real.toFixed(1)}%`} info="Volatilidad de la combinación de tus posiciones con los pesos actuales, sobre las semanas con histórico común a todas. No coincide con la volatilidad de la pestaña Riesgo, que usa el TTWROR realizado con los pesos que la cartera tuvo en cada momento." />
                 <VsRiskCard label="Volatilidad límite" value={diversification.limit != null ? `${diversification.limit.toFixed(1)}%` : "—"} info="Media ponderada por peso actual de la volatilidad individual de cada valor, asumiendo correlación perfecta entre todos — el peor caso posible, nunca por debajo de la volatilidad real." />
                 <VsRiskCard label="Ratio de diversificación"
                   value={diversificationRatio.toFixed(2)}
-                  color={diversificationRatio < 1 ? "#f59e0b" : (diversificationRatio > 1 ? "#4ade80" : undefined)}
+                  color={diversificationRatio > 1 ? "#4ade80" : undefined}
                   sublabel={[
-                    diversificationRatio < 1 ? "⚠ Por debajo de 1.0 — matemáticamente imposible para un ratio real, señal de que el \"Límite\" no es una cota fiable aquí" : null,
-                    diversification.coverage != null && diversification.coverage < 0.95 ? `⚠ Parcial — solo ${(diversification.coverage * 100).toFixed(0)}% del peso tiene histórico suficiente para el "Límite"` : null,
+                    diversification.excludedCount > 0 ? `⚠ ${diversification.excludedCount} posición${diversification.excludedCount === 1 ? "" : "es"} sin histórico suficiente, excluida${diversification.excludedCount === 1 ? "" : "s"}` : null,
+                    diversification.commonWeeks < 52 ? `⚠ Solo ${diversification.commonWeeks} semanas comunes a todas las posiciones` : null,
                   ].filter(Boolean).join(" · ")}
-                  info="Límite / Real — 1.0 significa sin ningún beneficio de diversificación; cuanto más alto, más te está protegiendo la combinación de tus posiciones. El 'Límite' se renormaliza sobre el peso con histórico suficiente: si quedan posiciones excluidas, deja de ser una cota superior real y el ratio puede salir engañoso." />
+                  info="Límite / Real — 1.0 significa sin ningún beneficio de diversificación; cuanto más alto, más te está protegiendo la combinación de tus posiciones. Ambas patas se calculan sobre la misma rejilla de semanas comunes a todas las posiciones, con los pesos de HOY." />
                 <VsRiskCard label="HHI (capital)" value={portfolioHHI != null ? portfolioHHI.toFixed(3) : "—"} info="Índice Herfindahl-Hirschman: Σwᵢ² sobre el peso en € de cada posición. 1.0 = todo concentrado en una sola posición; cuanto más bajo, más repartido el capital." />
                 <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="HHI (riesgo)"
@@ -9494,7 +9556,7 @@
                     <VsInfoTip text={`Mismo cociente (Límite/Real) recalculado en ventanas de ${ROLLING_DIV_WINDOW_WEEKS} semanas — muestra si la diversificación real de tu cartera ha ido mejorando o empeorando con el tiempo, no solo su nivel actual. Pondera cada posición por su peso ACTUAL en todas las ventanas, así que es una aproximación razonada si tu asignación ha cambiado mucho a lo largo del tiempo, no una descomposición exacta.`} width={280} />
                   </div>
                   {rollingDiversification.length > 1 ? (
-                    <VsLineChart series={rollingDiversification} height={200} />
+                    <VsLineChart series={rollingDiversification} height={200} showDrawdown={false} />
                   ) : (
                     <div style={{ textAlign: "center", padding: "24px 0", color: "#5a7080", fontSize: 12, fontFamily: "'DM Mono',monospace" }}>
                       Necesitas más semanas de histórico para la ventana móvil.
