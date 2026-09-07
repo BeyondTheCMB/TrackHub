@@ -9033,14 +9033,17 @@
     // Mismos estilos que kpiCardStyle/kpiLabelStyle/kpiValueStyle en
     // VsPortfolioKpiCards (pestaña "Mi cartera") — DM Sans para el valor,
     // DM Mono en mayúsculas para la etiqueta, misma paleta y tamaños.
-    function VsRiskCard({ label, value, sublabel, color, info }) {
+    function VsRiskCard({ label, value, sublabel, valueBadge, color, info }) {
       return (
         <div style={{ flex: "1 1 150px", minWidth: 150, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
           <div style={{ fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, display: "flex", alignItems: "center" }}>
             {label}
             {info && <VsInfoTip text={info} width={240} />}
           </div>
-          <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 26, letterSpacing: "-0.01em", color: color || "#e2e8f0" }}>{value}</div>
+            {valueBadge && <div style={{ fontSize: 11, color: "#f59e0b", fontFamily: "'DM Mono',monospace" }}>{valueBadge}</div>}
+          </div>
           {sublabel && <div style={{ fontSize: 10, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginTop: 4 }}>{sublabel}</div>}
         </div>
       );
@@ -9533,10 +9536,10 @@
                 <VsRiskCard label="Nº efectivo de posiciones" value={portfolioEffectiveN != null ? portfolioEffectiveN.toFixed(1) : "—"} info="1/HHI — más intuitivo que el HHI puro: dice a cuántas posiciones de peso igual equivale tu cartera en términos de concentración." />
                 <VsRiskCard label="HHI (riesgo)"
                   value={portfolioRiskHHI != null ? portfolioRiskHHI.hhi.toFixed(3) : "—"}
+                  valueBadge={portfolioRiskHHI != null && portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "⚠ Riesgo más concentrado que el capital" : null}
                   sublabel={portfolioRiskHHI != null
                     ? [
                         portfolioRiskHHI.nonPsd ? "⚠ Matriz no semidefinida positiva — algún PCR salió negativo, número efectivo suprimido" : null,
-                        portfolioRiskHHI.hhi > (portfolioHHI ?? 0) ? "Riesgo más concentrado que el capital" : null,
                         portfolioRiskHHI.assumedZeroPairs > 0 ? `⚠ ${portfolioRiskHHI.assumedZeroPairs}/${portfolioRiskHHI.totalPairs} pares sin correlación fiable (asumida 0)` : null,
                       ].filter(Boolean).join(" · ")
                     : ""}
