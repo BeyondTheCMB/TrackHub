@@ -6967,6 +6967,53 @@
     // todavía, se usa su coste neto invertido como estimación provisional
     // en vez de dejarlo en 0, pero se cuenta cuántos quedan así para
     // poder avisar de que el número es parcial.
+    // ── Saneado de anomalías ──────────────────────────────────────────────
+    // Un ISIN con títulos NETOS negativos es una importación mal casada
+    // (venta duplicada, compra que no llegó, split a medias). La tabla de
+    // asignación ya lo aparta como "anomalía" en vez de mostrarlo como
+    // posición, pero sus transacciones seguían entrando en los motores de
+    // cartera completa: el importe de la venta se contaba como flujo de
+    // salida sin que hubiera valor de mercado que lo respaldara, así que
+    // fabricaba rentabilidad. Caso probado (compra de 50 títulos + venta
+    // duplicada de 100, todo a precio constante, verdad 0,00%): TTWROR
+    // +28,57%, Modified Dietz +39,96%, XIRR +38,64%.
+    // Se excluye el ISIN ENTERO, no solo la transacción descuadrada: si
+    // los títulos no cuadran, ninguno de sus importes es de fiar. El mismo
+    // umbral que usa vsComputeAllocation, para que lo que se aparta del
+    // cálculo sea exactamente lo que la UI lista como anomalía.
+    function vsAnomalousIsins(transactions) {
+      const positions = vsComputePositions(transactions);
+      const out = new Set();
+      for (const [isin, shares] of Object.entries(positions)) if (shares < -1e-9) out.add(isin);
+      return out;
+    }
+    function vsSaneTx(transactions) {
+      const bad = vsAnomalousIsins(transactions);
+      if (bad.size === 0) return transactions;
+      return transactions.filter(t => !t.isin || !bad.has(t.isin));
+    }
+
+    // Valor final coherente con la línea base. V0 sale SIEMPRE del
+    // histórico de precios; `endValue` viene de la tabla, que para un valor
+    // sin precio en vivo usa su coste como estimación provisional. Mezclar
+    // ambas bases inventa rendimiento: caso probado con un valor que cuesta
+    // 5.000 y vale 8.000 de mercado, todo plano, el periodo salía -16,67%.
+    // Si TODO lo que se tiene al cierre tiene precio en vivo se respeta
+    // `endValue` (así el % reconcilia con los euros que se muestran); si no,
+    // se usa la valoración por histórico en las dos patas.
+    function vsConsistentEndValue(txs, securitiesCatalog, end, lookups, endValue) {
+      const positionsEnd = vsPositionsAsOf(txs, end);
+      let anyUnpriced = false;
+      for (const [isin, sh] of Object.entries(positionsEnd)) {
+        if (sh <= 1e-9) continue;
+        const sec = securitiesCatalog[isin];
+        if (!sec || sec.price == null) { anyUnpriced = true; break; }
+      }
+      if (!anyUnpriced) return endValue;
+      const atEnd = vsPortfolioValueAsOf(txs, securitiesCatalog, end, lookups);
+      return atEnd.missing > 0 ? null : atEnd.value;
+    }
+
     function vsComputePortfolioKpis(transactions, securitiesCatalog) {
       // Coste medio ponderado de lo que TODAVÍA se tiene, sumando
       // vsInvestedForIsin — exactamente el mismo criterio y la misma
@@ -7057,7 +7104,7 @@
     // sí. El flujo final es el valor de mercado actual, a día de hoy.
     function vsComputePortfolioXirr(transactions, currentValue) {
       const flows = [];
-      for (const t of transactions) {
+      for (const t of vsSaneTx(transactions)) {
         const sign = VS_CF_SIGN[t.type];
         if (!sign || !t.amount || !t.date) continue;
         if (t.type !== "buy" && t.type !== "sell" && t.type !== "dividend") continue;
@@ -7210,7 +7257,7 @@
     // POSTERIORES a `startDate` entran en la cadena. Null/omitido = de
     // toda la vida, comportamiento idéntico al de antes.
     function vsComputePortfolioTtwror(transactions, securitiesCatalog, endDate, startDate) {
-      const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
+      const txs = vsSaneTx(transactions).filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
       if (txs.length === 0) return null;
 
       const lookups = {};
@@ -7408,15 +7455,21 @@
     // periodo seleccionado.
     function vsComputePortfolioXirrWindowed(transactions, securitiesCatalog, currentValue, startDate) {
       if (!startDate) return vsComputePortfolioXirr(transactions, currentValue);
+      const txsSane = vsSaneTx(transactions);
       const lookups = {};
       for (const [isin, sec] of Object.entries(securitiesCatalog || {})) {
         if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
       }
-      const atStart = vsPortfolioValueAsOf(transactions, securitiesCatalog, startDate, lookups);
+      const atStart = vsPortfolioValueAsOf(txsSane, securitiesCatalog, startDate, lookups);
       if (atStart.missing > 0) return null;
+      // Mismo criterio de base coherente que Modified Dietz: la línea base
+      // sale del histórico, así que el flujo final no puede salir del coste.
+      const endToday = new Date().toISOString().slice(0, 10);
+      currentValue = vsConsistentEndValue(txsSane, securitiesCatalog, endToday, lookups, currentValue);
+      if (currentValue == null) return null;
       const flows = [];
       if (atStart.value > 0) flows.push({ date: new Date(startDate + "T00:00:00Z"), amount: -atStart.value });
-      for (const t of transactions) {
+      for (const t of txsSane) {
         if (t.date <= startDate) continue;
         const sign = VS_CF_SIGN[t.type];
         if (!sign || !t.amount || !t.date) continue;
@@ -7460,7 +7513,7 @@
     // Devuelve { pct, valueAtStart, netFlow, weightedFlow, from } o null.
     function vsPeriodReturnModifiedDietz(transactions, securitiesCatalog, startDate, endValue, endDate) {
       if (!startDate) return null;
-      const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
+      const txs = vsSaneTx(transactions).filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
       if (txs.length === 0) return null;
       const end = endDate || new Date().toISOString().slice(0, 10);
       const from = startDate > txs[0].date ? startDate : txs[0].date;
@@ -7472,6 +7525,8 @@
       }
       const atStart = vsPortfolioValueAsOf(txs, securitiesCatalog, from, lookups);
       if (atStart.missing > 0) return null; // sin línea base tasable, la celda muestra "—"
+      const v1 = vsConsistentEndValue(txs, securitiesCatalog, end, lookups, endValue);
+      if (v1 == null) return null;
 
       const MS_DAY = 86400000;
       const t0 = Date.parse(from + "T00:00:00Z");
@@ -7493,7 +7548,7 @@
 
       const base = atStart.value + weightedFlow;
       if (!(base > 1e-9)) return null; // capital medio nulo o negativo: el % no significa nada
-      const pct = ((endValue - atStart.value - netFlow) / base) * 100;
+      const pct = ((v1 - atStart.value - netFlow) / base) * 100;
       return isFinite(pct) ? { pct, valueAtStart: atStart.value, netFlow, weightedFlow, from } : null;
     }
 
@@ -7519,7 +7574,7 @@
     // histórico de precios descargado en al menos un valor — si no,
     // devuelve series vacías y la UI simplemente no dibuja nada.
     function vsComputePortfolioEvolution(transactions, securitiesCatalog) {
-      const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
+      const txs = vsSaneTx(transactions).filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
       if (txs.length === 0) return { valueSeries: [], growthSeries: [] };
       const lookups = {};
       for (const [isin, sec] of Object.entries(securitiesCatalog || {})) {
@@ -8024,9 +8079,22 @@
     // raíz hace falta el conjunto COMPLETO de valores bajo ella, no solo
     // los tageados directamente en ese nivel (ver vsBuildTagAllocationTree:
     // los descendientes cuelgan de sus propias ramas hijas).
+    // Deduplica por ISIN: una fila etiquetada a la vez con una etiqueta y
+    // con un ANCESTRO suyo aparece en los directRows de las dos, así que
+    // sin deduplicar la misma posición se contaba dos veces en la rama.
+    // vsBuildTagAllocationTree ya evita ese doble conteo para `value`
+    // (acumula sobre un Set de ancestros), pero esto alimenta además a
+    // vsHHI, vsDiversificationRatio, vsRiskHHI, vsEffectiveBets y al
+    // contador de posiciones de la tabla de Diversificación, que sí
+    // sumaban el peso duplicado.
     function vsCollectRowsInBranch(node) {
-      let out = node.directRows.slice();
-      for (const child of node.children) out = out.concat(vsCollectRowsInBranch(child));
+      const seen = new Set(), out = [];
+      const push = (r) => { if (!r || seen.has(r.isin)) return; seen.add(r.isin); out.push(r); };
+      const walk = (n) => {
+        for (const r of n.directRows || []) push(r);
+        for (const child of n.children || []) walk(child);
+      };
+      walk(node);
       return out;
     }
 
