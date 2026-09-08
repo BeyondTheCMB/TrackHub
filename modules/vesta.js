@@ -10011,7 +10011,7 @@
               </div>
             ) : (
               <>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 20, alignItems: "start" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 20 }}>
                   <div style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, padding: "18px 20px" }}>
                     <div style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Evolución simulada</div>
                     <div style={{ fontSize: 11, color: "#5a7080", fontFamily: "'DM Mono',monospace", marginBottom: 10 }}>
@@ -10023,7 +10023,7 @@
                     <VsLineChart series={backtest.growthSeries} height={260} />
                   </div>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "repeat(3, 1fr)", gap: 12, height: "100%" }}>
                     <VsRiskCard label="Retorno anualizado" value={stats.annReturn != null ? `${stats.annReturn.toFixed(1)}%` : "—"} color={stats.annReturn > 0 ? "#4ade80" : stats.annReturn < 0 ? "#f87171" : undefined} info="CAGR de la serie simulada sobre toda la ventana del backtest." />
                     <VsRiskCard label="Volatilidad anualizada" value={stats.vol != null ? `${stats.vol.toFixed(1)}%` : "—"} info="Desviación típica de los retornos semanales de la serie simulada, anualizada." />
                     <VsRiskCard label="Sharpe" value={stats.sharpe != null ? stats.sharpe.toFixed(2) : "—"} info="(Retorno − tipo libre de riesgo) / volatilidad, sobre la serie simulada." />
@@ -10031,6 +10031,7 @@
                     <VsRiskCard label="VaR histórico 95%" value={stats.varHist != null ? `${stats.varHist.toFixed(1)}%` : "—"} color="#f87171" info="Percentil 5% de la distribución empírica de retornos semanales simulados." />
                     <VsRiskCard label="Máximo drawdown" value={stats.dd != null ? `${stats.dd.maxDD.toFixed(1)}%` : "—"} color="#f87171" info="Mayor caída de pico a valle en la serie simulada." />
                   </div>
+
                 </div>
               </>
             )}
