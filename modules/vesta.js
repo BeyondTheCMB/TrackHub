@@ -6909,15 +6909,16 @@
         // cero con (valor-invertido)/invertido, que con "invertido del
         // periodo" cerca de 0 (sin aportaciones nuevas) dispara el
         // porcentaje a números absurdos.
-        let change = null, changePct = null, valueAtStart = 0;
+        let change = null, changePct = null, valueAtStart = 0, periodNetFlow = 0, periodWeightedFlow = 0;
         if (hasPrice) {
           if (periodStart) {
-            const { value: vStart, missing } = vsValueForIsinAsOf(isin, transactions, securitiesCatalog, periodStart);
-            if (missing === 0) {
-              valueAtStart = vStart;
-              change = value - valueAtStart - investedPeriodDelta;
-              const base = valueAtStart + investedPeriodDelta;
-              changePct = base > 0 ? (change / base) * 100 : null;
+            const md = vsPeriodReturnForIsin(isin, transactions, securitiesCatalog, periodStart, value);
+            if (md) {
+              valueAtStart = md.valueAtStart;
+              periodNetFlow = md.netFlow;
+              periodWeightedFlow = md.weightedFlow;
+              change = value - md.valueAtStart - md.netFlow;
+              changePct = md.pct;
             }
           } else {
             change = value - investedTotal;
@@ -6947,7 +6948,7 @@
         const ttwror = (sec && sec.history && sec.history.length > 0)
           ? vsComputeTtwrorForIsin(isin, transactions, securitiesCatalog, null, periodStart)
           : null;
-        rows.push({ isin, name, code, shares, invested, investedPeriodDelta, value, valueAtStart, hasPrice, change, changePct, xirr, ttwror, tagIds: (sec && sec.tagIds) || [] });
+        rows.push({ isin, name, code, shares, invested, investedPeriodDelta, value, valueAtStart, periodNetFlow, periodWeightedFlow, hasPrice, change, changePct, xirr, ttwror, tagIds: (sec && sec.tagIds) || [] });
       }
       rows.sort((a, b) => b.value - a.value);
       const totalValue = rows.reduce((s, r) => s + r.value, 0);
@@ -6967,15 +6968,20 @@
     // en vez de dejarlo en 0, pero se cuenta cuántos quedan así para
     // poder avisar de que el número es parcial.
     function vsComputePortfolioKpis(transactions, securitiesCatalog) {
+      // Coste medio ponderado de lo que TODAVÍA se tiene, sumando
+      // vsInvestedForIsin — exactamente el mismo criterio y la misma
+      // función que la columna "Invertido" de la tabla de asignación, así
+      // que los dos números cuadran al céntimo. Antes era compras menos
+      // IMPORTE COBRADO en ventas, que es justo el criterio que
+      // vsInvestedForIsin documenta como descartado (infla la plusvalía
+      // aparente de lo que queda porque reduce "invertido" de más), y hacía
+      // que la tarjeta y la tabla mostraran dos "invertido" distintos.
       let invested = 0;
-      for (const t of transactions) {
-        if (t.type === "buy") invested += (t.amount || 0);
-        else if (t.type === "sell") invested -= (t.amount || 0);
-      }
       const positions = vsComputePositions(transactions);
       let currentValue = 0, heldCount = 0, unpricedHeld = 0;
       for (const [isin, shares] of Object.entries(positions)) {
         if (shares <= 1e-9) continue;
+        invested += vsInvestedForIsin(isin, transactions);
         heldCount++;
         const sec = securitiesCatalog[isin];
         if (sec && sec.price != null) {
@@ -7420,6 +7426,86 @@
       if (currentValue > 0) flows.push({ date: new Date(), amount: currentValue });
       if (flows.length < 2) return null;
       return vsXirr(flows);
+    }
+
+    // ── Rentabilidad del periodo (Modified Dietz) ──────────────────────────
+    // Sustituye a la fórmula anterior de "En el periodo", que era incorrecta
+    // por dos motivos independientes:
+    //   1) Restaba `investedPeriodDelta` (COSTE MEDIO retirado en las ventas)
+    //      cuando lo que sale de la cartera es el IMPORTE COBRADO. Con una
+    //      venta parcial con plusvalía dentro del periodo el signo llegaba a
+    //      invertirse (caso probado: +30% real mostrado como -20%).
+    //   2) En la fila de totales mezclaba el valor inicial de TODA la cartera
+    //      con los flujos de solo las posiciones que aún se tienen, así que
+    //      cualquier posición liquidada dentro del periodo entraba en la base
+    //      sin que su importe cobrado apareciera en ninguna parte —
+    //      fabricando pérdida (caso probado: rotación con precios planos,
+    //      verdad 0,0%, mostrado -32,7%).
+    //
+    // Modified Dietz: r = (V1 - V0 - F) / (V0 + Σ Fi·wi), con
+    // wi = (T - ti)/T la fracción del periodo que ese flujo estuvo dentro.
+    // El numerador es la ganancia en euros, inequívoca. El denominador es
+    // el capital medio empleado, que es lo que evita tener que suponer que
+    // todos los flujos ocurrieron el primer día.
+    //
+    // El periodo se acota a la vida de la posición DENTRO de él: el arranque
+    // efectivo es max(startDate, primera transacción), igual que el
+    // `chainStart` de vsComputePortfolioTtwror — así las dos columnas hablan
+    // de la misma ventana. Sin esto, una posición abierta hace un mes dentro
+    // de una ventana de un año daría un capital medio ridículo y un
+    // porcentaje disparado (Modified Dietz "correcto" pero que ya no responde
+    // a la pregunta de la columna, y que además duplicaría al XIRR de al
+    // lado). Los flujos del propio día de arranque son línea base, no flujo
+    // — mismo criterio que el TTWROR.
+    // Devuelve { pct, valueAtStart, netFlow, weightedFlow, from } o null.
+    function vsPeriodReturnModifiedDietz(transactions, securitiesCatalog, startDate, endValue, endDate) {
+      if (!startDate) return null;
+      const txs = transactions.filter(t => t.date).slice().sort((a, b) => a.date.localeCompare(b.date));
+      if (txs.length === 0) return null;
+      const end = endDate || new Date().toISOString().slice(0, 10);
+      const from = startDate > txs[0].date ? startDate : txs[0].date;
+      if (!(end > from)) return null;
+
+      const lookups = {};
+      for (const [isin, sec] of Object.entries(securitiesCatalog || {})) {
+        if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
+      }
+      const atStart = vsPortfolioValueAsOf(txs, securitiesCatalog, from, lookups);
+      if (atStart.missing > 0) return null; // sin línea base tasable, la celda muestra "—"
+
+      const MS_DAY = 86400000;
+      const t0 = Date.parse(from + "T00:00:00Z");
+      const T = (Date.parse(end + "T00:00:00Z") - t0) / MS_DAY;
+      if (!(T > 0)) return null;
+
+      let netFlow = 0, weightedFlow = 0;
+      for (const t of txs) {
+        if (t.date <= from || t.date > end) continue;
+        let f = 0;
+        if (t.type === "buy") f = (t.amount || 0);
+        else if (t.type === "sell") f = -(t.amount || 0);
+        else if (t.type === "dividend") f = -(t.amount || 0);
+        else continue; // deposit/withdrawal/fee/tax/interest/split fuera, mismo universo que TTWROR y XIRR
+        const ti = (Date.parse(t.date + "T00:00:00Z") - t0) / MS_DAY;
+        netFlow += f;
+        weightedFlow += f * ((T - ti) / T);
+      }
+
+      const base = atStart.value + weightedFlow;
+      if (!(base > 1e-9)) return null; // capital medio nulo o negativo: el % no significa nada
+      const pct = ((endValue - atStart.value - netFlow) / base) * 100;
+      return isFinite(pct) ? { pct, valueAtStart: atStart.value, netFlow, weightedFlow, from } : null;
+    }
+
+    // Igual, pero acotado a un valor y sus ISIN hermanos de split — mismo
+    // recorte que vsComputeTtwrorForIsin, para que fila y columna TTWROR
+    // vean exactamente el mismo universo.
+    function vsPeriodReturnForIsin(isin, transactions, securitiesCatalog, startDate, endValue, endDate) {
+      const isins = vsRelatedIsinsForSplit(isin, transactions);
+      const txs = transactions.filter(t => t.isin && isins.has(t.isin));
+      const catalog = {};
+      for (const i of isins) if (securitiesCatalog[i]) catalog[i] = securitiesCatalog[i];
+      return vsPeriodReturnModifiedDietz(txs, catalog, startDate, endValue, endDate);
     }
 
     // ── Series diarias de evolución de la cartera (para las gráficas de
@@ -8744,9 +8830,12 @@
       // se muestra en la celda de "Invertido" — dos cosas distintas a
       // propósito, ver vsComputeAllocation).
       const investedForPct = node.investedPeriodDelta != null ? node.investedPeriodDelta : node.invested;
-      const changePct = (node.valueAtStart + investedForPct) > 0
-        ? ((node.value - node.valueAtStart - investedForPct) / (node.valueAtStart + investedForPct)) * 100
-        : null;
+      const metricsForPct = (tagMetrics && tagMetrics[node.tag.id]) || null;
+      const changePct = (metricsForPct && metricsForPct.changePct !== undefined)
+        ? metricsForPct.changePct
+        : ((node.valueAtStart + investedForPct) > 0
+            ? ((node.value - node.valueAtStart - investedForPct) / (node.valueAtStart + investedForPct)) * 100
+            : null);
       // XIRR/TTWROR/Volatilidad de esta rama (raíz + todos sus
       // descendientes) — calculados aparte en VsMiCarteraTab tratando la
       // rama como una sub-cartera propia (ver computeTagMetrics). "—" si
@@ -8860,28 +8949,18 @@
       // total (mismo criterio que cada fila, ver vsComputeAllocation) —
       // no cambia con el periodo elegido.
       const totalInvested = rows.reduce((s, r) => s + r.invested, 0);
-      // Aparte, para la fórmula del % (que sí necesita el delta del
-      // periodo, no el acumulado) — sin periodo, coincide con totalInvested.
-      const totalInvestedPeriodDelta = rows.reduce((s, r) => s + (r.investedPeriodDelta != null ? r.investedPeriodDelta : r.invested), 0);
-      // Valor de la cartera al arranque del periodo — línea base para el
-      // "Desde inicio" de la fila de totales cuando hay un periodo
-      // elegido (mismo criterio que cada fila individual, ver
-      // vsValueForIsinAsOf).
-      const periodBaseline = useMemo(() => {
-        if (!periodStart) return null;
-        const lookups = {};
-        for (const [isin, sec] of Object.entries(securitiesCatalog)) {
-          if (sec && sec.history && sec.history.length) lookups[isin] = vsPriceLookup(sec.history);
-        }
-        return vsPortfolioValueAsOf(transactions, securitiesCatalog, periodStart, lookups);
-      }, [transactions, securitiesCatalog, periodStart]);
+      // "En el periodo" de la fila de totales: Modified Dietz sobre TODAS
+      // las transacciones, no solo las de las filas visibles. Esto es lo
+      // que hace que una posición liquidada dentro del periodo cuente como
+      // debe — su valor inicial está en V0 y su importe cobrado en los
+      // flujos, así que la ganancia que generó antes de venderla no se
+      // pierde ni se convierte en pérdida ficticia.
+      const totalPeriodReturn = useMemo(
+        () => periodStart ? vsPeriodReturnModifiedDietz(transactions, securitiesCatalog, periodStart, totalValue) : null,
+        [transactions, securitiesCatalog, periodStart, totalValue]
+      );
       const totalChangePct = periodStart
-        ? (periodBaseline && periodBaseline.missing === 0
-            ? (() => {
-                const base = periodBaseline.value + totalInvestedPeriodDelta;
-                return base > 0 ? ((totalValue - periodBaseline.value - totalInvestedPeriodDelta) / base) * 100 : null;
-              })()
-            : null)
+        ? (totalPeriodReturn ? totalPeriodReturn.pct : null)
         : (totalInvested > 0 ? ((totalValue - totalInvested) / totalInvested) * 100 : null);
       // XIRR y TTWROR de la fila de totales — desde el inicio si no hay
       // periodo elegido (mismos vsComputePortfolioXirr/kpis.xirr y ttwror
@@ -8948,7 +9027,17 @@
               : vsComputePortfolioTtwror(filteredTx, securitiesCatalog);
             const { returns: branchReturns } = vsPortfolioRiskReturnSeries(filteredTx, securitiesCatalog, periodStart);
             const volatility = branchReturns.length >= VS_RISK_MIN_OBS ? vsAnnualizedVolatility(branchReturns) : null;
-            map[node.tag.id] = { xirr, ttwror, volatility };
+            // "En el periodo" de la rama: mismo motor Modified Dietz que la
+            // fila de totales, sobre las transacciones de la rama. Antes se
+            // calculaba en VsTagAllocationRow agregando valueAtStart +
+            // investedPeriodDelta de las filas, que arrastra el mismo error
+            // de coste-vs-importe-cobrado y además ignora lo liquidado
+            // dentro del periodo. Sin periodo activo se deja en undefined y
+            // la fila conserva su fórmula de siempre (valor-invertido)/invertido.
+            const changePct = periodStart
+              ? (() => { const md = vsPeriodReturnModifiedDietz(filteredTx, securitiesCatalog, periodStart, node.value); return md ? md.pct : null; })()
+              : undefined;
+            map[node.tag.id] = { xirr, ttwror, volatility, changePct };
           }
           for (const child of node.children || []) walk(child);
         };
