@@ -7141,27 +7141,48 @@
     // Valor de mercado de la cartera en una fecha. Devuelve también cuántos
     // valores no se han podido valorar, para poder avisar en la UI en vez
     // de dar un número silenciosamente incompleto.
+    //
+    // `vals` es el desglose por ISIN, y es lo que permite al motor de
+    // TTWROR componer solo sobre el conjunto de valores que SÍ se pueden
+    // tasar en los dos extremos de un subperíodo (ver
+    // vsComputePortfolioTtwror). Criterio de "valorable":
+    //   · posición ya cerrada (o negativa por anomalía) → vale 0 y es
+    //     valorable: no hace falta precio para saber que no aporta nada,
+    //     y así una venta no se cae del subperíodo en el que ocurrió.
+    //   · con títulos y con precio → shares × precio.
+    //   · con títulos y SIN precio → ausente de `vals` (no valorable) y
+    //     cuenta en `missing`.
+    // `value` y `missing` conservan exactamente la semántica de antes:
+    // valor de mercado de lo tasable y cuántas posiciones vivas se han
+    // quedado sin tasar.
     function vsPortfolioValueAsOf(transactions, securitiesCatalog, date, lookups) {
       const positions = vsPositionsAsOf(transactions, date);
       let value = 0, missing = 0;
+      const vals = {};
       for (const [isin, shares] of Object.entries(positions)) {
-        if (shares <= 1e-9) continue;
+        if (shares <= 1e-9) { vals[isin] = 0; continue; }
         const priceAt = lookups[isin];
         const p = priceAt ? priceAt(date) : null;
         if (p == null) { missing++; continue; }
+        vals[isin] = shares * p;
         value += shares * p;
       }
-      return { value, missing };
+      return { value, missing, vals };
     }
 
     // Flujo externo neto del día, desde el punto de vista de la cartera de
     // valores: compra = entra dinero, venta y dividendo = sale.
     // deposit/withdrawal/fee/tax/interest quedan fuera a propósito (mismo
     // criterio que vsComputePortfolioXirr).
-    function vsExternalFlowOn(transactions, date) {
+    // `isins` (opcional) acota el flujo a un subconjunto de valores: hace
+    // falta para que el flujo del numerador se corresponda EXACTAMENTE con
+    // los valores que entran en el denominador del subperíodo (ver
+    // vsComputePortfolioTtwror). Omitido = todos, comportamiento de antes.
+    function vsExternalFlowOn(transactions, date, isins) {
       let f = 0;
       for (const t of transactions) {
         if (t.date !== date) continue;
+        if (isins && !isins.has(t.isin)) continue;
         if (t.type === "buy") f += (t.amount || 0);
         else if (t.type === "sell") f -= (t.amount || 0);
         else if (t.type === "dividend") f -= (t.amount || 0);
@@ -7204,20 +7225,44 @@
 
       let factor = 1, subperiods = 0, incomplete = false, firstDate = null;
 
+      // Cada subperíodo se compone SOLO sobre los valores tasables en sus
+      // DOS extremos. Sin esta restricción, un valor cuyo histórico de
+      // precios arranca después de la compra (caso habitual: la serie
+      // descargada es más corta que la vida de la cartera) entra en el
+      // numerador sin estar en el denominador y fabrica rentabilidad de la
+      // nada: con dos valores de precio constante — TTWROR real 0,000000% —
+      // el resultado salía +100,000000%, y si el hueco caía justo en la
+      // fecha de compra salía -100,000000% (el flujo se restaba sin
+      // contabilizar el activo comprado, r=-1 ponía `factor` a cero y el
+      // resto del histórico se multiplicaba por 0 para siempre).
+      // El flujo del numerador se acota al mismo conjunto, para que
+      // numerador y denominador hablen exactamente de los mismos valores.
+      // `incomplete` sigue avisando de que la ventana tasada no es la
+      // cartera entera; lo que ya no hace es contaminar el número.
       let prev = null;
       for (const d of dates) {
         const cur = vsPortfolioValueAsOf(txs, securitiesCatalog, d, lookups);
         if (cur.missing > 0) incomplete = true;
-        if (prev && prev.value > 1e-9) {
-          const F = vsExternalFlowOn(txs, d);
-          const r = (cur.value - F) / prev.value - 1;
-          if (isFinite(r)) {
-            factor *= (1 + r);
-            subperiods++;
-            if (!firstDate) firstDate = prev.date;
+        if (prev) {
+          const common = new Set();
+          let vStart = 0, vEnd = 0;
+          for (const isin of Object.keys(cur.vals)) {
+            if (prev.vals[isin] == null) continue;
+            common.add(isin);
+            vStart += prev.vals[isin];
+            vEnd += cur.vals[isin];
+          }
+          if (vStart > 1e-9) {
+            const F = vsExternalFlowOn(txs, d, common);
+            const r = (vEnd - F) / vStart - 1;
+            if (isFinite(r)) {
+              factor *= (1 + r);
+              subperiods++;
+              if (!firstDate) firstDate = prev.date;
+            }
           }
         }
-        prev = { date: d, value: cur.value };
+        prev = { date: d, vals: cur.vals };
       }
 
       if (subperiods === 0) return null;
@@ -7411,18 +7456,30 @@
         const cur = vsPortfolioValueAsOf(txs, securitiesCatalog, date, lookups);
         const curMissing = cur.missing > 0;
         valueSeries.push({ date, value: cur.value, isSynthetic: curMissing });
-        if (prev && prev.value > 1e-9) {
-          // Solo se compone si ni el día anterior ni el actual tienen posiciones
-          // sin precio: si el conjunto valorado cambia, el salto de valor no es
-          // un movimiento de mercado y no debe entrar en el índice.
-          if (!curMissing && !prev.missing) {
-            const F = vsExternalFlowOn(txs, date);
-            const r = (cur.value - F) / prev.value - 1;
+        if (prev) {
+          // Mismo criterio que vsComputePortfolioTtwror: se compone sobre
+          // los valores tasables en los DOS extremos del día, con el flujo
+          // acotado a ese mismo conjunto. Antes se descartaba el día ENTERO
+          // en cuanto una sola posición no tenía precio, así que un valor
+          // con histórico corto dejaba plano el índice durante todo el
+          // tramo anterior a su serie — no fabricaba rentabilidad como la
+          // tarjeta KPI, pero perdía la real del resto de la cartera.
+          const common = new Set();
+          let vStart = 0, vEnd = 0;
+          for (const isin of Object.keys(cur.vals)) {
+            if (prev.vals[isin] == null) continue;
+            common.add(isin);
+            vStart += prev.vals[isin];
+            vEnd += cur.vals[isin];
+          }
+          if (vStart > 1e-9) {
+            const F = vsExternalFlowOn(txs, date, common);
+            const r = (vEnd - F) / vStart - 1;
             if (isFinite(r)) factor *= (1 + r);
           }
         }
         growthSeries.push({ date, value: 100 * factor, isSynthetic: curMissing });
-        prev = { date, value: cur.value, missing: curMissing };
+        prev = { date, vals: cur.vals };
       }
       return { valueSeries, growthSeries };
     }
