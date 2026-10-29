@@ -1113,6 +1113,10 @@
     // no compartir fila con meallog_config: un fallo de carga aquí no puede
     // pisar objetivos de macros ni al revés. A diferencia de mlTable, carga y
     // guardado propagan los errores, y sin carga correcta no se guarda nada.
+    // data = { mon…sun: { breakfast, lunch, snack, dinner: [{id,text}] },
+    //          pool: [{id,text}] }  — el pool es la biblioteca de tarjetas:
+    // toda tarjeta que se crea (o cuyo texto se cambia) entra en él, y desde
+    // él se pueden volver a colocar copias en cualquier franja.
     const ML_MENU_DAYS = [
       { id: "mon", label: "Lunes",     short: "Lun" },
       { id: "tue", label: "Martes",    short: "Mar" },
@@ -1129,17 +1133,37 @@
       { id: "dinner",    label: "Cena",     icon: "🌙" },
     ];
 
-    const mlMenuEmpty = () => Object.fromEntries(
-      ML_MENU_DAYS.map(d => [d.id, Object.fromEntries(ML_MENU_SLOTS.map(s => [s.id, []]))])
-    );
+    const mlMenuEmpty = () => ({
+      ...Object.fromEntries(ML_MENU_DAYS.map(d => [d.id, Object.fromEntries(ML_MENU_SLOTS.map(s => [s.id, []]))])),
+      pool: [],
+    });
+
+    const mlMenuKey = (text) => text.trim().toLocaleLowerCase("es");
+
+    // Añade un texto al pool si no hay ya una tarjeta igual (sin distinguir
+    // mayúsculas ni espacios). Devuelve el mismo objeto si no cambia nada.
+    const mlMenuPoolAdd = (menu, text) => {
+      const t = text.trim();
+      if (!t || menu.pool.some(p => mlMenuKey(p.text) === mlMenuKey(t))) return menu;
+      return { ...menu, pool: [...menu.pool, { id: mlUuid(), text: t }] };
+    };
 
     // Garantiza las 28 celdas y descarta bloques mal formados sin perder nada válido.
     const mlMenuNormalize = (raw) => {
-      const out = mlMenuEmpty();
+      let out = mlMenuEmpty();
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+      const valid = b => b && typeof b.id === "string" && typeof b.text === "string";
       for (const d of ML_MENU_DAYS) for (const s of ML_MENU_SLOTS) {
         const cell = raw[d.id]?.[s.id];
-        if (Array.isArray(cell)) out[d.id][s.id] = cell.filter(b => b && typeof b.id === "string" && typeof b.text === "string");
+        if (Array.isArray(cell)) out[d.id][s.id] = cell.filter(valid);
+      }
+      if (Array.isArray(raw.pool)) {
+        out.pool = raw.pool.filter(valid);
+      } else {
+        // Filas guardadas antes de existir el pool: se siembra con las
+        // tarjetas que ya hay en la semana (sin duplicados).
+        for (const d of ML_MENU_DAYS) for (const s of ML_MENU_SLOTS)
+          for (const b of out[d.id][s.id]) out = mlMenuPoolAdd(out, b.text);
       }
       return out;
     };
@@ -1179,12 +1203,19 @@
       return mlMenuSetCell(next, to.day, to.slot, [...dst.slice(0, idx), moved, ...dst.slice(idx)]);
     };
 
+    // Inserta una copia nueva de un texto (p. ej. desde el pool) en una franja.
+    const mlMenuInsert = (menu, day, slot, index, text) => {
+      const list = menu[day][slot];
+      const idx  = index == null ? list.length : index;
+      return mlMenuSetCell(menu, day, slot, [...list.slice(0, idx), { id: mlUuid(), text }, ...list.slice(idx)]);
+    };
+
     function MlMenuBlock({ block, isEditing, editText, setEditText, onStartEdit, onCommit, onCancel, onDelete,
                            onDragStart, onDragEnd, onDragOverBlock, onDropBlock, isDragging, showDropBefore,
                            isMobile, onPick, isPicked }) {
       if (isEditing) {
         return (
-          <input autoFocus value={editText} onChange={e => setEditText(e.target.value)}
+          <input autoFocus list="ml-menu-pool" value={editText} onChange={e => setEditText(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") onCommit(); if (e.key === "Escape") onCancel(); }}
             onBlur={onCommit}
             style={{ ...ML_INP, padding: "6px 9px", fontSize: 12, borderColor: ML_A + "66" }} />
@@ -1223,6 +1254,9 @@
       const [editText,   setEditText]   = useState("");
       const [picked,     setPicked]     = useState(null);   // mover tocando (móvil): { day, slot, id }
       const [confirmClr, setConfirmClr] = useState(false);
+      const [poolText,   setPoolText]   = useState("");
+      const [poolFilter, setPoolFilter] = useState("");
+      const [poolOver,   setPoolOver]   = useState(false);
       // Enter guarda y desmonta el input, lo que puede disparar también onBlur
       // con el closure antiguo: el ref garantiza que cada edición se confirma una sola vez.
       const editRef = useRef(null);
@@ -1255,16 +1289,42 @@
         const list = menu[day][slot];
         setEditing(null); setEditText("");
         if (id == null) {
-          if (text) onChange(mlMenuSetCell(menu, day, slot, [...list, { id: mlUuid(), text }]));
+          if (text) onChange(mlMenuPoolAdd(mlMenuSetCell(menu, day, slot, [...list, { id: mlUuid(), text }]), text));
         } else if (!text) {
           onChange(mlMenuSetCell(menu, day, slot, list.filter(b => b.id !== id)));
         } else if (list.find(b => b.id === id)?.text !== text) {
-          onChange(mlMenuSetCell(menu, day, slot, list.map(b => b.id === id ? { ...b, text } : b)));
+          onChange(mlMenuPoolAdd(mlMenuSetCell(menu, day, slot, list.map(b => b.id === id ? { ...b, text } : b)), text));
         }
       };
       const remove = (day, slot, id) => {
         if (picked?.id === id) setPicked(null);
         onChange(mlMenuSetCell(menu, day, slot, menu[day][slot].filter(b => b.id !== id)));
+      };
+
+      // ── pool ──
+      const addToPool = () => {
+        const next = mlMenuPoolAdd(menu, poolText);
+        setPoolText("");
+        if (next !== menu) onChange(next);
+      };
+      const removeFromPool = (id) => {
+        if (picked?.pool && picked.id === id) setPicked(null);
+        onChange({ ...menu, pool: menu.pool.filter(p => p.id !== id) });
+      };
+      const overPool = (e) => {
+        if (!drag || drag.pool) return;            // solo bloques de la semana
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (!poolOver) setPoolOver(true);
+      };
+      const dropOnPool = (e) => {
+        if (!drag || drag.pool) return;
+        e.preventDefault();
+        const b = menu[drag.day][drag.slot].find(x => x.id === drag.id);
+        setDrag(null); setDropAt(null); setPoolOver(false);
+        if (!b) return;
+        const next = mlMenuPoolAdd(menu, b.text);
+        if (next !== menu) onChange(next);
       };
 
       // ── arrastre (HTML5 DnD, escritorio) ──
@@ -1273,11 +1333,16 @@
         e.dataTransfer.setData("text/plain", id);   // Firefox no inicia el arrastre sin datos
         setDrag({ day, slot, id });
       };
-      const onDragEnd = () => { setDrag(null); setDropAt(null); };
+      const onPoolDragStart = (e, id) => {
+        e.dataTransfer.effectAllowed = "copy";
+        e.dataTransfer.setData("text/plain", id);
+        setDrag({ pool: true, id });
+      };
+      const onDragEnd = () => { setDrag(null); setDropAt(null); setPoolOver(false); };
       const overCell = (e, day, slot, index) => {
         if (!drag) return;
         e.preventDefault(); e.stopPropagation();
-        e.dataTransfer.dropEffect = isCopy(e) ? "copy" : "move";
+        e.dataTransfer.dropEffect = drag.pool || isCopy(e) ? "copy" : "move";
         if (dropAt?.day !== day || dropAt?.slot !== slot || dropAt?.index !== index) setDropAt({ day, slot, index });
       };
       const overBlock = (e, day, slot, i) => {
@@ -1287,7 +1352,13 @@
       const drop = (e, day, slot, index) => {
         if (!drag) return;
         e.preventDefault(); e.stopPropagation();
-        const next = mlMenuMove(menu, drag, { day, slot }, index, isCopy(e));
+        let next = menu;
+        if (drag.pool) {
+          const p = menu.pool.find(x => x.id === drag.id);
+          if (p) next = mlMenuInsert(menu, day, slot, index, p.text);
+        } else {
+          next = mlMenuMove(menu, drag, { day, slot }, index, isCopy(e));
+        }
         setDrag(null); setDropAt(null);
         if (next !== menu) onChange(next);
       };
@@ -1299,7 +1370,13 @@
       // ── mover tocando (móvil) ──
       const placePicked = (day, slot) => {
         if (!picked) return;
-        const next = mlMenuMove(menu, picked, { day, slot }, null, false);
+        let next = menu;
+        if (picked.pool) {
+          const p = menu.pool.find(x => x.id === picked.id);
+          if (p) next = mlMenuInsert(menu, day, slot, null, p.text);
+        } else {
+          next = mlMenuMove(menu, picked, { day, slot }, null, false);
+        }
         setPicked(null);
         if (next !== menu) onChange(next);
       };
@@ -1307,7 +1384,7 @@
       const renderCell = (day, slot) => {
         const list   = menu[day][slot];
         const target = dropAt?.day === day && dropAt?.slot === slot;
-        const pickable = picked && !(picked.day === day && picked.slot === slot);
+        const pickable = picked && (picked.pool || !(picked.day === day && picked.slot === slot));
         return (
           <div
             onDragOver={e => overCell(e, day, slot, null)}
@@ -1327,12 +1404,12 @@
                 onDragOverBlock={e => overBlock(e, day, slot, i)} onDropBlock={e => dropBlock(e, day, slot, i)}
                 isDragging={drag?.id === b.id}
                 showDropBefore={target && dropAt.index === i}
-                isMobile={isMobile} isPicked={picked?.id === b.id}
-                onPick={() => setPicked(picked?.id === b.id ? null : { day, slot, id: b.id })} />
+                isMobile={isMobile} isPicked={!picked?.pool && picked?.id === b.id}
+                onPick={() => setPicked(!picked?.pool && picked?.id === b.id ? null : { day, slot, id: b.id })} />
             ))}
             {target && dropAt.index === list.length && list.length > 0 && <div style={{ height: 2, borderRadius: 1, background: ML_A }} />}
             {editing?.day === day && editing?.slot === slot && editing.id == null ? (
-              <input autoFocus value={editText} placeholder="Nueva comida…" onChange={e => setEditText(e.target.value)}
+              <input autoFocus list="ml-menu-pool" value={editText} placeholder="Nueva comida…" onChange={e => setEditText(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }}
                 onBlur={commitEdit}
                 style={{ ...ML_INP, padding: "6px 9px", fontSize: 12, borderColor: ML_A + "66" }} />
@@ -1358,8 +1435,8 @@
             </div>
             {blockCount > 0 && (confirmClr ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 12, color: "#9aaabb" }}>¿Vaciar toda la semana?</span>
-                <button onClick={() => { setConfirmClr(false); setPicked(null); onChange(mlMenuEmpty()); }}
+                <span style={{ fontSize: 12, color: "#9aaabb" }}>¿Vaciar la semana? (el pool se conserva)</span>
+                <button onClick={() => { setConfirmClr(false); setPicked(null); onChange({ ...mlMenuEmpty(), pool: menu.pool }); }}
                   style={{ background: "#2d1518", border: "1px solid #5a2a30", color: "#f87171", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Vaciar</button>
                 <button onClick={() => setConfirmClr(false)}
                   style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>Cancelar</button>
@@ -1377,10 +1454,59 @@
           )}
           {picked && (
             <div style={{ marginBottom: 12, padding: "8px 12px", background: ML_B + "14", border: `1px solid ${ML_B}44`, borderRadius: 8, color: "#c8d8e8", fontSize: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span>Toca la franja donde quieres mover el bloque.</span>
+              <span>{picked.pool ? "Toca la franja donde quieres colocar la tarjeta." : "Toca la franja donde quieres mover el bloque."}</span>
               <button onClick={() => setPicked(null)} style={{ background: "none", border: "none", color: ML_B, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Cancelar</button>
             </div>
           )}
+
+          {/* Pool de tarjetas */}
+          <datalist id="ml-menu-pool">{menu.pool.map(p => <option key={p.id} value={p.text} />)}</datalist>
+          <div onDragOver={overPool} onDragLeave={() => setPoolOver(false)} onDrop={dropOnPool}
+            style={{ marginBottom: 16, background: "#0d1825", border: `1px ${poolOver ? "dashed" : "solid"} ${poolOver ? ML_B + "aa" : "#1a2535"}`, borderRadius: 12, padding: "10px 12px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: ML_B }}>Pool de comidas</span>
+                <span style={{ fontSize: 11, color: "#5a7080", marginLeft: 8 }}>
+                  {menu.pool.length} tarjeta{menu.pool.length !== 1 ? "s" : ""} · {isMobile ? "⇄ para colocar una copia" : "arrastra una copia a la semana, o suelta aquí un bloque para guardarlo"}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 6, flex: isMobile ? "1 1 100%" : "0 1 auto" }}>
+                {menu.pool.length > 10 && (
+                  <input value={poolFilter} onChange={e => setPoolFilter(e.target.value)} placeholder="Buscar…"
+                    onFocus={mlFocus} onBlur={mlBlur} style={{ ...ML_INP, padding: "5px 9px", fontSize: 12, width: isMobile ? "100%" : 130 }} />
+                )}
+                <input value={poolText} onChange={e => setPoolText(e.target.value)} placeholder="Nueva tarjeta…"
+                  onKeyDown={e => { if (e.key === "Enter") addToPool(); if (e.key === "Escape") setPoolText(""); }}
+                  onFocus={mlFocus} onBlur={mlBlur} style={{ ...ML_INP, padding: "5px 9px", fontSize: 12, width: isMobile ? "100%" : 170 }} />
+                <button onClick={addToPool} disabled={!poolText.trim()}
+                  style={{ background: poolText.trim() ? ML_B : "#1a2535", color: poolText.trim() ? "#0f172a" : "#5a7080", border: "none", borderRadius: 8, padding: "0 12px", cursor: poolText.trim() ? "pointer" : "default", fontSize: 13, fontWeight: 700 }}>+</button>
+              </div>
+            </div>
+            {menu.pool.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#3d5268", padding: "4px 0" }}>Las comidas que crees en la semana aparecerán aquí para reutilizarlas.</div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 132, overflowY: "auto" }}>
+                {menu.pool.filter(p => !poolFilter.trim() || mlMenuKey(p.text).includes(mlMenuKey(poolFilter))).map(p => {
+                  const isPk = picked?.pool && picked.id === p.id;
+                  return (
+                    <div key={p.id} draggable={!isMobile}
+                      onDragStart={e => onPoolDragStart(e, p.id)} onDragEnd={onDragEnd}
+                      onClick={isMobile ? () => setPicked(isPk ? null : { pool: true, id: p.id }) : undefined}
+                      title={isMobile ? "Toca para colocar una copia" : "Arrastra para colocar una copia"}
+                      style={{ display: "flex", alignItems: "center", gap: 6, background: isPk ? ML_B + "22" : "#111f30",
+                               border: `1px solid ${isPk ? ML_B + "88" : "#1f3044"}`, borderRadius: 16, padding: "4px 6px 4px 10px",
+                               cursor: isMobile ? "pointer" : "grab", userSelect: "none", opacity: drag?.pool && drag.id === p.id ? 0.4 : 1 }}>
+                      <span style={{ fontSize: 12, color: "#d6e2ee" }}>{p.text}</span>
+                      <button onClick={e => { e.stopPropagation(); removeFromPool(p.id); }} title="Quitar del pool"
+                        style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 13, padding: "0 2px", lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
+                        onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>×</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {isMobile ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
