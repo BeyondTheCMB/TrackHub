@@ -1,13 +1,11 @@
 // modules/meallog.js — MealLog (calorías, macros y planificación de comidas).
 // Extraído de index.html, igual que spendlog.js, biwengerlog.js y vesta.js.
+// Cargado desde index.html vía
+// <script type="text/babel" src="modules/meallog.js"></script>, justo después
+// de spendlog.js — sin build step, así que sus const/function de nivel
+// superior (MealLogApp, ML_*, ml*) comparten el scope léxico global con el
+// resto de TrackHub exactamente igual que cuando estaban inline.
 // Corte literal del bloque original, sin cambios de lógica.
-//
-// MEALLOG DESACTIVADO: el módulo está en desuso y NO se carga. Su <script> en
-// index.html está comentado, igual que su entrada en MODULE_REGISTRY, su
-// tarjeta en HomeScreen y su línea en el router (buscar "MEALLOG DESACTIVADO").
-// Para reactivarlo basta con descomentar esas cuatro piezas; este archivo no
-// necesita tocarse. Cuando se carga, sus const/function de nivel superior
-// comparten el scope léxico global con el resto de TrackHub.
 
     // ─── MealLog module ───────────────────────────────────────────────────────
     const ML_A = "#f59e0b";   // amber
