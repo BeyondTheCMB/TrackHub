@@ -1106,6 +1106,320 @@
       );
     }
 
+    // ── Menú semanal tab ──────────────────────────────────────────────────────
+    // Plantilla de una semana (lunes–domingo, sin fechas) con 4 franjas por día
+    // y bloques de texto libre arrastrables. Totalmente independiente de
+    // despensa, recetas y macros. Se guarda en su propia tabla (ml_menu) para
+    // no compartir fila con meallog_config: un fallo de carga aquí no puede
+    // pisar objetivos de macros ni al revés. A diferencia de mlTable, carga y
+    // guardado propagan los errores, y sin carga correcta no se guarda nada.
+    const ML_MENU_DAYS = [
+      { id: "mon", label: "Lunes",     short: "Lun" },
+      { id: "tue", label: "Martes",    short: "Mar" },
+      { id: "wed", label: "Miércoles", short: "Mié" },
+      { id: "thu", label: "Jueves",    short: "Jue" },
+      { id: "fri", label: "Viernes",   short: "Vie" },
+      { id: "sat", label: "Sábado",    short: "Sáb" },
+      { id: "sun", label: "Domingo",   short: "Dom" },
+    ];
+    const ML_MENU_SLOTS = [
+      { id: "breakfast", label: "Desayuno", icon: "☕" },
+      { id: "lunch",     label: "Comida",   icon: "🍲" },
+      { id: "snack",     label: "Merienda", icon: "🍎" },
+      { id: "dinner",    label: "Cena",     icon: "🌙" },
+    ];
+
+    const mlMenuEmpty = () => Object.fromEntries(
+      ML_MENU_DAYS.map(d => [d.id, Object.fromEntries(ML_MENU_SLOTS.map(s => [s.id, []]))])
+    );
+
+    // Garantiza las 28 celdas y descarta bloques mal formados sin perder nada válido.
+    const mlMenuNormalize = (raw) => {
+      const out = mlMenuEmpty();
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+      for (const d of ML_MENU_DAYS) for (const s of ML_MENU_SLOTS) {
+        const cell = raw[d.id]?.[s.id];
+        if (Array.isArray(cell)) out[d.id][s.id] = cell.filter(b => b && typeof b.id === "string" && typeof b.text === "string");
+      }
+      return out;
+    };
+
+    const mlMenuLoad = async (profileId) => {
+      const { data, error } = await _sb.from("ml_menu").select("data")
+        .eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) throw new Error(error.message);
+      return mlMenuNormalize(data?.data);
+    };
+    const mlMenuSave = async (profileId, menu) => {
+      const { error } = await _sb.from("ml_menu").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: menu },
+        { onConflict: "user_id,profile_id" }
+      );
+      if (error) throw new Error(error.message);
+    };
+
+    // Devuelve una celda nueva dentro de un menú nuevo (copia superficial por niveles).
+    const mlMenuSetCell = (menu, day, slot, list) => ({ ...menu, [day]: { ...menu[day], [slot]: list } });
+
+    // Mueve (o duplica) un bloque. toIndex se refiere a la posición en la lista
+    // destino tal como se ve al soltar (antes de quitar el bloque); null = al final.
+    const mlMenuMove = (menu, from, to, toIndex, copy) => {
+      const src   = menu[from.day][from.slot];
+      const block = src.find(b => b.id === from.id);
+      if (!block) return menu;
+      const same    = from.day === to.day && from.slot === to.slot;
+      const origIdx = src.indexOf(block);
+      if (same && !copy && (toIndex === origIdx || toIndex === origIdx + 1 || (toIndex == null && origIdx === src.length - 1))) return menu;
+      let next = menu;
+      if (!copy) next = mlMenuSetCell(next, from.day, from.slot, src.filter(b => b !== block));
+      const dst = next[to.day][to.slot];
+      let idx = toIndex == null ? dst.length : toIndex;
+      if (same && !copy && toIndex != null && origIdx < toIndex) idx -= 1;
+      const moved = copy ? { ...block, id: mlUuid() } : block;
+      return mlMenuSetCell(next, to.day, to.slot, [...dst.slice(0, idx), moved, ...dst.slice(idx)]);
+    };
+
+    function MlMenuBlock({ block, isEditing, editText, setEditText, onStartEdit, onCommit, onCancel, onDelete,
+                           onDragStart, onDragEnd, onDragOverBlock, onDropBlock, isDragging, showDropBefore,
+                           isMobile, onPick, isPicked }) {
+      if (isEditing) {
+        return (
+          <input autoFocus value={editText} onChange={e => setEditText(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") onCommit(); if (e.key === "Escape") onCancel(); }}
+            onBlur={onCommit}
+            style={{ ...ML_INP, padding: "6px 9px", fontSize: 12, borderColor: ML_A + "66" }} />
+        );
+      }
+      return (
+        <div style={{ position: "relative" }}>
+          {showDropBefore && <div style={{ position: "absolute", top: -4, left: 0, right: 0, height: 2, borderRadius: 1, background: ML_A }} />}
+          <div draggable={!isMobile}
+            onDragStart={onDragStart} onDragEnd={onDragEnd}
+            onDragOver={onDragOverBlock} onDrop={onDropBlock}
+            onClick={e => { if (!onStartEdit) return; e.stopPropagation(); onStartEdit(); }}
+            title={isMobile ? "Toca para editar" : "Arrastra para mover · clic para editar"}
+            style={{ display: "flex", alignItems: "flex-start", gap: 6, background: isPicked ? ML_A + "22" : "#111f30",
+                     border: `1px solid ${isPicked ? ML_A + "88" : "#1f3044"}`, borderRadius: 8, padding: "6px 8px",
+                     cursor: isMobile ? "pointer" : "grab", opacity: isDragging ? 0.35 : 1, userSelect: "none" }}>
+            <span style={{ flex: 1, fontSize: 12, color: "#d6e2ee", lineHeight: 1.35, wordBreak: "break-word" }}>{block.text}</span>
+            {isMobile && (
+              <button onClick={e => { e.stopPropagation(); onPick(); }} title="Mover"
+                style={{ background: "none", border: "none", color: isPicked ? ML_A : "#5a7080", cursor: "pointer", fontSize: 13, padding: "0 2px", lineHeight: 1 }}>⇄</button>
+            )}
+            <button onClick={e => { e.stopPropagation(); onDelete(); }} title="Eliminar"
+              style={{ background: "none", border: "none", color: "#5a7080", cursor: "pointer", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
+              onMouseEnter={e => e.currentTarget.style.color = "#f87171"}
+              onMouseLeave={e => e.currentTarget.style.color = "#5a7080"}>×</button>
+          </div>
+        </div>
+      );
+    }
+
+    function MlMenu({ menu, loadError, saveError, onChange, onRetry }) {
+      const isMobile = useIsMobile();
+      const [drag,       setDrag]       = useState(null);   // { day, slot, id }
+      const [dropAt,     setDropAt]     = useState(null);   // { day, slot, index|null }
+      const [editing,    setEditing]    = useState(null);   // { day, slot, id|null }  (id null = bloque nuevo)
+      const [editText,   setEditText]   = useState("");
+      const [picked,     setPicked]     = useState(null);   // mover tocando (móvil): { day, slot, id }
+      const [confirmClr, setConfirmClr] = useState(false);
+      // Enter guarda y desmonta el input, lo que puede disparar también onBlur
+      // con el closure antiguo: el ref garantiza que cada edición se confirma una sola vez.
+      const editRef = useRef(null);
+
+      if (loadError) {
+        return (
+          <div style={{ padding: "40px 20px", textAlign: "center" }}>
+            <div style={{ color: "#f87171", fontSize: 14, marginBottom: 8 }}>No se pudo cargar el menú semanal.</div>
+            <div style={{ color: "#5a7080", fontSize: 12, marginBottom: 16 }}>{loadError}</div>
+            <button onClick={onRetry} style={{ background: ML_A, color: "#0f172a", border: "none", borderRadius: 8, padding: "8px 16px", fontWeight: 700, cursor: "pointer", fontSize: 13 }}>Reintentar</button>
+          </div>
+        );
+      }
+      if (!menu) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Cargando…</div>;
+
+      const isCopy = (e) => e.ctrlKey || e.altKey || e.metaKey;
+      const blockCount = ML_MENU_DAYS.reduce((n, d) => n + ML_MENU_SLOTS.reduce((m, s) => m + menu[d.id][s.id].length, 0), 0);
+
+      // ── edición ──
+      const beginEdit = (target, text) => { setPicked(null); editRef.current = target; setEditing(target); setEditText(text); };
+      const startNew  = (day, slot) => beginEdit({ day, slot, id: null }, "");
+      const startEdit = (day, slot, b) => beginEdit({ day, slot, id: b.id }, b.text);
+      const cancelEdit = () => { editRef.current = null; setEditing(null); setEditText(""); };
+      const commitEdit = () => {
+        const target = editRef.current;
+        if (!target) return;
+        editRef.current = null;
+        const { day, slot, id } = target;
+        const text = editText.trim();
+        const list = menu[day][slot];
+        setEditing(null); setEditText("");
+        if (id == null) {
+          if (text) onChange(mlMenuSetCell(menu, day, slot, [...list, { id: mlUuid(), text }]));
+        } else if (!text) {
+          onChange(mlMenuSetCell(menu, day, slot, list.filter(b => b.id !== id)));
+        } else if (list.find(b => b.id === id)?.text !== text) {
+          onChange(mlMenuSetCell(menu, day, slot, list.map(b => b.id === id ? { ...b, text } : b)));
+        }
+      };
+      const remove = (day, slot, id) => {
+        if (picked?.id === id) setPicked(null);
+        onChange(mlMenuSetCell(menu, day, slot, menu[day][slot].filter(b => b.id !== id)));
+      };
+
+      // ── arrastre (HTML5 DnD, escritorio) ──
+      const onDragStart = (e, day, slot, id) => {
+        e.dataTransfer.effectAllowed = "copyMove";
+        e.dataTransfer.setData("text/plain", id);   // Firefox no inicia el arrastre sin datos
+        setDrag({ day, slot, id });
+      };
+      const onDragEnd = () => { setDrag(null); setDropAt(null); };
+      const overCell = (e, day, slot, index) => {
+        if (!drag) return;
+        e.preventDefault(); e.stopPropagation();
+        e.dataTransfer.dropEffect = isCopy(e) ? "copy" : "move";
+        if (dropAt?.day !== day || dropAt?.slot !== slot || dropAt?.index !== index) setDropAt({ day, slot, index });
+      };
+      const overBlock = (e, day, slot, i) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        overCell(e, day, slot, e.clientY < r.top + r.height / 2 ? i : i + 1);
+      };
+      const drop = (e, day, slot, index) => {
+        if (!drag) return;
+        e.preventDefault(); e.stopPropagation();
+        const next = mlMenuMove(menu, drag, { day, slot }, index, isCopy(e));
+        setDrag(null); setDropAt(null);
+        if (next !== menu) onChange(next);
+      };
+      const dropBlock = (e, day, slot, i) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        drop(e, day, slot, e.clientY < r.top + r.height / 2 ? i : i + 1);
+      };
+
+      // ── mover tocando (móvil) ──
+      const placePicked = (day, slot) => {
+        if (!picked) return;
+        const next = mlMenuMove(menu, picked, { day, slot }, null, false);
+        setPicked(null);
+        if (next !== menu) onChange(next);
+      };
+
+      const renderCell = (day, slot) => {
+        const list   = menu[day][slot];
+        const target = dropAt?.day === day && dropAt?.slot === slot;
+        const pickable = picked && !(picked.day === day && picked.slot === slot);
+        return (
+          <div
+            onDragOver={e => overCell(e, day, slot, null)}
+            onDrop={e => drop(e, day, slot, null)}
+            onClick={pickable ? () => placePicked(day, slot) : undefined}
+            style={{ minHeight: 64, display: "flex", flexDirection: "column", gap: 6, padding: 6, borderRadius: 10,
+                     background: target ? ML_A + "10" : pickable ? ML_B + "0d" : "#0a1420",
+                     border: `1px dashed ${target ? ML_A + "88" : pickable ? ML_B + "66" : "#16263a"}`,
+                     cursor: pickable ? "pointer" : "default", transition: "background 0.1s, border-color 0.1s" }}>
+            {list.map((b, i) => (
+              <MlMenuBlock key={b.id} block={b}
+                isEditing={editing?.day === day && editing?.slot === slot && editing?.id === b.id}
+                editText={editText} setEditText={setEditText}
+                onStartEdit={pickable ? null : () => startEdit(day, slot, b)} onCommit={commitEdit} onCancel={cancelEdit}
+                onDelete={() => remove(day, slot, b.id)}
+                onDragStart={e => onDragStart(e, day, slot, b.id)} onDragEnd={onDragEnd}
+                onDragOverBlock={e => overBlock(e, day, slot, i)} onDropBlock={e => dropBlock(e, day, slot, i)}
+                isDragging={drag?.id === b.id}
+                showDropBefore={target && dropAt.index === i}
+                isMobile={isMobile} isPicked={picked?.id === b.id}
+                onPick={() => setPicked(picked?.id === b.id ? null : { day, slot, id: b.id })} />
+            ))}
+            {target && dropAt.index === list.length && list.length > 0 && <div style={{ height: 2, borderRadius: 1, background: ML_A }} />}
+            {editing?.day === day && editing?.slot === slot && editing.id == null ? (
+              <input autoFocus value={editText} placeholder="Nueva comida…" onChange={e => setEditText(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") cancelEdit(); }}
+                onBlur={commitEdit}
+                style={{ ...ML_INP, padding: "6px 9px", fontSize: 12, borderColor: ML_A + "66" }} />
+            ) : !pickable && (
+              <button onClick={e => { e.stopPropagation(); startNew(day, slot); }}
+                style={{ marginTop: "auto", background: "none", border: "none", color: "#3d5268", cursor: "pointer", fontSize: 12, textAlign: "left", padding: "2px 4px" }}
+                onMouseEnter={e => e.currentTarget.style.color = ML_A}
+                onMouseLeave={e => e.currentTarget.style.color = "#3d5268"}>+ Añadir</button>
+            )}
+          </div>
+        );
+      };
+
+      return (
+        <div style={{ padding: "16px 20px 60px" }}>
+          {/* Cabecera */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#e2e8f0" }}>Menú semanal</div>
+              <div style={{ fontSize: 11, color: "#5a7080", marginTop: 2 }}>
+                {isMobile ? "Toca un bloque para editarlo · ⇄ para moverlo" : "Arrastra para mover · mantén Ctrl/⌥ al soltar para duplicar · clic para editar"}
+              </div>
+            </div>
+            {blockCount > 0 && (confirmClr ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "#9aaabb" }}>¿Vaciar toda la semana?</span>
+                <button onClick={() => { setConfirmClr(false); setPicked(null); onChange(mlMenuEmpty()); }}
+                  style={{ background: "#2d1518", border: "1px solid #5a2a30", color: "#f87171", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Vaciar</button>
+                <button onClick={() => setConfirmClr(false)}
+                  style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}>Cancelar</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmClr(true)}
+                style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Vaciar semana</button>
+            ))}
+          </div>
+
+          {saveError && (
+            <div style={{ marginBottom: 12, padding: "8px 12px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 8, color: "#f87171", fontSize: 12 }}>
+              No se pudo guardar el último cambio: {saveError}
+            </div>
+          )}
+          {picked && (
+            <div style={{ marginBottom: 12, padding: "8px 12px", background: ML_B + "14", border: `1px solid ${ML_B}44`, borderRadius: 8, color: "#c8d8e8", fontSize: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <span>Toca la franja donde quieres mover el bloque.</span>
+              <button onClick={() => setPicked(null)} style={{ background: "none", border: "none", color: ML_B, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Cancelar</button>
+            </div>
+          )}
+
+          {isMobile ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {ML_MENU_DAYS.map(d => (
+                <div key={d.id} style={{ background: "#0d1825", border: "1px solid #1a2535", borderRadius: 12, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: ML_A, marginBottom: 8 }}>{d.label}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {ML_MENU_SLOTS.map(s => (
+                      <div key={s.id}>
+                        <div style={{ fontSize: 10, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 4 }}>{s.icon} {s.label}</div>
+                        {renderCell(d.id, s.id)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "96px repeat(7, minmax(130px, 1fr))", gap: 6, minWidth: 96 + 7 * 136 }}>
+                <div />
+                {ML_MENU_DAYS.map(d => (
+                  <div key={d.id} style={{ fontSize: 12, fontWeight: 700, color: ML_A, textAlign: "center", padding: "4px 0" }}>{d.label}</div>
+                ))}
+                {ML_MENU_SLOTS.map(s => (
+                  <React.Fragment key={s.id}>
+                    <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, paddingTop: 10 }}>
+                      <div style={{ fontSize: 15, marginBottom: 2 }}>{s.icon}</div>{s.label}
+                    </div>
+                    {ML_MENU_DAYS.map(d => <div key={d.id}>{renderCell(d.id, s.id)}</div>)}
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // ── MealLog App ───────────────────────────────────────────────────────────
     function MealLogApp({ logoSlot, profileId, profileChip }) {
       const [tab,         setTab]         = useState("week");
@@ -1117,6 +1431,14 @@
       const [loading,     setLoading]     = useState(true);
       const [weekStart,   setWeekStart]   = useState(() => mlWeekStart(mlToday()));
       const [dayView,     setDayView]     = useState(null);
+      // Menú semanal: carga propia y separada del Promise.all de arriba, con
+      // errores propagados. menu === null mientras no haya una carga correcta,
+      // y en ese estado MlMenu no permite editar (nada que pueda sobrescribir).
+      const [menu,          setMenu]          = useState(null);
+      const [menuLoadError, setMenuLoadError] = useState(null);
+      const [menuSaveError, setMenuSaveError] = useState(null);
+      const [menuReload,    setMenuReload]    = useState(0);
+      const menuSaveChain = useRef(Promise.resolve());
       const isMobile = useIsMobile();
 
       useEffect(() => {
@@ -1134,6 +1456,27 @@
         }).catch(() => setLoading(false));
       }, [profileId]);
 
+      useEffect(() => {
+        if (!profileId) return;
+        let alive = true;
+        setMenu(null); setMenuLoadError(null); setMenuSaveError(null);
+        mlMenuLoad(profileId)
+          .then(m => { if (alive) setMenu(m); })
+          .catch(err => { console.error("[MealLog] ml_menu load:", err.message); if (alive) setMenuLoadError(err.message); });
+        return () => { alive = false; };
+      }, [profileId, menuReload]);
+
+      // Guardados encadenados: cada upsert espera al anterior, así nunca llega
+      // a Supabase una versión más vieja después de una más nueva.
+      const saveMenu = (v) => {
+        setMenu(v);
+        const pid = profileId;
+        menuSaveChain.current = menuSaveChain.current
+          .then(() => mlMenuSave(pid, v))
+          .then(() => setMenuSaveError(null))
+          .catch(err => { console.error("[MealLog] ml_menu save:", err.message); setMenuSaveError(err.message); });
+      };
+
       const savePantry      = async (v) => { setPantry(v);      await mlTableSave("ml_pantry",      profileId, v); };
       const saveRecipes     = async (v) => { setRecipes(v);     await mlTableSave("ml_recipes",     profileId, v); };
       const saveLog         = async (v) => { setLog(v);         await mlTableSave("ml_log",         profileId, v); };
@@ -1142,6 +1485,7 @@
 
       const TABS = [
         { id: "week",     label: "Semana",      icon: "📅" },
+        { id: "menu",     label: "Menú semanal", short: "Menú", icon: "🗓️" },
         { id: "simulate", label: "Simular",     icon: "🧪" },
         { id: "pantry",   label: "Despensa",    icon: "🛒" },
         { id: "recipes",  label: "Recetas",     icon: "📋" },
@@ -1176,7 +1520,7 @@
                 <button key={t.id} onClick={() => { setTab(t.id); if (t.id !== "week") setDayView(null); }}
                   style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none", cursor: "pointer", borderTop: `2px solid ${tab === t.id ? ML_A : "transparent"}` }}>
                   <span style={{ fontSize: 16 }}>{t.icon}</span>
-                  <span style={{ fontSize: 10, color: tab === t.id ? ML_A : "#5a7080", fontWeight: tab === t.id ? 700 : 400 }}>{t.label}</span>
+                  <span style={{ fontSize: 10, color: tab === t.id ? ML_A : "#5a7080", fontWeight: tab === t.id ? 700 : 400 }}>{t.short || t.label}</span>
                 </button>
               ))}
             </div>
@@ -1205,6 +1549,10 @@
                   {tab === "week" && showDay && (
                     <MlDay date={dayView} log={log} recipes={recipes} pantry={pantry} config={config}
                       onLogChange={saveLog} onConfigChange={saveConfig} onBack={() => setDayView(null)} />
+                  )}
+                  {tab === "menu" && (
+                    <MlMenu menu={menu} loadError={menuLoadError} saveError={menuSaveError}
+                      onChange={saveMenu} onRetry={() => setMenuReload(n => n + 1)} />
                   )}
                   {tab === "simulate" && (
                     <MlSimulate simulations={simulations} pantry={pantry} recipes={recipes} config={config} onSave={saveSimulations} />
