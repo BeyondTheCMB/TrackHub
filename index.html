@@ -84,8 +84,7 @@
       { id: "plottwist",  label: "PlotTwist",  icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa" },
       { id: "spendlog",   label: "SpendLog",   icon: "💰", accentA: "#4ade80", accentB: "#22d3ee" },
       { id: "figurelog",  label: "FigureLog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa" },
-      // MEALLOG DESACTIVADO — módulo en desuso, retirado del selector
-      // { id: "meallog",    label: "MealLog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16" },
+      { id: "meallog",    label: "MealLog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16" },
       { id: "biwenger",   label: "BiwengerLog",icon: "⚽", accentA: "#34d399", accentB: "#60a5fa" },
       { id: "vesta",      label: "Vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee" },
     ];
@@ -380,8 +379,7 @@
         { id: "plottwist",  icon: "📖", accentA: "#e2c97e", accentB: "#60a5fa", label: "PlotTwist",  labelSplit: 4, desc: "Book library & reading list" },
         { id: "spendlog",   icon: "💰", accentA: "#4ade80", accentB: "#22d3ee", label: "SpendLog",   labelSplit: 5, desc: "Expenses & subscriptions" },
         { id: "figurelog",  icon: "🗿", accentA: "#22d3ee", accentB: "#60a5fa", label: "FigureLog",  labelSplit: 6, desc: "Anime figure collection & wishlist" },
-        // MEALLOG DESACTIVADO — tarjeta retirada de la pantalla de inicio
-        // { id: "meallog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16", label: "MealLog",    labelSplit: 4, desc: "Calories, macros & meal planning" },
+        { id: "meallog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16", label: "MealLog",    labelSplit: 4, desc: "Calories, macros & meal planning" },
         { id: "biwenger",   icon: "⚽", accentA: "#34d399", accentB: "#60a5fa", label: "BiwengerLog", labelSplit: 8, desc: "Fantasy Biwenger simulator" },
         { id: "vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee", label: "Vesta",      labelSplit: 3, desc: "Fund style analysis & backtesting" },
       ];
@@ -7232,7 +7230,6 @@
           _sb.from("sl_subscriptions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("fl_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
-          // MealLog (MEALLOG DESACTIVADO): se mantiene la limpieza para no dejar datos huérfanos
           _sb.from("ml_pantry").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_recipes").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_log").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
@@ -7316,7 +7313,7 @@
           {activeId === "plottwist"  && <PlotTwistApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "spendlog"   && <SpendLogApp.App logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "figurelog"  && <FigureLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
-          {/* MEALLOG DESACTIVADO: {activeId === "meallog"    && <MealLogApp     logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />} */}
+          {activeId === "meallog"    && <MealLogApp     logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "biwenger"   && <BiwengerLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "vesta"      && <VestaApp       logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
         </div>
@@ -7325,7 +7322,7 @@
 
   </script>
   <script type="text/babel" src="modules/spendlog.js"></script>
-  <!-- MEALLOG DESACTIVADO: <script type="text/babel" src="modules/meallog.js"></script> -->
+  <script type="text/babel" src="modules/meallog.js"></script>
   <script type="text/babel" src="modules/biwengerlog.js"></script>
   <script type="text/babel" src="modules/vesta.js"></script>
   <script type="text/babel">
