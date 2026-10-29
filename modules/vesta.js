@@ -4989,6 +4989,77 @@
       return `k:${t.date}|${t.type}|${t.isin}|${t.shares}|${t.amount}`;
     }
 
+    // ── Export de transacciones para getquin ──────────────────────────────
+    // Solo compras y ventas con ISIN: getquin genera por su cuenta
+    // dividendos (a partir de fecha de compra y ex-date) y splits, así que
+    // incluirlos duplicaría movimientos. Aportaciones, retiradas,
+    // comisiones, impuestos e intereses tampoco tienen sitio en una cartera
+    // custom de getquin.
+    //
+    // Formato (según la ayuda de getquin sobre su plantilla CSV): separador
+    // `;`, decimales con coma y sin separador de miles, fecha
+    // `YYYY-MM-DDThh:mm:ss+00:00`, Value = títulos × precio, WKN y Ticker
+    // pueden ir vacíos. El precio se deriva de `amount / shares` (no de
+    // `price`) para que el coste en getquin coincida con el que usa Vesta
+    // (`vsInvestedForIsin` suma `amount`, que ya incluye comisiones); en
+    // las importaciones de PP `price` ni siquiera viene informado.
+    //
+    // OJO: los nombres exactos de las cabeceras de la plantilla oficial no
+    // están en la ayuda (la plantilla es un archivo descargable). Están
+    // aquí, en una sola constante, para ajustarlos si getquin las rechaza.
+    const VS_GETQUIN_HEADERS = [
+      "Name", "ISIN", "WKN", "Ticker", "Date", "Type",
+      "Number of shares", "Price per share", "Value", "Currency",
+    ];
+
+    // Número con decimal en coma, sin miles y sin ceros sobrantes.
+    function vsGetquinNum(n, decimals) {
+      return Number(n).toFixed(decimals).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "").replace(".", ",");
+    }
+
+    // Campo CSV con `;` como separador: entrecomilla si hace falta.
+    function vsGetquinField(v) {
+      const str = v == null ? "" : String(v);
+      return /[;"\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    }
+
+    // Devuelve { csv, count, skipped }. `skipped` cuenta compras/ventas que
+    // no se pueden exportar (sin ISIN, títulos o importe válidos).
+    function vsBuildGetquinCsv(transactions, securitiesCatalog) {
+      const catalog = securitiesCatalog || {};
+      const rows = [];
+      let skipped = 0;
+      const txs = transactions
+        .filter(t => t.type === "buy" || t.type === "sell")
+        .slice()
+        .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      for (const t of txs) {
+        const shares = Number(t.shares), amount = Number(t.amount);
+        if (!t.isin || !t.date || !(shares > 0) || !(amount > 0)) { skipped++; continue; }
+        const sec = catalog[t.isin];
+        const name = (sec && sec.name) || t.name || t.isin;
+        rows.push([
+          name, t.isin, "", "",
+          `${t.date}T00:00:00+00:00`, t.type === "buy" ? "Buy" : "Sell",
+          vsGetquinNum(shares, 6), vsGetquinNum(amount / shares, 6), vsGetquinNum(amount, 2),
+          t.currency || "EUR",
+        ].map(vsGetquinField).join(";"));
+      }
+      const csv = [VS_GETQUIN_HEADERS.join(";"), ...rows].join("\r\n") + "\r\n";
+      return { csv, count: rows.length, skipped };
+    }
+
+    // Descarga un CSV en el navegador. El BOM hace que Excel lo abra como
+    // UTF-8 (si no, rompe los acentos de los nombres de fondos).
+    function vsDownloadCsv(filename, csv) {
+      const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
     // ── Motor económico · Fase 1 — reconstrucción de posiciones ───────────
     // Títulos netos por ISIN a día de hoy: buy/split_in suman,
     // sell/split_out restan. Los tipos sin ISIN o sin impacto en títulos
@@ -6417,6 +6488,7 @@
       const [filterAccount, setFilterAccount] = useState("all");
       const [filterType, setFilterType] = useState("all");
       const [filterIsin, setFilterIsin] = useState("all");
+      const [exportInfo, setExportInfo] = useState("");
       // ISIN -> { name, finectUrl } en edición para valores nuevos
       // detectados al importar, pendientes de que el usuario los confirme
       // antes de guardarse en el catálogo (portfolio.securities).
@@ -6705,6 +6777,22 @@
       const kpis = useMemo(() => vsComputePortfolioKpis(transactions, securitiesCatalog), [transactions, securitiesCatalog]);
       const fmtEUR = censored ? (() => "••••••") : vsPortfolioFmtEUR;
 
+      // Export getquin: respeta los filtros de cuenta y de valor de la
+      // tabla, pero NO el de tipo (siempre compras y ventas). Fecha del
+      // nombre de archivo con accesores locales, no toISOString (ver
+      // el desfase de zona horaria en UTC+1/+2).
+      const exportGetquin = () => {
+        const base = transactions
+          .filter(t => filterAccount === "all" || t.account === filterAccount)
+          .filter(t => filterIsin === "all" || t.isin === filterIsin);
+        const { csv, count, skipped } = vsBuildGetquinCsv(base, securitiesCatalog);
+        if (count === 0) { setExportInfo("No hay compras/ventas exportables con los filtros actuales."); return; }
+        const d = new Date();
+        const pad = n => String(n).padStart(2, "0");
+        vsDownloadCsv(`vesta-getquin-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.csv`, csv);
+        setExportInfo(`${count} operaciones exportadas${skipped ? ` · ${skipped} omitidas (sin ISIN, títulos o importe)` : ""}.`);
+      };
+
       const inputStyle = { width: "100%", background: "#060d14", border: "1px solid #1a2535", color: "#e2e8f0", borderRadius: 6, padding: "9px 10px", fontSize: 13 };
       const labelStyle = { display: "block", fontSize: 12, color: "#7a90a8", margin: "0 0 6px", fontWeight: 500 };
 
@@ -6850,6 +6938,11 @@
                     <option value="all">Todos los valores</option>
                     {securitiesInTx.map(([isin, name]) => <option key={isin} value={isin}>{name}</option>)}
                   </select>
+                  <button onClick={exportGetquin} disabled={transactions.length === 0}
+                    title="Descarga las compras y ventas (respeta filtros de cuenta y valor) en CSV para importar en getquin"
+                    style={{ background: "none", border: "1px solid #1a2535", color: "#7a90a8", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: transactions.length ? "pointer" : "not-allowed", opacity: transactions.length ? 1 : 0.4, whiteSpace: "nowrap" }}>
+                    ⬇ getquin
+                  </button>
                   <button onClick={deleteAllTx} disabled={transactions.length === 0}
                     title="Solo para pruebas: elimina todas las transacciones"
                     style={{ background: "none", border: "1px solid #7a1f1f", color: "#f87171", borderRadius: 6, padding: "5px 10px", fontSize: 11, cursor: transactions.length ? "pointer" : "not-allowed", opacity: transactions.length ? 1 : 0.4 }}>
@@ -6857,6 +6950,7 @@
                   </button>
                 </div>
               </div>
+              {exportInfo && <div style={{ marginBottom: 10, fontSize: 11, color: "#7a90a8", fontFamily: "'DM Mono',monospace" }}>{exportInfo}</div>}
               <VsTxTable transactions={filtered} accounts={accounts} securities={securitiesList} onDelete={deleteTx} onEdit={updateTx} />
             </div>
           </div>
