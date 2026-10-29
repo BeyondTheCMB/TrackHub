@@ -7234,6 +7234,7 @@
           _sb.from("ml_recipes").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_log").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_simulations").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("ml_menu").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("meallog_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("bw_data").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("vs_factors").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
