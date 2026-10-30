@@ -172,6 +172,80 @@
     };
     const slFmtDate = (d) => d.toISOString().slice(0, 10);
 
+    // ─── SL recurring income ──────────────────────────────────────────────────
+    // Recurring income (salary, pension, rent received…) works like
+    // subscriptions: a series is never written into sl_transactions — it is
+    // expanded virtually into one income entry per month. That keeps past
+    // months stable and avoids auto-posting rows on load.
+    // Series shape:
+    //   { id, name, category, paymentMethod, firstDate: "YYYY-MM-DD",
+    //     endDate: "YYYY-MM-DD" | null,             // last month paid (month granularity)
+    //     amounts: [{ from: "YYYY-MM", amount }],   // amount history (raises don't rewrite the past)
+    //     extraMonths: [6, 12],                     // months with an extra payment (pagas extra)
+    //     extraAmount: number | null,               // null → same as that month's regular amount
+    //     overrides: { "YYYY-MM": { amount } | { skip: true } } }
+    const SL_MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const slDaysInMonth = (mk) => { const [y, m] = mk.split("-").map(Number); return new Date(y, m, 0).getDate(); };
+    const slAddMonths = (mk, n) => { const [y, m] = mk.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
+    const slRecBaseAmount = (r, mk) => {
+      const hist = [...(r.amounts || [])].sort((a, b) => a.from.localeCompare(b.from));
+      let amt = hist.length ? Number(hist[0].amount) || 0 : 0;
+      for (const h of hist) if (h.from <= mk) amt = Number(h.amount) || 0;
+      return amt;
+    };
+    const slRecCurrentAmount = (r) => slRecBaseAmount(r, slTodayKey());
+    // Returns the month's entry, an entry with skipped: true, or null when the
+    // series doesn't apply to that month at all.
+    const slRecIncomeForMonth = (r, mk) => {
+      if (!r || !r.firstDate) return null;
+      if (mk < slMonthKey(r.firstDate)) return null;
+      if (r.endDate && mk > slMonthKey(r.endDate)) return null;
+      const day   = Math.min(Number(r.firstDate.slice(8, 10)) || 1, slDaysInMonth(mk));
+      const date  = mk + "-" + String(day).padStart(2, "0");
+      const base  = slRecBaseAmount(r, mk);
+      const isExtra = (r.extraMonths || []).includes(Number(mk.slice(5, 7)));
+      const extra = isExtra ? (r.extraAmount != null ? Number(r.extraAmount) || 0 : base) : 0;
+      const ov    = (r.overrides || {})[mk] || null;
+      const entry = {
+        id: "rec_" + r.id + "_" + mk, type: "income", recurringId: r.id, recurringName: r.name,
+        date, category: r.category, paymentMethod: r.paymentMethod || null, notes: r.name,
+        scheduled: base + extra, extra: isExtra, adjusted: !!(ov && ov.amount != null), skipped: !!(ov && ov.skip),
+      };
+      entry.amount = entry.adjusted ? Number(ov.amount) || 0 : entry.scheduled;
+      return entry;
+    };
+    // Entries that count towards a month's income (skipped ones excluded).
+    const slRecIncomeEntries = (list, mk) =>
+      (list || []).map(r => slRecIncomeForMonth(r, mk)).filter(e => e && !e.skipped);
+    // Every counted entry from each series' start up to and including uptoMk.
+    const slRecIncomeHistory = (list, uptoMk) => {
+      const out = [];
+      for (const r of list || []) {
+        if (!r.firstDate) continue;
+        const last = r.endDate && slMonthKey(r.endDate) < uptoMk ? slMonthKey(r.endDate) : uptoMk;
+        for (let mk = slMonthKey(r.firstDate), guard = 0; mk <= last && guard < 1200; mk = slAddMonths(mk, 1), guard++) {
+          const e = slRecIncomeForMonth(r, mk);
+          if (e && !e.skipped) out.push(e);
+        }
+      }
+      return out;
+    };
+    // Unlike the other SL loaders, errors propagate: the app must not offer
+    // editing (and therefore saving) on top of a failed load.
+    async function slLoadRecurringIncome(profileId) {
+      const { data, error } = await _sb.from("sl_recurring_income")
+        .select("data").eq("user_id", _sbUser.id).eq("profile_id", profileId || "default").maybeSingle();
+      if (error) throw new Error(error.message);
+      return Array.isArray(data?.data) ? data.data : [];
+    }
+    async function slSaveRecurringIncome(list, profileId) {
+      const { error } = await _sb.from("sl_recurring_income").upsert(
+        { user_id: _sbUser.id, profile_id: profileId || "default", data: list },
+        { onConflict: "user_id,profile_id" }
+      );
+      if (error) throw new Error(error.message);
+    }
+
     function SlCategoryPicker({ value, onChange, allCategories, style }) {
       const [open,   setOpen]   = React.useState(false);
       const [query,  setQuery]  = React.useState("");
@@ -954,7 +1028,7 @@
     }
 
     // ─── SlDashboard ──────────────────────────────────────────────────────────
-    function SlDashboard({ transactions, subscriptions, allCategories, currency, monthKey, budget, layout, onLayoutChange, isMobile }) {
+    function SlDashboard({ transactions, subscriptions, recurringIncome, allCategories, currency, monthKey, budget, layout, onLayoutChange, isMobile }) {
       const [editMode, setEditMode] = React.useState(false);
       const [dragging, setDragging] = React.useState(null); // { id, startY, currentOrder }
       const [dragOver, setDragOver] = React.useState(null);
@@ -967,7 +1041,7 @@
       const monthTxs      = transactions.filter(t => slMonthKey(t.date) === monthKey);
       const monthSubs     = subscriptions.filter(s => slSubBilledInMonth(s, monthKey));
       const monthExpTxs   = monthTxs.filter(t => t.type !== "income");
-      const monthIncTxs   = monthTxs.filter(t => t.type === "income");
+      const monthIncTxs   = [...monthTxs.filter(t => t.type === "income"), ...slRecIncomeEntries(recurringIncome, monthKey)];
       const monthNeutral  = monthExpTxs.filter(t => slIsNeutral(t));   // investments etc
       const monthRealExp  = monthExpTxs.filter(t => !slIsNeutral(t));  // true expenses
       const txIncTotal    = monthIncTxs.reduce((s, t) => s + Number(t.amount), 0);
@@ -1104,15 +1178,148 @@
       );
     }
 
+    // ─── SL Recurring income form ─────────────────────────────────────────────
+    function SlRecurringIncomeForm({ allIncomeCategories, paymentMethods, currency, initial, viewMonthKey, onSave, onCancel }) {
+      const isMob = useIsMobile();
+      const today = new Date().toISOString().slice(0, 10);
+      const defaultCat = allIncomeCategories.find(c => c.id === "salary") ? "salary" : "";
+      const initAmount = initial ? String(slRecBaseAmount(initial, viewMonthKey)) : "";
+      const [name,       setName]       = React.useState(initial ? initial.name : "Salary");
+      const [amount,     setAmount]     = React.useState(initAmount);
+      const [scope,      setScope]      = React.useState("from");   // "from" viewed month | "all"
+      const [category,   setCategory]   = React.useState(initial ? initial.category : defaultCat);
+      const [payMethod,  setPayMethod]  = React.useState(initial ? (initial.paymentMethod || "") : "Bank transfer");
+      const [firstDate,  setFirstDate]  = React.useState(initial ? initial.firstDate : today);
+      const [endDate,    setEndDate]    = React.useState(initial ? (initial.endDate || "") : "");
+      const [extraMonths,setExtraMonths]= React.useState(initial ? (initial.extraMonths || []) : []);
+      const [extraAmt,   setExtraAmt]   = React.useState(initial && initial.extraAmount != null ? String(initial.extraAmount) : "");
+      const amountChanged = initial && Number(amount) !== Number(initAmount);
+      const startMk = firstDate ? slMonthKey(firstDate) : null;
+      const canScopeFrom = initial && startMk && viewMonthKey > startMk;
+      const valid = name.trim() && amount && Number(amount) > 0 && category && firstDate && (!endDate || endDate >= firstDate)
+        && (extraAmt === "" || Number(extraAmt) >= 0);
+      const inp = { background: "#080f18", border: "1px solid #7a90a8", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 14, width: "100%", boxSizing: "border-box" };
+      const focusStyle = e => e.target.style.borderColor = "#4ade8066";
+      const blurStyle  = e => e.target.style.borderColor = "#7a90a8";
+      const lbl = (t, hint) => (
+        <div style={{ fontSize: 12, color: "#7a90a8", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+          {t}{hint && <span style={{ color: "#8baabf", textTransform: "none", letterSpacing: 0 }}> {hint}</span>}
+        </div>
+      );
+      const toggleExtra = (m) => setExtraMonths(xs => xs.includes(m) ? xs.filter(x => x !== m) : [...xs, m].sort((a, b) => a - b));
+
+      const save = () => {
+        const amt = Number(amount);
+        let amounts;
+        if (!initial) {
+          amounts = [{ from: startMk, amount: amt }];
+        } else if (!amountChanged) {
+          amounts = initial.amounts;                       // history untouched
+        } else if (scope === "from" && canScopeFrom) {
+          amounts = [...(initial.amounts || []).filter(h => h.from < viewMonthKey), { from: viewMonthKey, amount: amt }];
+        } else {
+          amounts = [{ from: startMk, amount: amt }];
+        }
+        onSave({
+          name: name.trim(), category, paymentMethod: payMethod || null,
+          firstDate, endDate: endDate || null, amounts,
+          extraMonths, extraAmount: extraMonths.length && extraAmt !== "" ? Number(extraAmt) : null,
+          overrides: initial ? (initial.overrides || {}) : {},
+        });
+      };
+
+      return (
+        <div style={{ background: "#0b1520", border: "1px solid #1a2535", borderRadius: 14, padding: "22px 24px" }}>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16, color: "#e2e8f0", marginBottom: 18 }}>
+            🔁 {initial ? "Edit recurring income" : "Add recurring income"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              {lbl("Name")}
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Salary, pension…" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              {lbl(`Monthly amount (${currency})`)}
+              <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          {amountChanged && canScopeFrom && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, fontSize: 12 }}>
+              {[["from", `From ${slMonthLabel(viewMonthKey)} on`], ["all", "All months (rewrite history)"]].map(([id, label]) => (
+                <button key={id} onClick={() => setScope(id)}
+                  style={{ background: scope === id ? "#4ade8022" : "transparent", border: `1px solid ${scope === id ? "#4ade8066" : "#1a2535"}`, color: scope === id ? "#4ade80" : "#7a90a8", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: scope === id ? 700 : 400 }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              {lbl("First payment", "(sets the pay day)")}
+              <input type="date" value={firstDate} onChange={e => setFirstDate(e.target.value)} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+            <div>
+              {lbl("Last payment", "(optional)")}
+              <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMob ? "1fr" : "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              {lbl("Category")}
+              <SlCategoryPicker value={category} onChange={setCategory} allCategories={allIncomeCategories} />
+            </div>
+            <div>
+              {lbl("Source")}
+              <select value={payMethod} onChange={e => setPayMethod(e.target.value)} style={{ ...inp, cursor: "pointer" }} onFocus={focusStyle} onBlur={blurStyle}>
+                <option value="">— Optional —</option>
+                {(paymentMethods || SL_DEFAULT_PAYMENT_METHODS).map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            {lbl("Extra payments", "(optional — e.g. pagas extra in June and December)")}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: extraMonths.length ? 10 : 0 }}>
+              {SL_MONTH_SHORT.map((m, i) => {
+                const on = extraMonths.includes(i + 1);
+                return (
+                  <button key={m} onClick={() => toggleExtra(i + 1)}
+                    style={{ background: on ? "#4ade8022" : "transparent", border: `1px solid ${on ? "#4ade8066" : "#1a2535"}`, color: on ? "#4ade80" : "#7a90a8", borderRadius: 7, padding: "4px 9px", cursor: "pointer", fontSize: 12, fontWeight: on ? 700 : 400, minWidth: 42 }}>{m}</button>
+                );
+              })}
+            </div>
+            {extraMonths.length > 0 && (
+              <input type="number" min="0" step="0.01" value={extraAmt} onChange={e => setExtraAmt(e.target.value)}
+                placeholder={`Extra amount (${currency}) — empty = same as the monthly amount`} style={inp} onFocus={focusStyle} onBlur={blurStyle} />
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={save} disabled={!valid}
+              style={{ flex: 1, background: valid ? SL_ACCENT_A : "#1a2535", color: valid ? "#0f172a" : "#7a90a8", border: "none", borderRadius: 9, padding: "10px", fontWeight: 700, fontSize: 14, cursor: valid ? "pointer" : "default" }}>
+              {initial ? "Save changes" : "Add recurring income"}
+            </button>
+            <button onClick={onCancel} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #7a90a8", borderRadius: 9, padding: "10px 16px", cursor: "pointer", fontSize: 14 }}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+
     // ─── SL Income tab ────────────────────────────────────────────────────────
-    function SlIncome({ transactions, allIncomeCategories, paymentMethods, currency, monthKey, onAdd, onEdit, onDelete }) {
+    function SlIncome({ transactions, allIncomeCategories, paymentMethods, currency, monthKey, onAdd, onEdit, onDelete,
+                        recurringIncome, recLoadError, recSaveError, onRecSave, onRecRetry }) {
       const [showForm,   setShowForm]   = React.useState(false);
       const [editEntry,  setEditEntry]  = React.useState(null);
       const [confirmDel, setConfirmDel] = React.useState(null);
-      const monthInc = transactions
-        .filter(t => t.type === "income" && slMonthKey(t.date) === monthKey)
-        .sort((a, b) => b.date.localeCompare(a.date));
-      const monthTotal = monthInc.reduce((s, t) => s + Number(t.amount), 0);
+      const [recForm,    setRecForm]    = React.useState(null);   // null | "new" | series
+      const [recConfirm, setRecConfirm] = React.useState(null);   // series id pending delete
+      const [adjusting,  setAdjusting]  = React.useState(null);   // { id, value }
+      const recReady = Array.isArray(recurringIncome);
+      const series   = recReady ? recurringIncome : [];
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      const realInc = transactions.filter(t => t.type === "income" && slMonthKey(t.date) === monthKey);
+      const recAll  = series.map(r => slRecIncomeForMonth(r, monthKey)).filter(Boolean);   // incl. skipped
+      const rows    = [...realInc, ...recAll].sort((a, b) => b.date.localeCompare(a.date));
+      const monthTotal = [...realInc, ...recAll.filter(e => !e.skipped)].reduce((s, t) => s + Number(t.amount), 0);
 
       const handleSave = (data) => {
         const entry = { ...data, type: "income" };
@@ -1120,21 +1327,74 @@
         else { onAdd({ id: slUuid(), ...entry }); setShowForm(false); }
       };
 
+      // ── series operations ──
+      const saveSeries = (data) => {
+        if (recForm === "new") onRecSave([...series, { id: slUuid(), ...data }]);
+        else onRecSave(series.map(r => r.id === recForm.id ? { ...r, ...data } : r));
+        setRecForm(null);
+      };
+      const setOverride = (rid, mk, ov) => onRecSave(series.map(r => {
+        if (r.id !== rid) return r;
+        const overrides = { ...(r.overrides || {}) };
+        if (ov) overrides[mk] = ov; else delete overrides[mk];
+        return { ...r, overrides };
+      }));
+      const stopAfter = (rid) => onRecSave(series.map(r => r.id === rid ? { ...r, endDate: monthKey + "-" + String(slDaysInMonth(monthKey)).padStart(2, "0") } : r));
+      const commitAdjust = (e) => {
+        const v = adjusting.value === "" ? null : Number(adjusting.value);
+        setAdjusting(null);
+        if (v == null || isNaN(v) || v < 0) return;
+        if (Math.abs(v - e.scheduled) < 0.005) setOverride(e.recurringId, monthKey, null);
+        else setOverride(e.recurringId, monthKey, { amount: v });
+      };
+
+      const smallBtn = (label, onClick, color = "#7a90a8", hover = "#9aaabb") => (
+        <button onClick={onClick} style={{ background: "none", border: "1px solid #1a2535", color, cursor: "pointer", fontSize: 11, padding: "3px 8px", borderRadius: 6 }}
+          onMouseEnter={ev => ev.currentTarget.style.color = hover} onMouseLeave={ev => ev.currentTarget.style.color = color}>{label}</button>
+      );
+      const badge = (text, color) => (
+        <span style={{ fontSize: 10, color, background: color + "15", border: `1px solid ${color}33`, borderRadius: 10, padding: "1px 7px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>{text}</span>
+      );
+
       return (
         <div style={{ padding: "28px 28px 60px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, gap: 12, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Income this month</div>
               <div style={{ fontSize: 24, fontWeight: 700, color: "#4ade80", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
                 +{slFmtAmount(monthTotal, currency)}
               </div>
             </div>
-            <button onClick={() => { setShowForm(true); setEditEntry(null); }}
-              style={{ background: "#4ade80", color: "#0f172a", border: "none", borderRadius: 9, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
-              + Add income
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { setRecForm("new"); setShowForm(false); setEditEntry(null); }} disabled={!recReady}
+                style={{ background: "transparent", color: recReady ? "#4ade80" : "#3d5268", border: `1px solid ${recReady ? "#4ade8066" : "#1a2535"}`, borderRadius: 9, padding: "8px 14px", cursor: recReady ? "pointer" : "default", fontWeight: 700, fontSize: 13 }}>
+                🔁 Recurring
+              </button>
+              <button onClick={() => { setShowForm(true); setEditEntry(null); setRecForm(null); }}
+                style={{ background: "#4ade80", color: "#0f172a", border: "none", borderRadius: 9, padding: "8px 18px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+                + Add income
+              </button>
+            </div>
           </div>
 
+          {recLoadError && (
+            <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 10, color: "#f87171", fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <span>Recurring income couldn't be loaded ({recLoadError}). It isn't counted in totals until it loads.</span>
+              <button onClick={onRecRetry} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>Retry</button>
+            </div>
+          )}
+          {recSaveError && (
+            <div style={{ marginBottom: 16, padding: "10px 14px", background: "#2d1518", border: "1px solid #5a2a30", borderRadius: 10, color: "#f87171", fontSize: 13 }}>
+              The last recurring-income change couldn't be saved: {recSaveError}
+            </div>
+          )}
+
+          {recForm && (
+            <div style={{ marginBottom: 20 }}>
+              <SlRecurringIncomeForm allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={currency}
+                initial={recForm === "new" ? null : recForm} viewMonthKey={monthKey} onSave={saveSeries} onCancel={() => setRecForm(null)} />
+            </div>
+          )}
           {(showForm && !editEntry) && (
             <div style={{ marginBottom: 20 }}>
               <SlTransactionForm allExpenseCategories={[]} allIncomeCategories={allIncomeCategories} currency={currency} paymentMethods={paymentMethods} onSave={handleSave} onCancel={() => setShowForm(false)} initial={{ type: "income" }} />
@@ -1146,15 +1406,58 @@
             </div>
           )}
 
-          {monthInc.length === 0 ? (
+          {/* ── This month ── */}
+          {rows.length === 0 ? (
             <div style={{ textAlign: "center", padding: "60px 20px", color: "#7a90a8" }}>
               <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.4 }}>📥</div>
               <div style={{ fontSize: 14 }}>No income recorded this month.</div>
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {monthInc.map(t => {
+              {rows.map(t => {
                 const cat = allIncomeCategories.find(c => c.id === t.category);
+                if (t.recurringId) {
+                  const isAdj = adjusting?.id === t.id;
+                  return (
+                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#0d1825", border: "1px solid #1a2535", borderLeft: "3px solid #4ade8066", borderRadius: 10, padding: "12px 16px", opacity: t.skipped ? 0.5 : 1, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 20, flexShrink: 0 }}>{cat ? cat.emoji : "📥"}</span>
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          {t.recurringName}
+                          {badge("🔁 recurring", "#4ade80")}
+                          {t.extra && badge("extra pay", "#22d3ee")}
+                          {t.adjusted && badge("adjusted", "#f59e0b")}
+                          {t.skipped && badge("skipped", "#94a3b8")}
+                          {!t.skipped && t.date > todayStr && badge("expected", "#a78bfa")}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>
+                          {t.date}{cat ? " · " + cat.label : ""}{t.paymentMethod ? " · " + t.paymentMethod : ""}
+                          {t.adjusted && <> · scheduled {slFmtAmount(t.scheduled, currency)}</>}
+                        </div>
+                      </div>
+                      {isAdj ? (
+                        <input type="number" min="0" step="0.01" autoFocus value={adjusting.value}
+                          onChange={e => setAdjusting({ id: t.id, value: e.target.value })}
+                          onKeyDown={e => { if (e.key === "Enter") commitAdjust(t); if (e.key === "Escape") setAdjusting(null); }}
+                          onBlur={() => commitAdjust(t)}
+                          style={{ width: 120, background: "#080f18", border: "1px solid #4ade8066", borderRadius: 8, padding: "6px 10px", color: "#e2e8f0", fontSize: 14, textAlign: "right" }} />
+                      ) : (
+                        <span style={{ fontSize: 15, color: t.skipped ? "#7a90a8" : "#4ade80", fontWeight: 700, fontVariantNumeric: "tabular-nums", flexShrink: 0, textDecoration: t.skipped ? "line-through" : "none" }}>+{slFmtAmount(t.amount, currency)}</span>
+                      )}
+                      {recReady && !isAdj && (
+                        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                          {t.skipped
+                            ? smallBtn("Restore", () => setOverride(t.recurringId, monthKey, null))
+                            : <>
+                                {smallBtn("Adjust", () => setAdjusting({ id: t.id, value: String(t.amount) }))}
+                                {t.adjusted && smallBtn("Reset", () => setOverride(t.recurringId, monthKey, null))}
+                                {smallBtn("Skip", () => setOverride(t.recurringId, monthKey, { skip: true }), "#7a90a8", "#f87171")}
+                              </>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
                 return confirmDel === t.id ? (
                   <div key={t.id} style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
                     Delete this income entry?
@@ -1182,6 +1485,51 @@
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* ── Recurring series ── */}
+          {series.length > 0 && (
+            <div style={{ marginTop: 32 }}>
+              <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Recurring income</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {series.map(r => {
+                  const cat = allIncomeCategories.find(c => c.id === r.category);
+                  const ended = r.endDate && slMonthKey(r.endDate) < slTodayKey();
+                  const endsThisView = r.endDate && slMonthKey(r.endDate) <= monthKey;
+                  return recConfirm === r.id ? (
+                    <div key={r.id} style={{ background: "#2d1518", border: "1px solid #5a2a3044", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#f87171" }}>
+                      Delete "{r.name}" and all its months (past ones included)? To keep its history, use "End" instead.
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        <button onClick={() => { onRecSave(series.filter(x => x.id !== r.id)); setRecConfirm(null); }} style={{ background: "#f87171", color: "#0f172a", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>Delete</button>
+                        <button onClick={() => setRecConfirm(null)} style={{ background: "transparent", color: "#7a90a8", border: "1px solid #8baabf", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#0b1520", border: "1px solid #1a2535", borderRadius: 10, padding: "10px 16px", opacity: ended ? 0.55 : 1, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 18, flexShrink: 0 }}>{cat ? cat.emoji : "🔁"}</span>
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <div style={{ fontSize: 13, color: "#c8d8e8", fontWeight: 600 }}>{r.name}</div>
+                        <div style={{ fontSize: 12, color: "#7a90a8", marginTop: 2 }}>
+                          {slFmtAmount(slRecCurrentAmount(r), currency)} / month · day {Number(r.firstDate.slice(8, 10))}
+                          {(r.extraMonths || []).length > 0 && <> · extra: {r.extraMonths.map(m => SL_MONTH_SHORT[m - 1]).join(", ")}</>}
+                          {" · "}since {slMonthKey(r.firstDate)}{r.endDate ? " until " + slMonthKey(r.endDate) : ""}
+                          {(r.amounts || []).length > 1 && <> · {r.amounts.length} amount changes</>}
+                        </div>
+                      </div>
+                      {recReady && (
+                        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                          {!endsThisView && smallBtn(`End after ${SL_MONTH_SHORT[Number(monthKey.slice(5, 7)) - 1]}`, () => stopAfter(r.id))}
+                          <button onClick={() => { setRecForm(r); setShowForm(false); setEditEntry(null); }} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                            onMouseEnter={e => e.currentTarget.style.color = "#9aaabb"} onMouseLeave={e => e.currentTarget.style.color = "#7a90a8"}>✏️</button>
+                          <button onClick={() => setRecConfirm(r.id)} style={{ background: "none", border: "none", color: "#7a90a8", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 5 }}
+                            onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#7a90a8"}>🗑</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -1619,7 +1967,7 @@
       );
     }
 
-    function SlSettings({ config, onSave, allCategories, transactions, subscriptions }) {
+    function SlSettings({ config, onSave, allCategories, transactions, subscriptions, recurringIncome }) {
       const [currency, setCurrency] = React.useState(config.currency || "EUR");
       const [budget,   setBudget]   = React.useState(config.budget ? String(config.budget) : "");
       const [catTab,   setCatTab]   = React.useState("expense");
@@ -1653,6 +2001,9 @@
       const handleExport = () => {
         const wb = XLSX.utils.book_new();
         const cur = config.currency || "EUR";
+        // Recurring income is virtual: expand it up to the current month so the
+        // export matches what the app shows (future expected months excluded).
+        const allTxs = [...(transactions || []), ...slRecIncomeHistory(recurringIncome, slTodayKey())];
 
         // Helper: category label lookup
         const catLabel = (id) => {
@@ -1665,12 +2016,12 @@
         };
 
         // ── Sheet 1: Transactions ────────────────────────────────────────────
-        const txRows = (transactions || [])
+        const txRows = allTxs
           .slice()
           .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
           .map(t => ({
             "Date":             t.date || "",
-            "Type":             t.type === "income" ? "Income" : slIsNeutral(t) ? "Investment" : "Expense",
+            "Type":             t.type === "income" ? (t.recurringId ? "Income (recurring)" : "Income") : slIsNeutral(t) ? "Investment" : "Expense",
             "Category":         catEmoji(t.category) + " " + catLabel(t.category),
             "Amount":           Number(t.amount) || 0,
             "Currency":         cur,
@@ -1729,14 +2080,14 @@
         // ── Sheet 3: Summary ─────────────────────────────────────────────────
         // Monthly totals by type + per-category breakdown
         const monthsSet = new Set();
-        (transactions || []).forEach(t => { if (t.date) monthsSet.add(t.date.slice(0, 7)); });
+        allTxs.forEach(t => { if (t.date) monthsSet.add(t.date.slice(0, 7)); });
         const months = [...monthsSet].sort();
 
         const summaryRows = [];
         // Section header
         summaryRows.push({ "Month": "MONTHLY SUMMARY", "Type": "", "Category": "", "Amount": "", "Currency": "" });
         months.forEach(mk => {
-          const txs     = (transactions || []).filter(t => t.date && t.date.startsWith(mk));
+          const txs     = allTxs.filter(t => t.date && t.date.startsWith(mk));
           const income   = txs.filter(t => t.type === "income").reduce((s, t) => s + Number(t.amount), 0);
           const invested = txs.filter(t => slIsNeutral(t)).reduce((s, t) => s + Number(t.amount), 0);
           const expenses = txs.filter(t => t.type !== "income" && !slIsNeutral(t)).reduce((s, t) => s + Number(t.amount), 0);
@@ -1873,6 +2224,13 @@
       const [monthKey,      setMonthKey]       = React.useState(slTodayKey());
       const [transactions,  setTransactions]   = React.useState([]);
       const [subscriptions, setSubscriptions]  = React.useState([]);
+      // Recurring income: own table and own load, with errors propagated.
+      // null until a successful load — editing is disabled in that state.
+      const [recIncome,     setRecIncome]      = React.useState(null);
+      const [recLoadError,  setRecLoadError]   = React.useState(null);
+      const [recSaveError,  setRecSaveError]   = React.useState(null);
+      const [recReload,     setRecReload]      = React.useState(0);
+      const recSaveChain = React.useRef(Promise.resolve());
       const [config,        setConfig]         = React.useState({ currency: "EUR", budget: null, customExpenseCategories: [], customIncomeCategories: [], deletedDefaultExpenseCategories: [], deletedDefaultIncomeCategories: [], expenseColorOverrides: {}, incomeColorOverrides: {}, customPaymentMethods: [] });
       const [dashLayout,    setDashLayout]     = React.useState(SL_DEFAULT_LAYOUT);
       const [loading,       setLoading]        = React.useState(true);
@@ -1920,6 +2278,27 @@
           })
           .catch(() => setLoading(false));
       }, [profileId]);
+
+      React.useEffect(() => {
+        if (!profileId) return;
+        let alive = true;
+        setRecIncome(null); setRecLoadError(null); setRecSaveError(null);
+        slLoadRecurringIncome(profileId)
+          .then(list => { if (alive) setRecIncome(list); })
+          .catch(err => { console.error("[SpendLog] recurring income load:", err.message); if (alive) setRecLoadError(err.message); });
+        return () => { alive = false; };
+      }, [profileId, recReload]);
+      // Chained saves: each upsert waits for the previous one, so an older
+      // version can never land after a newer one.
+      const saveRecIncome = (list) => {
+        setRecIncome(list);
+        const pid = profileId;
+        recSaveChain.current = recSaveChain.current
+          .then(() => slSaveRecurringIncome(list, pid))
+          .then(() => setRecSaveError(null))
+          .catch(err => { console.error("[SpendLog] recurring income save:", err.message); setRecSaveError(err.message); });
+      };
+      const recIncomeList = recIncome || [];
 
       const saveTxs  = async (txs)  => { setTransactions(txs);  await slSaveTransactions(txs, profileId); };
       const saveSubs = async (subs) => { setSubscriptions(subs); await slSaveSubscriptions(subs, profileId); };
@@ -1994,11 +2373,12 @@
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Loading…</div>
               ) : (
                 <>
-                  {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} isMobile={true} />}
+                  {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} recurringIncome={recIncomeList} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} isMobile={true} />}
                   {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
-                  {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                  {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}
+                    recurringIncome={recIncome} recLoadError={recLoadError} recSaveError={recSaveError} onRecSave={saveRecIncome} onRecRetry={() => setRecReload(n => n + 1)} />}
                   {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
-                  {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} transactions={transactions} subscriptions={subscriptions} />}
+                  {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} transactions={transactions} subscriptions={subscriptions} recurringIncome={recIncomeList} />}
                 </>
               )}
             </div>
@@ -2072,11 +2452,12 @@
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#7a90a8", fontSize: 14 }}>Loading…</div>
             ) : (
               <>
-                {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} />}
+                {tab === "dashboard"     && <SlDashboard transactions={transactions} subscriptions={subscriptions} recurringIncome={recIncomeList} allCategories={allCategories} currency={config.currency} monthKey={monthKey} budget={config.budget} layout={dashLayout} onLayoutChange={saveDashLayout} />}
                 {tab === "transactions"  && <SlTransactions transactions={transactions} allExpenseCategories={allExpenseCategories} allIncomeCategories={allIncomeCategories} allCategories={allCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
-                {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx} />}
+                {tab === "income"        && <SlIncome transactions={transactions} allIncomeCategories={allIncomeCategories} paymentMethods={paymentMethods} currency={config.currency} monthKey={monthKey} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}
+                    recurringIncome={recIncome} recLoadError={recLoadError} recSaveError={recSaveError} onRecSave={saveRecIncome} onRecRetry={() => setRecReload(n => n + 1)} />}
                 {tab === "subscriptions" && <SlSubscriptions subscriptions={subscriptions} allCategories={allExpenseCategories} currency={config.currency} onAdd={addSub} onEdit={editSub} onDelete={deleteSub} onToggle={toggleSub} />}
-                {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} transactions={transactions} subscriptions={subscriptions} />}
+                {tab === "settings"      && <SlSettings config={config} onSave={saveConfig} allCategories={allCategories} transactions={transactions} subscriptions={subscriptions} recurringIncome={recIncomeList} />}
               </>
             )}
           </div>
