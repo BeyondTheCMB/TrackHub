@@ -411,7 +411,7 @@
         if (li === 0) return ["POR"];
         if (li === totalLines - 1) return ["DEL"];
         if (li === 1) return ["DEF"];
-        return ["MC", "DEF", "DEL"]; // intermediate lines = midfield (flexible)
+        return ["MC"]; // líneas intermedias = centrocampistas (estricto: el selector del + solo ofrece MC)
       };
 
       const PITCH_SIZES = {
@@ -572,7 +572,7 @@
                   {accepted.join(" / ")}
                 </div>
                 {eligible.length === 0
-                  ? <div style={{ padding: "10px 12px", fontSize: 12, color: "#5a7080" }}>Sin jugadores disponibles</div>
+                  ? <div style={{ padding: "10px 12px", fontSize: 12, color: "#5a7080" }}>Sin {accepted.join(" / ")} disponibles en el banquillo</div>
                   : eligible.map(p => (
                       <button key={p.id} onClick={() => { assignSlot(slotKey, p.id); setPickerSlot(null); }}
                         style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", minHeight: 42, background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
