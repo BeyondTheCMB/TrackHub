@@ -457,9 +457,19 @@
         if (readOnly) return;
         setSlotMap(prev => {
           const next = { ...prev };
-          Object.keys(next).forEach(k => { if (next[k] === playerId) delete next[k]; });
-          if (playerId) next[slotKey] = playerId;
-          else delete next[slotKey];
+          if (playerId) {
+            // Si el jugador ya estaba en el campo, se mueve; si el hueco destino
+            // estaba ocupado, los dos intercambian posición (swap).
+            const fromKey   = Object.keys(prev).find(k => prev[k] === playerId);
+            const displaced = prev[slotKey];
+            if (fromKey && fromKey !== slotKey) {
+              delete next[fromKey];
+              if (displaced) next[fromKey] = displaced;
+            }
+            next[slotKey] = playerId;
+          } else {
+            delete next[slotKey];
+          }
           return next;
         });
       };
@@ -501,18 +511,46 @@
         const accepted = linePosMap(lineIdx, totalLines);
         const eligible = bench.filter(p => accepted.includes(p.pos) || p.pos === "?" );
 
+        // Colocación del desplegable: centrado, salvo en los extremos de la línea
+        // (para que no se recorte por el borde del campo/tarjeta).
+        const slotIdx   = parseInt(slotKey.split("-")[1], 10) || 0;
+        const lineCount = lines[lineIdx]?.[0] || 1;
+        const pickerPos = lineCount > 1 && slotIdx === 0
+          ? { left: 0 }
+          : lineCount > 1 && slotIdx === lineCount - 1
+            ? { right: 0 }
+            : { left: "50%", transform: "translateX(-50%)" };
+
         return (
           <div key={slotKey} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 54, position: "relative" }}>
             <div style={{ position: "relative", width: 44, height: 44 }}>
-              <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
+              <div draggable={!!player && !readOnly}
+                onDragStart={e => {
+                  if (!player || readOnly) return;
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", String(player.id));
+                  dragRef.current = player.id;
+                  setPickerSlot(null);
+                  setTimeout(() => setDragging(player.id), 0);
+                }}
+                onDragEnd={() => { dragRef.current = null; setDragging(null); setDragTarget(null); }}
+                onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
                 onDragLeave={() => setDragTarget(null)}
                 onDrop={e => { e.preventDefault(); handleDrop(slotKey); }}
-                onClick={() => player && !readOnly ? assignSlot(slotKey, null) : !player && handlePlusClick()}
-                style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s", cursor: readOnly ? "default" : "pointer" }}>
+                onClick={e => {
+                  // stopPropagation: si no, el onClick del contenedor del campo
+                  // (setPickerSlot(null)) se ejecuta justo después y cierra el selector al instante.
+                  e.stopPropagation();
+                  if (readOnly) return;
+                  if (player) assignSlot(slotKey, null);
+                  else handlePlusClick();
+                }}
+                title={player && !readOnly ? "Arrastra a otro hueco para moverlo/intercambiarlo · clic para quitarlo" : undefined}
+                style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s", cursor: readOnly ? "default" : (player ? "grab" : "pointer"), opacity: player && dragging === player.id ? 0.4 : 1 }}>
                 {player
                   ? (player.isBuy
                       ? <span style={{ fontSize: 10, color: BW_B, fontWeight: 700 }}>{player.nombre.slice(0,3).toUpperCase()}</span>
-                      : <img src={bwPlayerPhoto(player.id)} alt={player.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />)
+                      : <img src={bwPlayerPhoto(player.id)} alt={player.nombre} draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />)
                   : <span style={{ fontSize: 18, color: over ? BW_A : isPickerOpen ? BW_A : "#ffffff44" }}>+</span>
                 }
               </div>
@@ -528,7 +566,7 @@
 
             {/* Position-filtered picker dropdown */}
             {isPickerOpen && !readOnly && (
-              <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, minWidth: 180, maxHeight: 220, overflowY: "auto", boxShadow: "0 16px 40px rgba(0,0,0,0.8)", marginTop: 4 }}
+              <div style={{ position: "absolute", top: "100%", ...pickerPos, zIndex: 100, background: "#0d1825", border: "1px solid #1a2535", borderRadius: 10, minWidth: 220, maxHeight: 260, overflowY: "auto", boxShadow: "0 16px 40px rgba(0,0,0,0.8)", marginTop: 4 }}
                 onClick={e => e.stopPropagation()}>
                 <div style={{ padding: "6px 10px 4px", fontSize: 10, color: "#5a7080", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid #0d1825" }}>
                   {accepted.join(" / ")}
@@ -537,14 +575,17 @@
                   ? <div style={{ padding: "10px 12px", fontSize: 12, color: "#5a7080" }}>Sin jugadores disponibles</div>
                   : eligible.map(p => (
                       <button key={p.id} onClick={() => { assignSlot(slotKey, p.id); setPickerSlot(null); }}
-                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", minHeight: 42, background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
                         onMouseEnter={e => e.currentTarget.style.background = "#1a2535"}
                         onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                        <div style={{ width: 24, height: 24, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
-                          <img src={bwPlayerPhoto(p.id)} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />
+                        <div style={{ width: 28, height: 28, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
+                          {p.isBuy
+                            ? <div style={{ width: "100%", height: "100%", background: BW_B + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: BW_B, fontWeight: 700 }}>NEW</div>
+                            : <img src={bwPlayerPhoto(p.id)} alt={p.nombre} draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => e.target.style.display="none"} />}
                         </div>
-                        <BwPosBadge pos={p.pos} />
-                        <span style={{ fontSize: 12, color: "#c8d8e8" }}>{p.nombre}</span>
+                        {p.pos !== "?" && <BwPosBadge pos={p.pos} />}
+                        <span style={{ fontSize: 13, color: "#c8d8e8", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nombre}</span>
+                        <BwProbBadge prob={p.prob} />
                       </button>
                     ))
                 }
@@ -652,7 +693,7 @@
           {!readOnly && (
             <div style={{ padding: "10px 14px", borderTop: "1px solid #0d1825" }}>
               <div style={{ fontSize: 11, color: "#7a90a8", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
-                Banquillo — arrastra al campo
+                Banquillo — arrastra al campo o pulsa + en un hueco
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {["POR", "DEF", "MC", "DEL"].map(pos => {
