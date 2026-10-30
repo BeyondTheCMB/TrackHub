@@ -7228,6 +7228,7 @@
           _sb.from("pt_lists").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_transactions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_subscriptions").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
+          _sb.from("sl_recurring_income").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("sl_config").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("fl_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_pantry").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
