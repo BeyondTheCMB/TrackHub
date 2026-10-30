@@ -402,6 +402,7 @@
       const [slotMap,    setSlotMap]    = useState(initSlotMap);
       const [dragging,   setDragging]   = useState(null);
       const [dragTarget, setDragTarget] = useState(null);
+      const dragRef = useRef(null); // id arrastrado: fuente de verdad síncrona para el drop
       const [pitchSize,  setPitchSize]  = useState(savedLineup?.pitchSize || "medium");
       const [pickerSlot, setPickerSlot] = useState(null); // slotKey of open picker
 
@@ -464,7 +465,9 @@
       };
 
       const handleDrop = (slotKey) => {
-        if (dragging) assignSlot(slotKey, dragging);
+        const id = dragRef.current ?? dragging;
+        if (id != null) assignSlot(slotKey, id);
+        dragRef.current = null;
         setDragging(null); setDragTarget(null);
       };
 
@@ -478,7 +481,11 @@
       const bench     = availablePlayers.filter(p => !usedIds.has(p.id));
       const totalLines = lines.length;
 
-      const SlotCircle = ({ slotKey, lineIdx }) => {
+      // NOTA: render function, NO componente. Declarado como componente dentro de
+      // BwPitch, cada re-render (p.ej. setDragTarget durante el drag) creaba un tipo
+      // nuevo y React desmontaba/remontaba todos los slots, perdiendo el drop.
+      // No debe usar hooks (se llama como función).
+      const renderSlot = (slotKey, lineIdx) => {
         const pid      = slotMap[slotKey];
         const player   = pid ? availablePlayers.find(p => p.id === pid) : null;
         const over     = dragTarget === slotKey;
@@ -495,11 +502,11 @@
         const eligible = bench.filter(p => accepted.includes(p.pos) || p.pos === "?" );
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 54, position: "relative" }}>
+          <div key={slotKey} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 54, position: "relative" }}>
             <div style={{ position: "relative", width: 44, height: 44 }}>
               <div onDragOver={e => { e.preventDefault(); setDragTarget(slotKey); }}
                 onDragLeave={() => setDragTarget(null)}
-                onDrop={() => handleDrop(slotKey)}
+                onDrop={e => { e.preventDefault(); handleDrop(slotKey); }}
                 onClick={() => player && !readOnly ? assignSlot(slotKey, null) : !player && handlePlusClick()}
                 style={{ width: 44, height: 44, borderRadius: "50%", background: player ? posColor + "33" : over ? BW_A + "33" : "#00000044", border: `2px solid ${player ? posColor : over ? BW_A : "#ffffff22"}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", transition: "all 0.15s", cursor: readOnly ? "default" : "pointer" }}>
                 {player
@@ -547,10 +554,17 @@
         );
       };
 
-      const BenchPill = ({ p }) => (
-        <div draggable
-          onDragStart={() => setDragging(p.id)}
-          onDragEnd={() => { setDragging(null); setDragTarget(null); }}
+      // render function (no hooks), ver nota en renderSlot. El nodo arrastrado no
+      // puede ser reemplazado durante dragstart o el navegador cancela el drag.
+      const renderBenchPill = (p) => (
+        <div key={p.id} draggable
+          onDragStart={e => {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", String(p.id)); // Firefox exige datos para iniciar el drag
+            dragRef.current = p.id;
+            setTimeout(() => setDragging(p.id), 0); // diferido: re-renderizar en dragstart cancela el drag en Chrome
+          }}
+          onDragEnd={() => { dragRef.current = null; setDragging(null); setDragTarget(null); }}
           style={{ display: "flex", alignItems: "stretch", background: p.isBuy ? BW_B + "18" : "#080f18", border: `1px solid ${p.isBuy ? BW_B + "44" : "#1a2535"}`, borderRadius: 20, overflow: "hidden", cursor: "grab", opacity: dragging === p.id ? 0.4 : 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px 4px 4px" }}>
             <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", flexShrink: 0 }}>
@@ -626,7 +640,7 @@
                 return (
                   <div key={li} style={{ display: "flex", justifyContent: "space-evenly", alignItems: "center" }}>
                     {Array.from({ length: line[0] }).map((_, si) => (
-                      <SlotCircle key={si} slotKey={`${li}-${si}`} lineIdx={li} />
+                      renderSlot(`${li}-${si}`, li)
                     ))}
                   </div>
                 );
@@ -650,7 +664,7 @@
                         {pos} <span style={{ color: "#3a5060", fontWeight: 400 }}>({group.length})</span>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {group.map(p => <BenchPill key={p.id} p={p} />)}
+                        {group.map(p => renderBenchPill(p))}
                       </div>
                     </div>
                   );
@@ -664,7 +678,7 @@
                         OBJETIVOS <span style={{ color: "#3a5060", fontWeight: 400 }}>({other.length})</span>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {other.map(p => <BenchPill key={p.id} p={p} />)}
+                        {other.map(p => renderBenchPill(p))}
                       </div>
                     </div>
                   );
