@@ -87,6 +87,7 @@
       { id: "meallog",    label: "MealLog",    icon: "🥗", accentA: "#f59e0b", accentB: "#84cc16" },
       { id: "biwenger",   label: "BiwengerLog",icon: "⚽", accentA: "#34d399", accentB: "#60a5fa" },
       { id: "vesta",      label: "Vesta",      icon: "📈", accentA: "#a78bfa", accentB: "#22d3ee" },
+      { id: "conceptlog", label: "ConceptLog", icon: "💡", accentA: "#f472b6", accentB: "#fbbf24" },
     ];
 
     // ─── Auth helpers ─────────────────────────────────────────────────────────
@@ -7221,6 +7222,12 @@
       };
       const handleProfileDelete = async (id) => {
         await deleteSharedProfile(id);
+        // ConceptLog: primero conceptos (la cascada arrastra relaciones y metáforas) y
+        // después mundos, en secuencia para no cruzar borrados sobre las mismas metáforas.
+        for (const t of ["cl_conceptos", "cl_mundos"]) {
+          const { error } = await _sb.from(t).delete().eq("user_id", _sbUser.id).eq("profile_id", id);
+          if (error) console.error(`[ConceptLog] ${t} delete:`, error.message);
+        }
         await Promise.all([
           _sb.from("ml_collection").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
           _sb.from("ml_subcollections").delete().eq("user_id", _sbUser.id).eq("profile_id", id),
@@ -7318,6 +7325,7 @@
           {activeId === "meallog"    && <MealLogApp     logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "biwenger"   && <BiwengerLogApp logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
           {activeId === "vesta"      && <VestaApp       logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
+          {activeId === "conceptlog" && <ConceptLogApp  logoSlot={logoSlot} profileId={activeProfileId} profileChip={profileChip} />}
         </div>
       )
     }
@@ -7327,6 +7335,7 @@
   <script type="text/babel" src="modules/meallog.js"></script>
   <script type="text/babel" src="modules/biwengerlog.js"></script>
   <script type="text/babel" src="modules/vesta.js"></script>
+  <script type="text/babel" src="modules/conceptlog.js"></script>
   <script type="text/babel">
 
 
